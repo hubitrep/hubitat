@@ -4,17 +4,13 @@
  * Comprehensive hub diagnostics: inventory, performance tracking, network analysis,
  * snapshot comparison, and exportable reports.
  *
- * Consolidates Hub Diagnostic Analyzer, Hub Performance Analyzer, and
- * Hub Configuration Analyzer into a single unified app.
- *
- * Author: PJ
- * Version: 3.2.0
  */
 
 import groovy.transform.Field
 import groovy.transform.CompileStatic
+import groovy.json.JsonOutput
 
-@Field static final String APP_VERSION = "3.2.0"
+@Field static final String APP_VERSION = "4.0.0"
 @Field static final String STORAGE_SCHEMA_VERSION = "3.2.0"
 
 // API Endpoint URLs (localhost access)
@@ -96,133 +92,18 @@ import groovy.transform.CompileStatic
 @Field static final String PERFORMANCE_COMPARISON_FILE = "hub_diagnostics_performance_comparison.json"
 @Field static final String SNAPSHOT_DIFF_FILE = "hub_diagnostics_snapshot_diff.json"
 
-@Field static final String SORTABLE_TABLE_SCRIPT_TEMPLATE = '''<script>
-function sortTable___UNIQUE_ID__(colIdx, dataType) {
-    var table = document.getElementById('__UNIQUE_ID__');
-    var tbody = table.getElementsByTagName('tbody')[0];
-    var trs = Array.from(tbody.getElementsByTagName('tr'));
-    var curCol = table.getAttribute('data-sort-col');
-    var curOrd = table.getAttribute('data-sort-order');
-    var newOrd = (curCol == colIdx && curOrd == 'desc') ? 'asc' : 'desc';
-    trs.sort(function(a, b) {
-        var aV = a.cells[colIdx].getAttribute('data-value');
-        var bV = b.cells[colIdx].getAttribute('data-value');
-        if (dataType == 'number') { aV = parseFloat(aV) || 0; bV = parseFloat(bV) || 0; }
-        else { aV = aV.toLowerCase(); bV = bV.toLowerCase(); }
-        if (aV < bV) return newOrd == 'asc' ? -1 : 1;
-        if (aV > bV) return newOrd == 'asc' ? 1 : -1;
-        return 0;
-    });
-    trs.forEach(function(r, i) { r.style.backgroundColor = i % 2 == 0 ? '#f9f9f9' : '#fff'; tbody.appendChild(r); });
-    table.setAttribute('data-sort-col', colIdx);
-    table.setAttribute('data-sort-order', newOrd);
-    var ths = table.getElementsByTagName('th');
-    for (var i = 0; i < ths.length; i++) {
-        var arrow = ths[i].getElementsByClassName('sort-arrow')[0];
-        if (arrow) arrow.innerHTML = (i == colIdx) ? (newOrd == 'desc' ? ' \\u25BC' : ' \\u25B2') : ' \\u21C5';
-    }
-}
-</script>'''
-
-@Field static final String MEMORY_CHART_TOOLTIP_SCRIPT_TEMPLATE = '''<script>
-(function(){
-var d=[__TOOLTIP_DATA__];
-var svg=document.getElementById('__SVG_ID__');
-var container=document.getElementById('__CONTAINER_ID__');
-var hr=document.getElementById('__SVG_ID___hover');
-var vl=document.getElementById('__SVG_ID___vline');
-var tb=document.getElementById('__SVG_ID___tipbg');
-var tt=document.getElementById('__SVG_ID___tip');
-var ml=__MARGIN_LEFT__,pw=__PLOT_WIDTH__,mt=__MARGIN_TOP__,sw=__SVG_WIDTH__;
-container.scrollLeft=container.scrollWidth;
-hr.addEventListener('mousemove',function(e){
-  var rect=svg.getBoundingClientRect();
-  var scaleX=sw/rect.width;
-  var mx=(e.clientX-rect.left)*scaleX-ml;
-  var idx=Math.round(mx/pw*(d.length-1));
-  if(idx<0)idx=0;if(idx>=d.length)idx=d.length-1;
-  var x=ml+idx/(d.length-1)*pw;
-  vl.setAttribute('x1',x);vl.setAttribute('x2',x);vl.setAttribute('visibility','visible');
-  var p=d[idx];
-  var mem=(p.m/1024).toFixed(0);
-  var txt=p.t+' | OS: '+mem+' MB | CPU: '+p.c.toFixed(2)+' | Java: '+(p.j/1024).toFixed(0)+' MB';
-  tt.textContent=txt;
-  var tw=txt.length*5.5+10;
-  var tx=x+10;if(tx+tw>sw-10)tx=x-tw-10;
-  tt.setAttribute('x',tx+5);tt.setAttribute('y',mt+14);tt.setAttribute('visibility','visible');
-  tb.setAttribute('x',tx);tb.setAttribute('y',mt+2);tb.setAttribute('width',tw);tb.setAttribute('height',18);tb.setAttribute('visibility','visible');
-});
-hr.addEventListener('mouseleave',function(){
-  vl.setAttribute('visibility','hidden');
-  tt.setAttribute('visibility','hidden');
-  tb.setAttribute('visibility','hidden');
-});
-})();
-</script>'''
-
-@Field static final String FULL_REPORT_STYLES = '''
-        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        h1 { color: #1A77C9; border-bottom: 3px solid #1A77C9; padding-bottom: 10px; }
-        h2 { color: #333; border-bottom: 2px solid #ddd; padding-bottom: 8px; margin-top: 30px; }
-        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-        th { background-color: #1A77C9; color: white; }
-        tr:nth-child(even) { background-color: #f9f9f9; }
-        tr:hover { background-color: #e3f2fd; }
-        .metric { display: inline-block; margin: 10px 20px 10px 0; }
-        .metric-label { font-weight: bold; color: #555; }
-        .metric-value { color: #1A77C9; font-size: 1.2em; }
-        .warning { background-color: #f8d7da; border-left: 4px solid #d32f2f; padding: 10px; margin: 10px 0; }
-        .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; text-align: center; color: #999; font-size: 0.9em; }
-'''
-
-@Field static final String EXPORT_SORT_SCRIPT = '''<script>
-function sortExportTable(tableId, colIdx, dataType) {
-    var table = document.getElementById(tableId);
-    if (!table) return;
-    var tbody = table.getElementsByTagName('tbody')[0];
-    if (!tbody) return;
-    var rows = Array.from(tbody.getElementsByTagName('tr'));
-    var curCol = table.getAttribute('data-sort-col');
-    var curOrd = table.getAttribute('data-sort-order');
-    var newOrd = (curCol == String(colIdx) && curOrd == 'desc') ? 'asc' : 'desc';
-    rows.sort(function(a, b) {
-        var aV = a.cells[colIdx].getAttribute('data-value');
-        var bV = b.cells[colIdx].getAttribute('data-value');
-        if (dataType == 'number') {
-            aV = parseFloat(aV) || 0;
-            bV = parseFloat(bV) || 0;
-        } else {
-            aV = (aV || '').toLowerCase();
-            bV = (bV || '').toLowerCase();
-        }
-        if (aV < bV) return newOrd == 'asc' ? -1 : 1;
-        if (aV > bV) return newOrd == 'asc' ? 1 : -1;
-        return 0;
-    });
-    rows.forEach(function(row, idx) {
-        row.style.backgroundColor = idx % 2 === 0 ? '#f9f9f9' : '#ffffff';
-        tbody.appendChild(row);
-    });
-    table.setAttribute('data-sort-col', String(colIdx));
-    table.setAttribute('data-sort-order', newOrd);
-    var headers = table.getElementsByTagName('th');
-    for (var i = 0; i < headers.length; i++) {
-        var arrow = headers[i].getElementsByClassName('sort-arrow')[0];
-        if (arrow) arrow.innerHTML = (i === colIdx) ? (newOrd === 'desc' ? ' \\u25BC' : ' \\u25B2') : ' \\u21C5';
-    }
-}
-</script>'''
+@Field static final String IMPORT_URL_APP = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubDiagnostics/HubDiagnostics.groovy"
+@Field static final String IMPORT_URL_WEB = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubDiagnostics/hub_diagnostics_ui.html"
 
 definition(
     name: "Hub Diagnostics",
-    namespace: "iamtrep",
-    author: "PJ",
+    namespace: "hubitrep",
+    author: "hubitrep",
     description: "Comprehensive hub diagnostics: inventory, performance tracking, network analysis, and snapshot comparison",
     category: "Utility",
     singleInstance: true,
-    importUrl: "https://raw.githubusercontent.com/iamtrep/hubitat/refs/heads/main/apps/utilities/HubDiagnostics.groovy",
+    importUrl: IMPORT_URL_AP,
+    oauth: true,
     iconUrl: "",
     iconX2Url: "",
     iconX3Url: ""
@@ -230,862 +111,63 @@ definition(
 
 preferences {
     page(name: "dashboardPage")
-    page(name: "devicesPage")
-    page(name: "appsPage")
-    page(name: "networkPage")
-    page(name: "performancePage")
-    page(name: "systemHealthPage")
-    page(name: "snapshotsPage")
     page(name: "settingsPage")
+}
+
+// ===== API MAPPINGS =====
+
+mappings {
+    // Frontend asset serving
+    path('/ui.html') { action: [GET: 'serveUI'] }
+
+    // Data API endpoints
+    path('/api/dashboard')        { action: [GET: 'apiDashboard'] }
+    path('/api/devices')          { action: [GET: 'apiDevices'] }
+    path('/api/apps')             { action: [GET: 'apiApps'] }
+    path('/api/network')          { action: [GET: 'apiNetwork'] }
+    path('/api/health')           { action: [GET: 'apiHealth'] }
+    path('/api/health/history')   { action: [GET: 'apiHealthHistory'] }
+    path('/api/performance')      { action: [GET: 'apiPerformance'] }
+    path('/api/snapshots')        { action: [GET: 'apiSnapshots'] }
+    path('/api/snapshot/view')    { action: [GET: 'apiSnapshotView'] }
+    path('/api/snapshot/diff')    { action: [GET: 'apiSnapshotDiff'] }
+
+    // Actions
+    path('/api/snapshot/create')    { action: [POST: 'apiCreateSnapshot'] }
+    path('/api/snapshot/delete')    { action: [POST: 'apiDeleteSnapshot'] }
+    path('/api/checkpoint/create')  { action: [POST: 'apiCreateCheckpoint'] }
+    path('/api/checkpoint/delete')  { action: [POST: 'apiDeleteCheckpoint'] }
+    path('/api/checkpoints/clear')  { action: [POST: 'apiClearCheckpoints'] }
+    path('/api/snapshots/clear')    { action: [POST: 'apiClearSnapshots'] }
+    path('/api/performance/compare') { action: [POST: 'apiPerformanceCompare'] }
+    path('/api/reports')              { action: [GET: 'apiReports'] }
+    path('/api/report/generate')      { action: [POST: 'apiGenerateReport'] }
 }
 
 // ===== PAGE METHODS =====
 
 Map dashboardPage() {
+    if (!state.accessToken) createAccessToken()
+
     dynamicPage(name: "dashboardPage", title: "Hub Diagnostics", install: true, uninstall: true) {
         section("Quick Summary") {
             paragraph generateQuickSummary()
         }
 
-        section("Navigation") {
-            href "devicesPage", title: "Devices", description: "Device inventory and protocol analysis"
-            href "appsPage", title: "Applications", description: "App inventory and parent/child hierarchy"
-            href "networkPage", title: "Network & Wireless", description: "Z-Wave, Zigbee, Matter, Hub Mesh"
-            href "performancePage", title: "Performance", description: "Runtime stats, resource consumers, and perf checkpoint comparison"
-            href "systemHealthPage", title: "System Health", description: "Hub info, platform alerts, resources, and database"
-            href "snapshotsPage", title: "Config Snapshots", description: "Configuration snapshots and diff"
+        section("Dashboard") {
+            String dashboardUrl = "${fullLocalApiServerUrl}/ui.html?access_token=${state.accessToken}"
+            href url: dashboardUrl, title: "Open Dashboard", style: "external",
+                 description: "Interactive diagnostic dashboard (opens in new tab)"
+        }
+
+        section("Settings") {
             href "settingsPage", title: "Settings", description: "Thresholds, auto-scheduling, and options"
-        }
-
-        section("Actions") {
-            input "btnDashSnapshot", "button", title: "Create Config Snapshot"
-            input "btnDashCheckpoint", "button", title: "Create Perf Checkpoint"
-        }
-
-        section("Export & Utilities") {
-            input "btnFullReport", "button", title: "Generate Full Report"
-            String lastReportLink = buildLastReportLinkHtml()
-            if (lastReportLink) {
-                paragraph lastReportLink
-            }
-        }
-
-        List reportFiles = listHubFiles("hub_diagnostics_report_")
-        if (reportFiles) {
-            section("Existing Reports", hideable: true, hidden: true) {
-                paragraph renderHubFileTable(reportFiles, "Open")
-            }
-        }
-
-        List dataFiles = listHubFilesByNames([
-            SNAPSHOTS_FILE,
-            CHECKPOINTS_FILE,
-            PERFORMANCE_COMPARISON_FILE,
-            SNAPSHOT_DIFF_FILE
-        ])
-        if (dataFiles) {
-            section("Data Files", hideable: true, hidden: true) {
-                paragraph renderHubFileTable(dataFiles, "Download")
-            }
         }
 
         section("Installation") {
             label title: "Assign a name", required: false
         }
     }
-}
-
-Map devicesPage() {
-    Map deviceStats = analyzeDevices()
-    Map pageModel = buildDevicesPageModel(deviceStats)
-
-    dynamicPage(name: "devicesPage", title: "Device Analysis") {
-        section("Device Summary") {
-            paragraph formatMetricsTable(pageModel.summaryMetrics)
-        }
-
-        section("Protocol Distribution") {
-            paragraph formatProtocolTable(deviceStats.byProtocol, deviceStats.idsByProtocol)
-        }
-
-        section("All Devices (${pageModel.allDeviceCount})", hideable: true, hidden: pageModel.allDeviceCount > 10) {
-            paragraph generateSortableTable("devTable", [
-                [label: "Name", field: "name", type: "string"],
-                [label: "Type", field: "type", type: "string"],
-                [label: "Protocol", field: "protocol", type: "string"],
-                [label: "Room", field: "room", type: "string"],
-                [label: "Status", field: "status", type: "string"],
-                [label: "Last Activity", field: "lastActivity", type: "string"],
-                [label: "Battery", field: "battery", type: "number"],
-                [label: "Parent", field: "parent", type: "string"]
-            ], pageModel.deviceRows)
-        }
-
-        if (pageModel.lowBatteryHtml) {
-            section("Low Battery Alerts") {
-                paragraph pageModel.lowBatteryHtml
-            }
-        }
-    }
-}
-
-Map appsPage() {
-    Map appStats = analyzeApps()
-    Map pageModel = buildAppsPageModel(appStats)
-
-    dynamicPage(name: "appsPage", title: "Application Analysis") {
-        section("Application Summary") {
-            paragraph formatMetricsTable(pageModel.summaryMetrics)
-        }
-
-        if (pageModel.hierarchyCount > 0) {
-            section("Parent/Child App Hierarchy (${pageModel.hierarchyCount})", hideable: true, hidden: pageModel.hierarchyCount > 10) {
-                paragraph formatParentChildHierarchy(appStats.parentChildHierarchy)
-            }
-        }
-
-        section("App Instances by Type (${pageModel.appTypeCount})", hideable: true, hidden: pageModel.appTypeCount > 10) {
-            paragraph formatAppsByTypeTable(appStats)
-        }
-
-        if (pageModel.platformAppCount > 0) {
-            section("Platform Apps (${pageModel.platformAppCount})", hideable: true, hidden: pageModel.platformAppCount > 10) {
-                paragraph "<i>Apps not exposed in the Apps list API but tracked by runtime stats. Includes dashboard room views, mode setters, and internal platform services. Monitor state size for unbounded growth.</i>"
-
-                if (pageModel.largeStateCount > 0) {
-                    paragraph "<span style='color: #ff9800;'>\u26A0 ${pageModel.largeStateCount} platform app${pageModel.largeStateCount > 1 ? 's' : ''} with state size > 5 KB — monitor for unbounded growth</span>"
-                }
-
-                paragraph generateSortableTable("platformApps", [
-                    [label: "Name", field: "name", type: "string"],
-                    [label: "State Size", field: "stateSize", type: "number"],
-                    [label: "CPU %", field: "pctTotal", type: "number"],
-                    [label: "Exec Count", field: "count", type: "number"],
-                    [label: "Avg (ms)", field: "average", type: "number"],
-                    [label: "Hub Actions", field: "hubActions", type: "number"],
-                    [label: "Cloud Calls", field: "cloudCalls", type: "number"]
-                ], pageModel.platformRows)
-            }
-        }
-    }
-}
-
-Map networkPage() {
-    Map networkData = analyzeNetwork()
-    Map zigbeeMesh = fetchZigbeeMeshInfo()
-    String zwaveVersion = fetchZwaveVersion()
-    Map zwaveMesh = extractZwaveMeshQuality(networkData.zwave ?: [:])
-
-    dynamicPage(name: "networkPage", title: "Network & Wireless Analysis") {
-        section("Network Configuration") {
-            if (networkData.network && !networkData.network.error) {
-                Map net = networkData.network
-                List netMetrics = [
-                    ["IP Address", net.lanAddr ?: "N/A"],
-                    ["Connection Type", net.usingStaticIP ? "Static IP" : "DHCP"],
-                    ["Gateway", net.staticGateway ?: "N/A"],
-                    ["Subnet Mask", net.staticSubnetMask ?: "N/A"]
-                ]
-                if (net.usingStaticIP && net.staticIP) {
-                    netMetrics << ["Static IP", net.staticIP]
-                }
-                if (net.dnsServers && net.dnsServers.size() > 0) {
-                    netMetrics << ["DNS Servers", net.dnsServers.join(", ")]
-                }
-                netMetrics << ["Ethernet", net.hasEthernet ? "Connected" : "Not Connected"]
-                netMetrics << ["WiFi Available", net.hasWiFi ? "Yes" : "No"]
-                if (net.hasWiFi && net.wifiNetwork) {
-                    netMetrics << ["WiFi Network", net.wifiNetwork]
-                }
-                paragraph formatMetricsTable(netMetrics)
-            } else {
-                paragraph "<i>Network configuration unavailable</i>"
-            }
-        }
-
-        section("Z-Wave Network") {
-            if (networkData.zwave && !networkData.zwave.error) {
-                Map zw = networkData.zwave
-                String healthyColor = zw.healthy ? "#388e3c" : "#d32f2f"
-                List zwMetrics = [
-                    ["Enabled", zw.enabled ? "Yes" : "No"],
-                    ["Healthy", "<span style='color: ${healthyColor};'>${zw.healthy ? 'Yes' : 'No'}</span>"],
-                    ["Region", zw.region ?: "N/A"],
-                    ["Node Count", zw.nodes ? zw.nodes.size() : 0],
-                    ["Z-Wave JS", zw.zwaveJS ? "Enabled" : (zw.zwaveJSAvailable ? "Available" : "N/A")]
-                ]
-                if (zwaveVersion) {
-                    zwMetrics << ["Firmware", zwaveVersion]
-                }
-                paragraph formatMetricsTable(zwMetrics)
-
-                if (zw.isRadioUpdateNeeded) {
-                    paragraph "<span style='color: #ff9800;'>\u26A0 Radio firmware update recommended</span>"
-                }
-
-                // Ghost/failed node detection
-                if (zw.zwDevices) {
-                    List ghostNodes = []
-                    zw.zwDevices.each { nodeId, nodeData ->
-                        if (nodeData instanceof Map) {
-                            boolean isFailed = nodeData.status == "FAILED" || nodeData.failed == true
-                            boolean noRoute = nodeData.route == null || nodeData.route == "" || nodeData.route == "No route"
-                            boolean noName = !nodeData.name || nodeData.name == "Unknown" || nodeData.name == ""
-                            if (isFailed || (noRoute && noName)) {
-                                ghostNodes << [id: nodeId, deviceId: nodeData.deviceId, name: nodeData.name ?: "Unknown", status: nodeData.status ?: "No route"]
-                            }
-                        }
-                    }
-                    if (ghostNodes) {
-                        paragraph "<b style='color: #d32f2f;'>Possible Ghost Nodes (${ghostNodes.size()}):</b>"
-                        ghostNodes.each { Map ghost ->
-                            String ghostNameHtml = ghost.deviceId ? "<a href='/device/edit/${ghost.deviceId}' target='_blank' style='color: #d32f2f; text-decoration: underline;'>${ghost.name}</a>" : ghost.name
-                            paragraph "&nbsp;&nbsp;<span style='color: #d32f2f;'>Node ${ghost.id}: ${ghostNameHtml} (${ghost.status})</span>"
-                        }
-                        paragraph "<i>Ghost nodes can cause Z-Wave mesh instability. Remove them from Settings > Z-Wave Details.</i>"
-                    }
-                }
-            } else {
-                paragraph "<i>Z-Wave details unavailable</i>"
-            }
-        }
-
-        if (zwaveMesh && zwaveMesh.nodes) {
-            int zwNodeCount = zwaveMesh.nodeCount ?: 0
-            section("Z-Wave Mesh Quality (${zwNodeCount} nodes)", hideable: true, hidden: zwNodeCount > 10) {
-                String avgPerColor = zwaveMesh.avgPer == 0 ? "#388e3c" : (zwaveMesh.avgPer <= 1 ? "#ff9800" : "#d32f2f")
-                String errColor = zwaveMesh.nodesWithErrors == 0 ? "#388e3c" : "#d32f2f"
-                List meshMetrics = [
-                    ["Node Count", zwaveMesh.nodeCount],
-                    ["Average PER", "<span style='color: ${avgPerColor};'>${String.format('%.1f', zwaveMesh.avgPer as float)}%</span>"],
-                    ["Nodes with Packet Errors", "<span style='color: ${errColor};'>${zwaveMesh.nodesWithErrors}</span>"],
-                    ["Total Route Changes", zwaveMesh.totalRouteChanges]
-                ]
-                if (zwaveMesh.avgRssi != null) {
-                    String rssiColor = zwaveMesh.avgRssi >= -60 ? "#388e3c" : (zwaveMesh.avgRssi >= -80 ? "#ff9800" : "#d32f2f")
-                    meshMetrics << ["Average RSSI", "<span style='color: ${rssiColor};'>${zwaveMesh.avgRssi} dBm</span>"]
-                }
-                paragraph formatMetricsTable(meshMetrics)
-
-                // Per-node table
-                List nodeRows = zwaveMesh.nodes.collect { Map n ->
-                    String stateColor = n.state == "OK" ? "" : "#d32f2f"
-                    String perColor = n.per > 1 ? "#d32f2f" : (n.per > 0 ? "#ff9800" : "")
-                    String rssiColor = ""
-                    if (n.rssi != null) {
-                        rssiColor = n.rssi >= -60 ? "#388e3c" : (n.rssi >= -80 ? "#ff9800" : "#d32f2f")
-                    }
-                    String nameHtml = n.deviceId ? "<a href='/device/edit/${n.deviceId}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml(n.name as String)}</a>" : n.name
-                    Map row = [
-                        name: nameHtml,
-                        _nameSort: n.name,
-                        rssi: n.rssiStr ?: "N/A",
-                        _rssiSort: n.rssi ?: -999,
-                        per: n.per,
-                        neighbors: n.neighbors,
-                        route: n.route ?: "None",
-                        routeChanges: n.routeChanges,
-                        state: n.state
-                    ]
-                    if (stateColor) row["_stateColor"] = stateColor
-                    if (perColor) row["_perColor"] = perColor
-                    if (rssiColor) row["_rssiColor"] = rssiColor
-                    return row
-                }
-
-                paragraph generateSortableTable("zwMesh", [
-                    [label: "Device", field: "name", type: "string"],
-                    [label: "RSSI", field: "rssi", type: "number"],
-                    [label: "PER %", field: "per", type: "number"],
-                    [label: "Neighbors", field: "neighbors", type: "number"],
-                    [label: "Route", field: "route", type: "string"],
-                    [label: "Route Changes", field: "routeChanges", type: "number"],
-                    [label: "State", field: "state", type: "string"]
-                ], nodeRows)
-
-                // Problem node callout
-                List problemNodes = zwaveMesh.nodes.findAll { Map n -> n.state != "OK" || n.per > 1 }
-                if (problemNodes) {
-                    paragraph "<b style='color: #d32f2f;'>Problem Nodes (${problemNodes.size()}):</b>"
-                    problemNodes.each { Map n ->
-                        List issues = []
-                        if (n.state != "OK") issues << "State: ${n.state}"
-                        if (n.per > 1) issues << "PER: ${n.per}%"
-                        String probNameHtml = n.deviceId ? "<a href='/device/edit/${n.deviceId}' target='_blank' style='color: #d32f2f; text-decoration: underline;'>${escapeHtml(n.name as String)}</a>" : escapeHtml(n.name as String)
-                        paragraph "&nbsp;&nbsp;<span style='color: #d32f2f;'>${probNameHtml} — ${issues.join(', ')}</span>"
-                    }
-                    paragraph "<i>High PER (Packet Error Rate) indicates unreliable communication. Check device distance, interference, or replace failed nodes.</i>"
-                }
-            }
-        }
-
-        section("Zigbee Network") {
-            if (networkData.zigbee && !networkData.zigbee.error) {
-                Map zb = networkData.zigbee
-                String healthyColor = zb.healthy ? "#388e3c" : "#d32f2f"
-                String channelDisplay = zb.channel ? zb.channel.toString() : "N/A"
-                if (zb.channel && !(zb.channel in RECOMMENDED_ZIGBEE_CHANNELS)) {
-                    channelDisplay = "<span style='color: #ff9800;'>${zb.channel}</span> (may overlap WiFi — recommended: ${RECOMMENDED_ZIGBEE_CHANNELS.join(', ')})"
-                }
-                if (zb.weakChannel) {
-                    channelDisplay += " <span style='color: #d32f2f;'>[Weak]</span>"
-                }
-
-                List zbMetrics = [
-                    ["Enabled", zb.enabled ? "Yes" : "No"],
-                    ["Healthy", "<span style='color: ${healthyColor};'>${zb.healthy ? 'Yes' : 'No'}</span>"],
-                    ["Network State", zb.networkState ?: "Unknown"],
-                    ["Channel", channelDisplay],
-                    ["PAN ID", zb.panId ?: "N/A"],
-                    ["Extended PAN ID", zb.extendedPanId ?: "N/A"],
-                    ["Device Count", zb.devices ? zb.devices.size() : 0],
-                    ["Join Mode", zb.inJoinMode ? "Active" : "Inactive"]
-                ]
-                if (zb.devices) {
-                    int totalDevices = zb.devices.size()
-                    int activeDevices = zb.devices.count { it.active == true }
-                    int inactiveDevices = totalDevices - activeDevices
-                    String respColor = inactiveDevices == 0 ? "#388e3c" : (inactiveDevices > 3 ? "#d32f2f" : "#ff9800")
-                    zbMetrics << ["Responsive", "<span style='color: ${respColor};'>${activeDevices} / ${totalDevices}</span>"]
-                    if (inactiveDevices > 0) {
-                        List nonResponsive = zb.devices.findAll { it.active != true }.collect { Map d ->
-                            String dName = d.name ?: "Device ${d.id}"
-                            d.id ? "<a href='/device/edit/${d.id}' target='_blank' style='color: #d32f2f;'>${dName}</a>" : dName
-                        }
-                        zbMetrics << ["Non-Responsive", nonResponsive.join(', ')]
-                    }
-                }
-                paragraph formatMetricsTable(zbMetrics)
-            } else {
-                paragraph "<i>Zigbee details unavailable</i>"
-            }
-        }
-
-        if (zigbeeMesh && zigbeeMesh.neighbors) {
-            section("Zigbee Mesh Quality") {
-                List meshMetrics = [
-                    ["Repeater Neighbors", zigbeeMesh.neighbors.size()],
-                    ["End Devices (Direct)", zigbeeMesh.childDevices?.size() ?: 0],
-                    ["Routes", zigbeeMesh.routes?.size() ?: 0]
-                ]
-                if (zigbeeMesh.avgLqi != null) {
-                    String lqiColor = zigbeeMesh.avgLqi >= 200 ? "#388e3c" : (zigbeeMesh.avgLqi >= 150 ? "#ff9800" : "#d32f2f")
-                    meshMetrics << ["Average LQI", "<span style='color: ${lqiColor};'>${zigbeeMesh.avgLqi}</span> (min: ${zigbeeMesh.minLqi}, max: ${zigbeeMesh.maxLqi})"]
-                }
-                if (zigbeeMesh.weakNeighbors) {
-                    meshMetrics << ["Weak Neighbors (LQI < 150)", "<span style='color: #d32f2f;'>${zigbeeMesh.weakNeighbors.size()}</span>"]
-                }
-                if (zigbeeMesh.staleNeighbors) {
-                    meshMetrics << ["Stale Neighbors (age > 6)", "<span style='color: #ff9800;'>${zigbeeMesh.staleNeighbors.size()}</span>"]
-                }
-                paragraph formatMetricsTable(meshMetrics)
-
-                if (zigbeeMesh.weakNeighbors && zigbeeMesh.weakNeighbors.size() > 0) {
-                    paragraph "<b style='color: #d32f2f;'>Weak Neighbor Details:</b>"
-                    zigbeeMesh.weakNeighbors.each { Map n ->
-                        paragraph "&nbsp;&nbsp;${n.shortId ?: 'Unknown'} — LQI: ${n.lqi}"
-                    }
-                    paragraph "<i>Low LQI indicates poor signal quality. Consider adding Zigbee repeaters near these devices.</i>"
-                }
-            }
-        }
-
-        section("Matter Network") {
-            if (networkData.matter && !networkData.matter.error) {
-                Map mt = networkData.matter
-                List mtMetrics = [
-                    ["Enabled", mt.enabled ? "Yes" : "No"],
-                    ["Installed", mt.installed ? "Yes" : "No"],
-                    ["Network State", mt.networkState ?: "Unknown"],
-                    ["Fabric ID", mt.fabricId ?: "N/A"],
-                    ["Device Count", mt.devices ? mt.devices.size() : 0]
-                ]
-                if (mt.ipAddresses && mt.ipAddresses.size() > 0) {
-                    mt.ipAddresses.each { addr ->
-                        mtMetrics << ["IPv6 (${addr.interface})", addr.address]
-                    }
-                }
-                paragraph formatMetricsTable(mtMetrics)
-                if (mt.rebootRequired) {
-                    paragraph "<span style='color: #d32f2f;'>\u26A0 Reboot required for Matter changes</span>"
-                }
-            } else {
-                paragraph "<i>Matter details unavailable or no Matter devices</i>"
-            }
-        }
-
-        section("Hub Mesh") {
-            if (networkData.hubMesh && !networkData.hubMesh.error) {
-                Map hm = networkData.hubMesh
-                List hmMetrics = [
-                    ["Status", hm.hubMeshEnabled ? "Enabled" : "Disabled"],
-                    ["Shared Devices from this Hub", hm.sharedDevices ? hm.sharedDevices.size() : 0],
-                    ["Devices Linked from Other Hubs", hm.localLinkedDevices ? hm.localLinkedDevices.size() : 0],
-                    ["Shared Hub Variables", hm.sharedHubVariables ? hm.sharedHubVariables.size() : 0],
-                    ["Linked Hub Variables", hm.localLinkedHubVariables ? hm.localLinkedHubVariables.size() : 0]
-                ]
-                paragraph formatMetricsTable(hmMetrics)
-
-                if (hm.hubList && hm.hubList.size() > 0) {
-                    paragraph "<b>Linked Hubs (${hm.hubList.size()}):</b>"
-                    hm.hubList.each { hub ->
-                        String status = hub.offline ? "Offline" : "Online"
-                        String statusColor = hub.offline ? "#d32f2f" : "#388e3c"
-                        int sharedDevCount = hub.deviceIds ? hub.deviceIds.size() : 0
-                        int sharedVarCount = hub.hubVarNames ? hub.hubVarNames.size() : 0
-                        paragraph "&nbsp;&nbsp;<span style='color: ${statusColor};'><b>${hub.name}</b></span> (${hub.ipAddress}) — ${status} | ${sharedDevCount} devices, ${sharedVarCount} variables"
-                    }
-                }
-            } else {
-                paragraph "<i>Hub Mesh details unavailable</i>"
-            }
-        }
-    }
-}
-
-Map performancePage() {
-    Map stats = fetchCurrentStats()
-    Map resources = fetchSystemResources()
-    List checkpoints = loadCheckpoints()
-    Map pageModel = buildPerformancePageModel(stats, resources, checkpoints)
-
-    dynamicPage(name: "performancePage", title: "Performance Analysis") {
-        section("Current Runtime Stats") {
-            paragraph generateRuntimeSummary(stats, resources)
-        }
-
-        section("Perf Checkpoints") {
-            paragraph "<i>Create perf checkpoints to compare activity over a specific time window. By default, the tables below show all activity since the last reboot.</i>"
-            paragraph "Current checkpoints: ${pageModel.checkpointCount}/${settings.maxCheckpoints ?: 10}"
-            input "btnCreateCheckpoint", "button", title: "Create Perf Checkpoint Now"
-            if (pageModel.checkpointCount > 0) {
-                input "btnClearCheckpoints", "button", title: "Clear All Perf Checkpoints"
-            }
-        }
-
-        if (pageModel.checkpointCount > 0) {
-            section("Saved Checkpoints", hideable: true, hidden: pageModel.checkpointCount > 10) {
-                paragraph generateCheckpointTable(checkpoints)
-            }
-
-            section("Compare Perf Checkpoints") {
-                input "compareBaseline", "enum", title: "Baseline (earlier)", options: pageModel.baselineOptions, required: false, submitOnChange: true
-
-                if (compareBaseline != null) {
-                    if (pageModel.checkpointOptions.size() <= 1) {
-                        paragraph "<span style='color: #ff9800;'>No valid checkpoints for comparison with selected baseline (reboot may have occurred). Select 'Now' to compare current state.</span>"
-                    }
-                    input "compareCheckpoint", "enum", title: "Compare to (later)", options: pageModel.checkpointOptions, required: false, submitOnChange: true
-
-                    if (compareBaseline != null && compareCheckpoint != null) {
-                        input "btnCompare", "button", title: "Compare Selected"
-                    }
-                }
-                if (hasSavedPerformanceComparison()) {
-                    input "btnClearComparison", "button", title: "Reset to Since Startup"
-                }
-            }
-        }
-
-        // Performance comparison — custom if set, otherwise startup→now
-        if (stats) {
-            section("Performance Breakdown") {
-                paragraph pageModel.comparisonHtml
-            }
-        }
-    }
-}
-
-Map systemHealthPage() {
-    Map systemHealth = analyzeSystemHealth()
-    Map hubInfo = getHubInfo()
-    Map pageModel = buildSystemHealthPageModel(systemHealth, hubInfo)
-
-    dynamicPage(name: "systemHealthPage", title: "System Health") {
-        section("Hub Information") {
-            if (location.hubs && location.hubs.size() > 0) {
-                def hub = location.hubs[0]
-                paragraph formatMetricsTable(pageModel.hubMetrics)
-            } else {
-                paragraph "<span style='color: red;'>Hub information not available</span>"
-            }
-        }
-
-        if (systemHealth.alerts && systemHealth.alerts.size() > 0) {
-            section("Alerts & Warnings") {
-                systemHealth.alerts.each { String alert ->
-                    paragraph "\u26A0 ${alert}"
-                }
-            }
-        }
-
-        section("System Resources") {
-            if (pageModel.resourceMetrics) {
-                paragraph formatMetricsTable(pageModel.resourceMetrics)
-            } else {
-                paragraph "<i>Memory information unavailable</i>"
-            }
-        }
-
-        section("Resource History") {
-            List memHistory = fetchMemoryHistory()
-            if (memHistory && memHistory.size() >= 2) {
-                paragraph generateResourceChart(memHistory)
-            } else {
-                paragraph "<i>Resource history not available</i>"
-            }
-        }
-
-        section("Database & Storage") {
-            if (pageModel.databaseMetrics) {
-                paragraph formatMetricsTable(pageModel.databaseMetrics)
-            } else {
-                paragraph "<i>Database information unavailable</i>"
-            }
-        }
-    }
-}
-
-Map snapshotsPage() {
-    List snapshots = loadSnapshots()
-    Map pageModel = buildSnapshotsPageModel(snapshots)
-
-    dynamicPage(name: "snapshotsPage", title: "Config Snapshots & Reports") {
-        section("Config Snapshot Management") {
-            paragraph "Config snapshots capture the complete hub configuration (devices, apps, settings) for historical tracking and comparison."
-            paragraph "<b>Current Snapshots:</b> ${pageModel.snapshotCount} / ${settings.maxSnapshots ?: 10}"
-        }
-
-        section("Actions") {
-            input "btnCreateSnapshot", "button", title: "Create Config Snapshot Now"
-            if (snapshots.size() > 0) {
-                input "btnClearSnapshots", "button", title: "Clear All Config Snapshots"
-            }
-        }
-
-        if (snapshots.size() > 0) {
-            section("Available Snapshots") {
-                paragraph generateSnapshotsTable(snapshots)
-            }
-
-            section("View Snapshot", hideable: true, hidden: true) {
-                input "viewSnapshotIdx", "enum", title: "Select snapshot to view", options: pageModel.viewSnapshotOptions, required: false, submitOnChange: true
-
-                if (viewSnapshotIdx != null) {
-                    int viewIdx = parseSnapshotSelectionIndex(viewSnapshotIdx, "view_")
-                    if (viewIdx >= 0 && viewIdx < snapshots.size()) {
-                        paragraph renderSnapshotView(snapshots[viewIdx])
-                    }
-                }
-            }
-        } else {
-            section {
-                paragraph "<i>No config snapshots available. Create your first snapshot to get started.</i>"
-            }
-        }
-
-        if (snapshots.size() > 0) {
-            section("Compare Config Snapshots") {
-                input "diffOlder", "enum", title: "Older snapshot", options: pageModel.diffOlderOptions, required: false, submitOnChange: true
-                input "diffNewer", "enum", title: "Newer snapshot", options: pageModel.newerSnapshotOptions, required: false, submitOnChange: true
-
-                if (diffOlder != null && diffNewer != null && diffOlder != diffNewer) {
-                    input "btnDiffSnapshots", "button", title: "Compare Selected"
-                }
-            }
-
-            if (hasSavedSnapshotDiff()) {
-                section("Config Snapshot Comparison Results") {
-                    paragraph buildSnapshotDiffHtml()
-                }
-            }
-        }
-    }
-}
-
-// ===== PAGE VIEW MODELS =====
-
-Map buildDevicesPageModel(Map deviceStats) {
-    return [
-        summaryMetrics: buildDeviceSummaryMetrics(deviceStats),
-        allDeviceCount: deviceStats.allDevices?.size() ?: 0,
-        deviceRows: buildDeviceTableRows(deviceStats.allDevices ?: []),
-        lowBatteryHtml: renderLowBatteryAlerts(deviceStats.lowBatteryDevices ?: [])
-    ]
-}
-
-List buildDeviceSummaryMetrics(Map deviceStats) {
-    Map idsByStatus = deviceStats.idsByStatus ?: [active: [], inactive: [], disabled: []]
-    return [
-        ["Total Devices", "<a href='/device/list' target='_blank' style='color: #1A77C9; text-decoration: none;'>${deviceStats.totalDevices}</a>"],
-        ["Active Devices", "${deviceListLink(deviceStats.activeDevices, idsByStatus.active)} (${settings.inactivityDays ?: 7} days)"],
-        ["Inactive Devices", deviceListLink(deviceStats.inactiveDevices, (idsByStatus.inactive ?: []) + (idsByStatus.disabled ?: []))],
-        ["Disabled Devices", deviceListLink(deviceStats.disabledDevices, idsByStatus.disabled)],
-        ["Parent Devices", deviceListLink(deviceStats.parentDevices, deviceStats.parentIds)],
-        ["Child Devices", deviceListLink(deviceStats.childDevices, deviceStats.parentIds)],
-        ["Hub Mesh Linked", deviceListLink(deviceStats.linkedDevices, deviceStats.linkedIds)],
-        ["Battery-Powered", deviceListLink(deviceStats.batteryDevices, deviceStats.batteryIds)]
-    ]
-}
-
-List buildDeviceTableRows(List allDevices) {
-    return allDevices.collect { Map dev ->
-        String nameLink = "<a href='/device/edit/${dev.id}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml(dev.name as String)}</a>"
-        String typeDisplay = escapeHtml(dev.type as String)
-        if (dev.userType && dev.deviceTypeId) {
-            typeDisplay = "<a href='/driver/editor/${dev.deviceTypeId}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${typeDisplay}</a>"
-        }
-
-        String parentDisplay = "-"
-        if (dev.parentAppName) {
-            parentDisplay = "<a href='/installedapp/configure/${dev.parentAppId}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml(dev.parentAppName as String)}</a>"
-        } else if (dev.parentDeviceName) {
-            parentDisplay = "<a href='/device/edit/${dev.parentDeviceId}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml(dev.parentDeviceName as String)}</a>"
-        }
-
-        Map row = [
-            name: nameLink,
-            _nameSort: dev.name,
-            type: typeDisplay,
-            _typeSort: dev.type,
-            protocol: PROTOCOL_DISPLAY[dev.protocol] ?: (dev.protocol ?: "").toString().capitalize(),
-            room: dev.room ?: "-",
-            status: dev.status ?: "",
-            lastActivity: dev.lastActivity ?: "Never",
-            battery: dev.battery != null ? dev.battery : "",
-            parent: parentDisplay,
-            _parentSort: dev.parentAppName ?: dev.parentDeviceName ?: ""
-        ]
-        if (dev.status == "Active") row._statusColor = "#388e3c"
-        else if (dev.status == "Disabled") row._statusColor = "#d32f2f"
-        else if (dev.status == "Inactive") row._statusColor = "#ff9800"
-        if (dev.battery != null) {
-            if (dev.battery <= 20) row._batteryColor = "#d32f2f"
-            else if (dev.battery <= 50) row._batteryColor = "#ff9800"
-            else row._batteryColor = "#388e3c"
-        }
-        return row
-    }
-}
-
-String renderLowBatteryAlerts(List lowBatteryDevices) {
-    if (!lowBatteryDevices) return null
-    return lowBatteryDevices.collect { Map dev ->
-        "<span style='color: #d32f2f;'><a href='/device/edit/${dev.id}' target='_blank' style='color: #d32f2f;'>${dev.name}</a>: ${dev.battery}%</span>"
-    }.join("<br>")
-}
-
-Map buildAppsPageModel(Map appStats) {
-    List platformApps = appStats.platformApps ?: []
-    return [
-        summaryMetrics: buildAppSummaryMetrics(appStats),
-        hierarchyCount: appStats.parentChildHierarchy?.size() ?: 0,
-        appTypeCount: appStats.byNamespace?.size() ?: 0,
-        platformAppCount: platformApps.size(),
-        largeStateCount: platformApps.count { (it.stateSize as int) > 5000 },
-        platformRows: buildPlatformAppRows(platformApps)
-    ]
-}
-
-List buildAppSummaryMetrics(Map appStats) {
-    int platformCount = appStats.platformApps?.size() ?: 0
-    List metrics = [
-        ["Visible App Instances", appStats.totalApps],
-        ["System Apps", appStats.builtInApps],
-        ["User Apps", appStats.userApps],
-        ["Parent Apps", appStats.parentApps],
-        ["Child Apps", appStats.childApps]
-    ]
-    if (platformCount > 0) {
-        metrics << ["Platform Apps (hidden)", platformCount]
-        metrics << ["Total (from runtime)", appStats.runtimeTotalApps ?: 0]
-    }
-    return metrics
-}
-
-List buildPlatformAppRows(List platformApps) {
-    return platformApps.collect { Map app ->
-        int stateSize = app.stateSize as int
-        String stateSizeColor = stateSize > 10000 ? "#d32f2f" : (stateSize > 5000 ? "#ff9800" : "")
-        String appName = escapeHtml(app.name as String)
-        String nameDisplay = app.id ? "<a href='/installedapp/status/${app.id}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${appName}</a>" : appName
-        Map row = [
-            name: nameDisplay,
-            _nameSort: app.name,
-            stateSize: stateSize,
-            pctTotal: String.format('%.3f', (app.pctTotal as Number).floatValue()) + "%",
-            _pctTotalSort: app.pctTotal,
-            count: app.count,
-            average: app.count > 0 ? String.format('%.1f', (app.average as Number).floatValue()) : "0",
-            _averageSort: app.average,
-            hubActions: app.hubActionCount,
-            cloudCalls: app.cloudCallCount
-        ]
-        if (stateSizeColor) row._stateSizeColor = stateSizeColor
-        if (app.largeState) row._stateSizeColor = "#d32f2f"
-        return row
-    }
-}
-
-Map buildPerformancePageModel(Map stats, Map resources, List checkpoints) {
-    return [
-        checkpointCount: checkpoints?.size() ?: 0,
-        baselineOptions: buildPerformanceBaselineOptions(checkpoints),
-        checkpointOptions: buildPerformanceCheckpointOptions(checkpoints, compareBaseline),
-        comparisonHtml: buildPerformanceComparisonHtml(stats, resources)
-    ]
-}
-
-Map buildPerformanceBaselineOptions(List checkpoints) {
-    Map baselineOptions = ["startup": "Since Startup (default)"]
-    (checkpoints ?: []).eachWithIndex { Map cp, int idx ->
-        baselineOptions["${idx}"] = "Checkpoint ${idx + 1} - ${cp.timestamp}"
-    }
-    return baselineOptions
-}
-
-Map buildPerformanceCheckpointOptions(List checkpoints, Object selectedBaseline) {
-    if (selectedBaseline == null) return [:]
-
-    Map checkpointOptions = ["now": "Now (default)"]
-    if (selectedBaseline == "startup") {
-        (checkpoints ?: []).eachWithIndex { Map cp, int idx ->
-            checkpointOptions["${idx}"] = "Checkpoint ${idx + 1} - ${cp.timestamp}"
-        }
-        return checkpointOptions
-    }
-
-    int baselineIdx = selectedBaseline.toString().toInteger()
-    if (baselineIdx < 0 || baselineIdx >= (checkpoints?.size() ?: 0)) return checkpointOptions
-
-    Map baselineCp = checkpoints[baselineIdx]
-    checkpoints.eachWithIndex { Map cp, int idx ->
-        if (idx < baselineIdx) {
-            long baselineDevTotal = baselineCp.stats.deviceStats.sum { it.total ?: 0 } ?: 0
-            long checkpointDevTotal = cp.stats.deviceStats.sum { it.total ?: 0 } ?: 0
-            if (checkpointDevTotal >= baselineDevTotal) {
-                checkpointOptions["${idx}"] = "Checkpoint ${idx + 1} - ${cp.timestamp}"
-            }
-        }
-    }
-    return checkpointOptions
-}
-
-String buildPerformanceComparisonHtml(Map stats, Map resources) {
-    if (!stats) return null
-    Map savedPayload = loadPerformanceComparisonPayload()
-    if (savedPayload) return renderPerformanceComparisonPayload(savedPayload)
-
-    stats.resources = resources
-    Map zwaveData = fetchEndpoint(ZWAVE_DETAILS_URL, "Z-Wave details", 20)
-    Map zigbeeData = fetchEndpoint(ZIGBEE_DETAILS_URL, "Zigbee details", 20)
-    stats.radioStats = [
-        zwave: extractZwaveMessageCounts(zwaveData),
-        zigbee: extractZigbeeMessageCounts(zigbeeData)
-    ]
-    Map zeroBaseline = buildZeroBaseline(stats, resources)
-    return generateComparison(zeroBaseline, stats,
-        "Startup (0:00:00)", "Now (${new Date().format('yyyy-MM-dd HH:mm:ss')})")
-}
-
-Map buildSystemHealthPageModel(Map systemHealth, Map hubInfo) {
-    return [
-        hubMetrics: buildHubMetrics(hubInfo),
-        resourceMetrics: buildSystemResourceMetrics(systemHealth),
-        databaseMetrics: buildDatabaseMetrics(systemHealth)
-    ]
-}
-
-List buildHubMetrics(Map hubInfo) {
-    def hub = (location.hubs && location.hubs.size() > 0) ? location.hubs[0] : null
-    return [
-        ["Hub Name", hubInfo.name],
-        ["Hub ID", hub?.id ?: "N/A"],
-        ["Hardware Model", hubInfo.hardware],
-        ["Firmware Version", hubInfo.firmware],
-        ["Local IP", hubInfo.ip],
-        ["Zigbee ID", hub?.zigbeeId ?: "N/A"],
-        ["Location", location.name ?: "N/A"],
-        ["Mode", location.currentMode ?: "N/A"],
-        ["Time Zone", location.timeZone?.ID ?: "N/A"]
-    ]
-}
-
-List buildSystemResourceMetrics(Map systemHealth) {
-    if (!systemHealth.memory) return null
-
-    Map mem = systemHealth.memory
-    String memColor = (mem.freeOSMemory ?: 0) < 76800 ? "#d32f2f" : ((mem.freeOSMemory ?: 0) < 102400 ? "#ff9800" : "#388e3c")
-    String cpuColor = (mem.cpuAvg5min ?: 0) > 8.0 ? "#d32f2f" : ((mem.cpuAvg5min ?: 0) > 4.0 ? "#ff9800" : "#388e3c")
-    List resourceMetrics = [
-        ["Free OS Memory", "<span style='color: ${memColor};'>${formatMemory(mem.freeOSMemory ?: 0)}</span>"],
-        ["CPU Load Avg (5m)", "<span style='color: ${cpuColor};'>${String.format('%.2f', (mem.cpuAvg5min ?: 0) as float)}</span>"],
-        ["Total Java Memory", formatMemory(mem.totalJavaMemory ?: 0)],
-        ["Free Java Memory", formatMemory(mem.freeJavaMemory ?: 0)],
-        ["Direct Java Memory", formatMemory(mem.directJavaMemory ?: 0)]
-    ]
-    if (systemHealth.temperature != null) {
-        Float temp = systemHealth.temperature
-        String tempColor = temp > 77 ? "#d32f2f" : (temp > 50 ? "#ff9800" : "#388e3c")
-        String tempF = String.format("%.1f", temp * 9.0 / 5.0 + 32.0)
-        resourceMetrics << ["Hub Temperature", "<span style='color: ${tempColor};'>${String.format('%.1f', temp)}\u00B0C (${tempF}\u00B0F)</span>"]
-    }
-    return resourceMetrics
-}
-
-List buildDatabaseMetrics(Map systemHealth) {
-    List dbMetrics = []
-    if (systemHealth.databaseSize != null) {
-        String dbColor = "#388e3c"
-        if (systemHealth.hubAlerts?.alerts?.hubHugeDatabase) dbColor = "#d32f2f"
-        else if (systemHealth.hubAlerts?.alerts?.hubLargeDatabase) dbColor = "#d32f2f"
-        else if (systemHealth.hubAlerts?.alerts?.hubLargeishDatabase) dbColor = "#ff9800"
-        dbMetrics << ["Database Size", "<span style='color: ${dbColor};'>${systemHealth.databaseSize} MB</span>"]
-    }
-    if (systemHealth.stateCompression) {
-        dbMetrics << ["State Compression", systemHealth.stateCompression.enabled ? "Enabled" : "<span style='color: #ff9800;'>Disabled</span>"]
-    }
-    if (systemHealth.eventStateLimits) {
-        Map lim = systemHealth.eventStateLimits
-        if (lim.maxEvents) dbMetrics << ["Max Events per Device", lim.maxEvents]
-        if (lim.maxEventAgeDays) dbMetrics << ["Max Event Age", "${lim.maxEventAgeDays} days"]
-        if (lim.maxStateAgeDays) dbMetrics << ["Max Device State Age", "${lim.maxStateAgeDays} days"]
-    }
-    return dbMetrics ?: null
-}
-
-Map buildSnapshotsPageModel(List snapshots) {
-    Map snapshotOptions = buildSnapshotOptions(snapshots)
-    return [
-        snapshotCount      : snapshots?.size() ?: 0,
-        viewSnapshotOptions: prefixSnapshotOptions(snapshotOptions, "view_"),
-        diffOlderOptions   : prefixSnapshotOptions(snapshotOptions, "diff_"),
-        newerSnapshotOptions: ["now": "Now (create new snapshot)"] + prefixSnapshotOptions(snapshotOptions, "diff_")
-    ]
-}
-
-Map buildSnapshotOptions(List snapshots) {
-    Map options = [:]
-    (snapshots ?: []).eachWithIndex { Map snap, int idx ->
-        String fw = snap.hubInfo?.firmware ? " | fw ${snap.hubInfo.firmware}" : ""
-        options["${idx}"] = "${snap.timestamp} (${snap.devices?.totalDevices ?: 0} devices${fw})"
-    }
-    return options
-}
-
-Map prefixSnapshotOptions(Map options, String prefix) {
-    Map prefixed = [:]
-    (options ?: [:]).each { String key, String value ->
-        prefixed["${prefix}${key}"] = value
-    }
-    return prefixed
-}
-
-int parseSnapshotSelectionIndex(Object selection, String prefix) {
-    if (selection == null) return -1
-    String value = selection as String
-    if (!value.startsWith(prefix)) return -1
-    return value.substring(prefix.length()).toInteger()
 }
 
 Map settingsPage() {
@@ -1135,46 +217,711 @@ Map settingsPage() {
     }
 }
 
+
+// ===== API ENDPOINT METHODS =====
+
+Map jsonResponse(Map data) {
+    return render(status: 200, contentType: 'application/json', data: JsonOutput.toJson(data))
+}
+
+Map serveUI() {
+    if (!state.accessToken) createAccessToken()
+    String html = new String(downloadHubFile('hub_diagnostics_ui.html'), 'UTF-8')
+    String apiBase = fullLocalApiServerUrl
+    html = html.replace('${access_token}', state.accessToken)
+        .replace('${api_base}', apiBase)
+    return render(status: 200, contentType: 'text/html', data: html)
+}
+
+Map apiDashboard() {
+    Map deviceStats = analyzeDevicesQuick()
+    Map appStats = analyzeAppsQuick()
+    Map hubInfo = getHubInfo()
+    Map resources = fetchSystemResources()
+    Float temperature = fetchTemperature()
+    Integer databaseSize = fetchDatabaseSize()
+
+    return jsonResponse([
+        hub: hubInfo,
+        devices: [
+            total: deviceStats.totalDevices,
+            active: deviceStats.activeDevices,
+            inactive: deviceStats.inactiveDevices,
+            disabled: deviceStats.disabledDevices,
+            byProtocol: deviceStats.byProtocol,
+            idsByProtocol: deviceStats.idsByProtocol,
+            idsByStatus: deviceStats.idsByStatus
+        ],
+        apps: [total: appStats.totalApps, builtIn: appStats.builtInApps, user: appStats.userApps],
+        resources: resources,
+        temperature: temperature,
+        databaseSize: databaseSize,
+        alerts: getStructuredAlerts(),
+        inactivityDays: settings.inactivityDays ?: 7
+    ])
+}
+
+Map apiDevices() {
+    Map deviceStats = analyzeDevices()
+    List deviceRows = (deviceStats.allDevices ?: []).collect { Map dev ->
+        [
+            id: dev.id, name: dev.name, type: dev.type,
+            protocol: dev.protocol,
+            protocolDisplay: PROTOCOL_DISPLAY[dev.protocol] ?: (dev.protocol ?: "").toString().capitalize(),
+            room: dev.room,
+            status: dev.status ?: "",
+            lastActivity: dev.lastActivity ?: "Never",
+            battery: dev.battery,
+            parentAppId: dev.parentAppId, parentAppName: dev.parentAppName,
+            parentDeviceId: dev.parentDeviceId, parentDeviceName: dev.parentDeviceName,
+            userType: dev.userType ?: false, deviceTypeId: dev.deviceTypeId
+        ]
+    }
+    List lowBattery = (deviceStats.lowBatteryDevices ?: []).collect { Map dev ->
+        [id: dev.id, name: dev.name, battery: dev.battery]
+    }
+    return jsonResponse([
+        summary: [
+            totalDevices: deviceStats.totalDevices, activeDevices: deviceStats.activeDevices,
+            inactiveDevices: deviceStats.inactiveDevices, disabledDevices: deviceStats.disabledDevices,
+            parentDevices: deviceStats.parentDevices, childDevices: deviceStats.childDevices,
+            linkedDevices: deviceStats.linkedDevices, batteryDevices: deviceStats.batteryDevices
+        ],
+        byProtocol: deviceStats.byProtocol,
+        idsByProtocol: deviceStats.idsByProtocol,
+        idsByStatus: deviceStats.idsByStatus,
+        deviceRows: deviceRows,
+        lowBatteryDevices: lowBattery,
+        inactivityDays: settings.inactivityDays ?: 7
+    ])
+}
+
+Map apiApps() {
+    Map appStats = analyzeApps()
+    List platformRows = (appStats.platformApps ?: []).collect { Map app ->
+        [id: app.id, name: app.name, stateSize: app.stateSize as int, pctTotal: app.pctTotal,
+         count: app.count, average: app.average, hubActionCount: app.hubActionCount, cloudCallCount: app.cloudCallCount]
+    }
+    List userAppRows = (appStats.userAppsList ?: [])
+        .sort { (it.label ?: it.name ?: "").toString().toLowerCase() }
+        .collect { Map app ->
+            [id: app.id, label: app.label ?: app.name, type: app.name,
+             parentId: app.parentAppId, disabled: app.state == "disabled"]
+        }
+    return jsonResponse([
+        summary: [
+            totalApps: appStats.totalApps, builtInApps: appStats.builtInApps, userApps: appStats.userApps,
+            parentApps: appStats.parentApps, childApps: appStats.childApps,
+            runtimeTotalApps: appStats.runtimeTotalApps
+        ],
+        byNamespace: appStats.byNamespace,
+        platformApps: platformRows,
+        userApps: userAppRows,
+        parentChildHierarchy: appStats.parentChildHierarchy
+    ])
+}
+
+Map apiNetwork() {
+    Map networkData = analyzeNetwork()
+    Map zigbeeMesh = fetchZigbeeMeshInfo()
+    String zwaveVersion = fetchZwaveVersion()
+    Map zwaveMesh = extractZwaveMeshQuality(networkData.zwave ?: [:])
+    List ghostNodes = buildZwaveGhostNodes(networkData.zwave ?: [:])
+    List problemNodes = (zwaveMesh?.nodes ?: []).findAll { Map n -> n.state != "OK" || (n.per ?: 0) > 1 }.collect { Map n ->
+        List issues = []
+        if (n.state != "OK") issues << "State: ${n.state}"
+        if ((n.per ?: 0) > 1) issues << "PER: ${n.per}%"
+        [name: n.name, deviceId: n.deviceId, nodeId: n.nodeId, issues: issues.join(", ")]
+    }
+
+    Map zigbeeRaw = networkData.zigbee ?: [:]
+    List nonResponsive = []
+    if (zigbeeRaw.devices) {
+        nonResponsive = zigbeeRaw.devices.findAll { it.active != true }.collect { dev ->
+            [id: dev.id, name: dev.name ?: "Device ${dev.id}"]
+        }
+    }
+
+    Map hubMeshRaw = networkData.hubMesh ?: [:]
+    List hubMeshPeers = []
+    if (hubMeshRaw.hubList) {
+        hubMeshPeers = hubMeshRaw.hubList.collect { Map hub ->
+            [name: hub.name, ip: hub.ipAddress, offline: hub.offline,
+             deviceCount: hub.deviceIds?.size() ?: 0, varCount: hub.hubVarNames?.size() ?: 0]
+        }
+    }
+
+    return jsonResponse([
+        network: networkData.network && !networkData.network.error ? networkData.network : null,
+        zwave: networkData.zwave && !networkData.zwave.error ? [
+            enabled: networkData.zwave.enabled, healthy: networkData.zwave.healthy,
+            region: networkData.zwave.region,
+            nodeCount: (networkData.zwave.zwDevices ?: [:]).size(),
+            isRadioUpdateNeeded: networkData.zwave.isRadioUpdateNeeded,
+            zwaveJs: networkData.zwave.zwaveJs,
+            version: zwaveVersion,
+            mesh: zwaveMesh,
+            ghostNodes: ghostNodes,
+            problemNodes: problemNodes
+        ] : null,
+        zigbee: networkData.zigbee && !networkData.zigbee.error ? [
+            enabled: zigbeeRaw.enabled, healthy: zigbeeRaw.healthy,
+            networkState: zigbeeRaw.networkState, channel: zigbeeRaw.channel,
+            panId: zigbeeRaw.panId, extendedPanId: zigbeeRaw.extendedPanId,
+            deviceCount: (zigbeeRaw.devices ?: []).size(),
+            joinMode: zigbeeRaw.inJoinMode,
+            powerLevel: zigbeeRaw.powerLevel,
+            responsiveCount: zigbeeRaw.devices ? zigbeeRaw.devices.count { it.active == true } : 0,
+            totalCount: (zigbeeRaw.devices ?: []).size(),
+            nonResponsive: nonResponsive,
+            mesh: zigbeeMesh ? [
+                neighbors: zigbeeMesh.neighbors?.size() ?: 0,
+                routes: zigbeeMesh.routes?.size() ?: 0,
+                avgLqi: zigbeeMesh.avgLqi, minLqi: zigbeeMesh.minLqi, maxLqi: zigbeeMesh.maxLqi,
+                weakNeighbors: (zigbeeMesh.weakNeighbors ?: []).collect { [shortId: it.shortId, lqi: it.lqi] },
+                staleNeighbors: (zigbeeMesh.staleNeighbors ?: []).collect { [shortId: it.shortId, age: it.age] },
+                childDevices: zigbeeMesh.childDevices?.size() ?: 0
+            ] : null
+        ] : null,
+        matter: networkData.matter && !networkData.matter.error ? networkData.matter : null,
+        hubMesh: networkData.hubMesh && !networkData.hubMesh.error ? [
+            enabled: hubMeshRaw.hubMeshEnabled != null ? hubMeshRaw.hubMeshEnabled : hubMeshRaw.enabled,
+            sharedDevices: hubMeshRaw.sharedDevices?.size() ?: 0,
+            linkedDevices: hubMeshRaw.linkedDevices?.size() ?: 0,
+            sharedVars: hubMeshRaw.sharedVars?.size() ?: 0,
+            linkedVars: hubMeshRaw.linkedVars?.size() ?: 0,
+            peers: hubMeshPeers
+        ] : null
+    ])
+}
+
+Map apiHealth() {
+    Map systemHealth = analyzeSystemHealth()
+    Map hubInfo = getHubInfo()
+    def hub = (location.hubs && location.hubs.size() > 0) ? location.hubs[0] : null
+    Map mem = systemHealth.memory ?: [:]
+
+    return jsonResponse([
+        hub: [
+            name: hubInfo.name, hubId: hub?.id, hardware: hubInfo.hardware,
+            firmware: hubInfo.firmware, ip: hubInfo.ip, zigbeeId: hub?.zigbeeId,
+            location: location.name, mode: location.currentMode?.toString(),
+            timeZone: location.timeZone?.ID
+        ],
+        resources: mem ?: null,
+        temperature: systemHealth.temperature,
+        databaseSize: systemHealth.databaseSize,
+        stateCompression: systemHealth.stateCompression,
+        eventStateLimits: systemHealth.eventStateLimits,
+        alerts: getStructuredAlerts()
+    ])
+}
+
+Map apiHealthHistory() {
+    List memHistory = fetchMemoryHistory()
+    return jsonResponse([dataPoints: memHistory ?: []])
+}
+
+Map apiPerformance() {
+    Map stats = fetchCurrentStats()
+    Map resources = fetchSystemResources()
+    List checkpoints = loadCheckpoints()
+    Map savedComparison = loadPerformanceComparisonPayload()
+
+    return jsonResponse([
+        stats: stats,
+        resources: resources,
+        checkpointCount: checkpoints?.size() ?: 0,
+        maxCheckpoints: (settings.maxCheckpoints ?: 10) as int,
+        checkpoints: (checkpoints ?: []).collect { Map cp -> [
+            timestamp: cp.timestamp,
+            stats: cp.stats,
+            resources: cp.resources,
+            radioStats: cp.radioStats
+        ]},
+        savedComparison: savedComparison
+        //savedComparisonHtml: renderPerformanceComparisonPayload(savedComparison)
+    ])
+}
+
+Map apiPerformanceCompare() {
+    String baseline = params.baseline
+    String checkpoint = params.checkpoint
+    if (!baseline || !checkpoint) {
+        return jsonResponse([success: false, error: "Missing baseline or checkpoint parameter"])
+    }
+
+    List checkpoints = loadCheckpoints()
+    Map baselineStats
+    String baselineLabel
+    Map checkpointStats
+    String checkpointLabel
+
+    // Resolve baseline
+    if (baseline == "startup") {
+        // Will build zero baseline after resolving checkpoint
+        baselineLabel = "Startup (0:00:00)"
+    } else {
+        int bIdx = baseline.toInteger()
+        if (bIdx < 0 || bIdx >= checkpoints.size()) return jsonResponse([success: false, error: "Invalid baseline index"])
+        Map bCp = checkpoints[bIdx]
+        baselineStats = bCp.stats
+        baselineStats.resources = bCp.resources
+        baselineStats.radioStats = bCp.radioStats
+        baselineLabel = bCp.timestamp
+    }
+
+    // Resolve checkpoint
+    if (checkpoint == "now") {
+        checkpointStats = fetchCurrentStats()
+        Map currentResources = fetchSystemResources()
+        checkpointStats.resources = currentResources
+        Map zwaveData = fetchEndpoint(ZWAVE_DETAILS_URL, "Z-Wave details", 20)
+        Map zigbeeData = fetchEndpoint(ZIGBEE_DETAILS_URL, "Zigbee details", 20)
+        checkpointStats.radioStats = [
+            zwave: extractZwaveMessageCounts(zwaveData),
+            zigbee: extractZigbeeMessageCounts(zigbeeData)
+        ]
+        checkpointLabel = "Now (${new Date().format('yyyy-MM-dd HH:mm:ss')})"
+    } else {
+        int cIdx = checkpoint.toInteger()
+        if (cIdx < 0 || cIdx >= checkpoints.size()) return jsonResponse([success: false, error: "Invalid checkpoint index"])
+        Map cCp = checkpoints[cIdx]
+        checkpointStats = cCp.stats
+        checkpointStats.resources = cCp.resources
+        checkpointStats.radioStats = cCp.radioStats
+        checkpointLabel = cCp.timestamp
+    }
+
+    // Build zero baseline if startup
+    if (baseline == "startup") {
+        baselineStats = buildZeroBaseline(checkpointStats, checkpointStats.resources)
+    }
+
+    // Save for persistence
+    savePerformanceComparisonPayload(buildPerformanceComparisonPayload(
+        baselineStats, checkpointStats, baselineLabel, checkpointLabel))
+
+    return jsonResponse([
+        success: true,
+        baselineLabel: baselineLabel,
+        checkpointLabel: checkpointLabel,
+        baselineStats: baselineStats,
+        checkpointStats: checkpointStats
+        //comparisonHtml: renderPerformanceComparisonPayload(buildPerformanceComparisonPayload(
+          //  baselineStats, checkpointStats, baselineLabel, checkpointLabel))
+    ])
+}
+
+Map apiSnapshots() {
+    List snapshots = loadSnapshots()
+    return jsonResponse([
+        snapshotCount: snapshots?.size() ?: 0,
+        maxSnapshots: (settings.maxSnapshots ?: 10) as int,
+        snapshots: (snapshots ?: []).collect { Map snap -> [
+            timestamp: snap.timestamp,
+            hubInfo: snap.hubInfo,
+            devices: [
+                totalDevices: snap.devices?.totalDevices ?: 0,
+                activeDevices: snap.devices?.activeDevices ?: 0,
+                inactiveDevices: snap.devices?.inactiveDevices ?: 0,
+                disabledDevices: snap.devices?.disabledDevices ?: 0
+            ],
+            apps: [totalApps: snap.apps?.totalApps ?: 0, builtInApps: snap.apps?.builtInApps ?: 0, userApps: snap.apps?.userApps ?: 0],
+            memory: snap.systemHealth?.memory?.freeOSMemory
+        ]}
+    ])
+}
+
+Map apiSnapshotView() {
+    int idx = (params.index ?: "-1").toInteger()
+    List snapshots = loadSnapshots()
+    if (idx < 0 || idx >= snapshots.size()) return jsonResponse([error: "Invalid snapshot index"])
+    Map snap = snapshots[idx]
+
+    return jsonResponse([
+        timestamp: snap.timestamp,
+        hubInfo: snap.hubInfo,
+        systemHealth: snap.systemHealth ? [
+            freeOSMemory: snap.systemHealth.memory?.freeOSMemory,
+            cpuAvg5min: snap.systemHealth.memory?.cpuAvg5min,
+            freeJavaMemory: snap.systemHealth.memory?.freeJavaMemory,
+            databaseSize: snap.systemHealth.databaseSize
+        ] : null,
+        devices: [
+            totalDevices: snap.devices?.totalDevices ?: 0,
+            activeDevices: snap.devices?.activeDevices ?: 0,
+            inactiveDevices: snap.devices?.inactiveDevices ?: 0,
+            disabledDevices: snap.devices?.disabledDevices ?: 0,
+            byProtocol: snap.devices?.byProtocol,
+            allDevices: (snap.devices?.allDevices ?: []).collect { Map dev ->
+                [id: dev.id, name: dev.name, type: dev.type, protocol: dev.protocol, status: dev.status]
+            }
+        ],
+        apps: [
+            totalApps: snap.apps?.totalApps ?: 0,
+            builtInApps: snap.apps?.builtInApps ?: 0,
+            userApps: snap.apps?.userApps ?: 0,
+            byNamespace: snap.apps?.byNamespace,
+            builtInInstances: snap.apps?.builtInInstances,
+            userAppsList: snap.apps?.userAppsList,
+            parentChildHierarchy: snap.apps?.parentChildHierarchy
+        ]
+    ])
+}
+
+Map apiSnapshotDiff() {
+    int olderIdx = (params.older ?: "-1").toInteger()
+    boolean newerIsNow = params.newer == "now"
+    int newerIdx = newerIsNow ? -1 : (params.newer ?: "-1").toInteger()
+
+    List snapshots = loadSnapshots()
+    if (olderIdx < 0 || olderIdx >= snapshots.size()) return jsonResponse([error: "Invalid older snapshot index"])
+
+    Map newer
+    if (newerIsNow) {
+        createSnapshot()
+        snapshots = loadSnapshots()
+        newer = snapshots[0]
+    } else {
+        if (newerIdx < 0 || newerIdx >= snapshots.size()) return jsonResponse([error: "Invalid newer snapshot index"])
+        newer = snapshots[newerIdx]
+    }
+    Map older = snapshots[olderIdx + (newerIsNow ? 1 : 0)]
+
+    // Ensure chronological order
+    if ((older.timestampMs ?: 0) > (newer.timestampMs ?: 0)) {
+        Map temp = older; older = newer; newer = temp
+    }
+
+    // Compute diff
+    List olderDevices = older.devices?.allDevices ?: []
+    List newerDevices = newer.devices?.allDevices ?: []
+    Set olderIds = olderDevices.collect { it.id }.toSet()
+    Set newerIds = newerDevices.collect { it.id }.toSet()
+
+    List added = newerDevices.findAll { !olderIds.contains(it.id) }.collect {
+        [id: it.id, name: it.name, protocol: PROTOCOL_DISPLAY[it.protocol] ?: it.protocol]
+    }
+    List removed = olderDevices.findAll { !newerIds.contains(it.id) }.collect {
+        [id: it.id, name: it.name, protocol: PROTOCOL_DISPLAY[it.protocol] ?: it.protocol]
+    }
+    Map olderById = olderDevices.collectEntries { [(it.id): it] }
+    List changed = newerDevices.findAll { olderIds.contains(it.id) }.findAll { Map dev ->
+        Map old = olderById[dev.id]
+        old && (old.status != dev.status || old.protocol != dev.protocol)
+    }.collect { Map dev ->
+        Map old = olderById[dev.id]
+        Map change = [id: dev.id, name: dev.name, changes: []]
+        if (old.status != dev.status) change.changes << [field: "status", from: old.status, to: dev.status]
+        if (old.protocol != dev.protocol) change.changes << [field: "protocol", from: PROTOCOL_DISPLAY[old.protocol] ?: old.protocol, to: PROTOCOL_DISPLAY[dev.protocol] ?: dev.protocol]
+        return change
+    }
+
+    // Protocol changes
+    Map olderProto = older.devices?.byProtocol ?: [:]
+    Map newerProto = newer.devices?.byProtocol ?: [:]
+    Set allProtoKeys = (olderProto.keySet() + newerProto.keySet())
+    List protocolChanges = allProtoKeys.findAll { (olderProto[it] ?: 0) != (newerProto[it] ?: 0) }.collect { String key ->
+        [protocol: PROTOCOL_DISPLAY[key] ?: key, from: olderProto[key] ?: 0, to: newerProto[key] ?: 0]
+    }
+
+    // Memory delta
+    Long olderMem = older.systemHealth?.memory?.freeOSMemory
+    Long newerMem = newer.systemHealth?.memory?.freeOSMemory
+
+    // Save diff for persistence
+    saveSnapshotDiffPayload([generatedAt: new Date().format("yyyy-MM-dd HH:mm:ss"), older: older, newer: newer])
+
+    return jsonResponse([
+        older: [timestamp: older.timestamp, firmware: older.hubInfo?.firmware],
+        newer: [timestamp: newer.timestamp, firmware: newer.hubInfo?.firmware],
+        deviceChanges: [
+            olderTotal: older.devices?.totalDevices ?: 0,
+            newerTotal: newer.devices?.totalDevices ?: 0,
+            added: added, removed: removed, changed: changed
+        ],
+        protocolChanges: protocolChanges,
+        appChanges: [
+            olderTotal: older.apps?.totalApps ?: 0,
+            newerTotal: newer.apps?.totalApps ?: 0
+        ],
+        memoryDelta: olderMem != null && newerMem != null ? [from: olderMem, to: newerMem] : null
+    ])
+}
+
+Map apiCreateSnapshot() {
+    createSnapshot()
+    List snapshots = loadSnapshots()
+    return jsonResponse([success: true, snapshotCount: snapshots?.size() ?: 0])
+}
+
+Map apiDeleteSnapshot() {
+    int idx = (params.index ?: "-1").toInteger()
+    if (idx < 0) return jsonResponse([success: false, error: "Invalid index"])
+    deleteSnapshot(idx)
+    return jsonResponse([success: true])
+}
+
+Map apiCreateCheckpoint() {
+    createCheckpoint()
+    List checkpoints = loadCheckpoints()
+    return jsonResponse([success: true, checkpointCount: checkpoints?.size() ?: 0])
+}
+
+Map apiDeleteCheckpoint() {
+    int idx = (params.index ?: "-1").toInteger()
+    if (idx < 0) return jsonResponse([success: false, error: "Invalid index"])
+    deleteCheckpoint(idx)
+    return jsonResponse([success: true])
+}
+
+Map apiClearCheckpoints() {
+    clearAllCheckpoints()
+    return jsonResponse([success: true])
+}
+
+Map apiClearSnapshots() {
+    clearAllSnapshots()
+    return jsonResponse([success: true])
+}
+
+Map apiReports() {
+    List reportFiles = listHubFiles("hub_diagnostics_report_")
+    String lastReport = safeToString(state.lastReportFile, "")
+    return jsonResponse([
+        lastReport: lastReport ?: null,
+        reports: reportFiles.collect { Map f ->
+            [name: f.name, size: f.size, date: f.date]
+        }
+    ])
+}
+
+Map apiGenerateReport() {
+    logInfo "Generating zero-bloat report..."
+    String timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
+
+    // Collect all diagnostic data (reuse same analysis calls as API endpoints)
+    Map deviceStats = analyzeDevices()
+    Map appStats = analyzeApps()
+    Map hubInfo = getHubInfo()
+    Map resources = fetchSystemResources()
+    Float temperature = fetchTemperature()
+    Integer databaseSize = fetchDatabaseSize()
+    Map systemHealth = analyzeSystemHealth()
+    Map networkData = analyzeNetwork()
+    Map zigbeeMesh = fetchZigbeeMeshInfo()
+    String zwaveVersion = fetchZwaveVersion()
+    Map zwaveMesh = extractZwaveMeshQuality(networkData.zwave ?: [:])
+    List ghostNodes = buildZwaveGhostNodes(networkData.zwave ?: [:])
+    Map stats = fetchCurrentStats()
+    List checkpoints = loadCheckpoints()
+    List snapshots = loadSnapshots()
+    List memHistory = fetchMemoryHistory()
+
+    // Build dashboard data (same structure as apiDashboard)
+    Map dashboardData = [
+        hub: hubInfo,
+        devices: [
+            total: deviceStats.totalDevices, active: deviceStats.activeDevices,
+            inactive: deviceStats.inactiveDevices, disabled: deviceStats.disabledDevices,
+            byProtocol: deviceStats.byProtocol, idsByProtocol: deviceStats.idsByProtocol,
+            idsByStatus: deviceStats.idsByStatus
+        ],
+        apps: [total: appStats.totalApps, builtIn: appStats.builtInApps, user: appStats.userApps],
+        resources: resources, temperature: temperature, databaseSize: databaseSize,
+        alerts: getStructuredAlerts(), inactivityDays: settings.inactivityDays ?: 7
+    ]
+
+    // Build devices data (same structure as apiDevices)
+    List deviceRows = (deviceStats.allDevices ?: []).collect { Map dev ->
+        [id: dev.id, name: dev.name, type: dev.type, protocol: dev.protocol,
+         protocolDisplay: PROTOCOL_DISPLAY[dev.protocol] ?: (dev.protocol ?: "").toString().capitalize(),
+         room: dev.room, status: dev.status ?: "", lastActivity: dev.lastActivity ?: "Never",
+         battery: dev.battery, parentAppId: dev.parentAppId, parentAppName: dev.parentAppName,
+         parentDeviceId: dev.parentDeviceId, parentDeviceName: dev.parentDeviceName,
+         userType: dev.userType ?: false, deviceTypeId: dev.deviceTypeId]
+    }
+    Map devicesData = [
+        summary: [totalDevices: deviceStats.totalDevices, activeDevices: deviceStats.activeDevices,
+                  inactiveDevices: deviceStats.inactiveDevices, disabledDevices: deviceStats.disabledDevices,
+                  parentDevices: deviceStats.parentDevices, childDevices: deviceStats.childDevices,
+                  linkedDevices: deviceStats.linkedDevices, batteryDevices: deviceStats.batteryDevices],
+        byProtocol: deviceStats.byProtocol, idsByProtocol: deviceStats.idsByProtocol,
+        idsByStatus: deviceStats.idsByStatus, deviceRows: deviceRows,
+        lowBatteryDevices: (deviceStats.lowBatteryDevices ?: []).collect { [id: it.id, name: it.name, battery: it.battery] },
+        inactivityDays: settings.inactivityDays ?: 7
+    ]
+
+    // Build apps data (same structure as apiApps)
+    Map appsData = [
+        summary: [totalApps: appStats.totalApps, builtInApps: appStats.builtInApps, userApps: appStats.userApps,
+                  parentApps: appStats.parentApps, childApps: appStats.childApps, runtimeTotalApps: appStats.runtimeTotalApps],
+        byNamespace: appStats.byNamespace,
+        platformApps: (appStats.platformApps ?: []).collect { Map app ->
+            [id: app.id, name: app.name, stateSize: app.stateSize as int, pctTotal: app.pctTotal,
+             count: app.count, average: app.average, hubActionCount: app.hubActionCount, cloudCallCount: app.cloudCallCount]
+        },
+        userApps: (appStats.userAppsList ?: []).sort { (it.label ?: it.name ?: "").toString().toLowerCase() }
+            .collect { [id: it.id, label: it.label ?: it.name, type: it.name, parentId: it.parentAppId, disabled: it.state == "disabled"] },
+        parentChildHierarchy: appStats.parentChildHierarchy
+    ]
+
+    // Build network data (same structure as apiNetwork — inline to avoid calling render())
+    List problemNodes = (zwaveMesh?.nodes ?: []).findAll { Map n -> n.state != "OK" || (n.per ?: 0) > 1 }.collect { Map n ->
+        List issues = []
+        if (n.state != "OK") issues << "State: ${n.state}"
+        if ((n.per ?: 0) > 1) issues << "PER: ${n.per}%"
+        [name: n.name, deviceId: n.deviceId, nodeId: n.nodeId, issues: issues.join(", ")]
+    }
+    Map zigbeeRaw = networkData.zigbee ?: [:]
+    List nonResponsive = zigbeeRaw.devices ? zigbeeRaw.devices.findAll { it.active != true }.collect { [id: it.id, name: it.name ?: "Device ${it.id}"] } : []
+    Map hubMeshRaw = networkData.hubMesh ?: [:]
+    List hubMeshPeers = hubMeshRaw.hubList ? hubMeshRaw.hubList.collect { Map hub ->
+        [name: hub.name, ip: hub.ipAddress, offline: hub.offline, deviceCount: hub.deviceIds?.size() ?: 0, varCount: hub.hubVarNames?.size() ?: 0]
+    } : []
+    Map networkApiData = [
+        network: networkData.network && !networkData.network.error ? networkData.network : null,
+        zwave: networkData.zwave && !networkData.zwave.error ? [
+            enabled: networkData.zwave.enabled, healthy: networkData.zwave.healthy, region: networkData.zwave.region,
+            nodeCount: (networkData.zwave.zwDevices ?: [:]).size(), isRadioUpdateNeeded: networkData.zwave.isRadioUpdateNeeded,
+            zwaveJs: networkData.zwave.zwaveJs, version: zwaveVersion, mesh: zwaveMesh, ghostNodes: ghostNodes, problemNodes: problemNodes
+        ] : null,
+        zigbee: networkData.zigbee && !networkData.zigbee.error ? [
+            enabled: zigbeeRaw.enabled, healthy: zigbeeRaw.healthy, networkState: zigbeeRaw.networkState,
+            channel: zigbeeRaw.channel, panId: zigbeeRaw.panId, extendedPanId: zigbeeRaw.extendedPanId,
+            deviceCount: (zigbeeRaw.devices ?: []).size(), joinMode: zigbeeRaw.inJoinMode, powerLevel: zigbeeRaw.powerLevel,
+            responsiveCount: zigbeeRaw.devices ? zigbeeRaw.devices.count { it.active == true } : 0,
+            totalCount: (zigbeeRaw.devices ?: []).size(), nonResponsive: nonResponsive,
+            mesh: zigbeeMesh ? [neighbors: zigbeeMesh.neighbors?.size() ?: 0, routes: zigbeeMesh.routes?.size() ?: 0,
+                avgLqi: zigbeeMesh.avgLqi, minLqi: zigbeeMesh.minLqi, maxLqi: zigbeeMesh.maxLqi,
+                weakNeighbors: (zigbeeMesh.weakNeighbors ?: []).collect { [shortId: it.shortId, lqi: it.lqi] },
+                staleNeighbors: (zigbeeMesh.staleNeighbors ?: []).collect { [shortId: it.shortId, age: it.age] },
+                childDevices: zigbeeMesh.childDevices?.size() ?: 0] : null
+        ] : null,
+        matter: networkData.matter && !networkData.matter.error ? networkData.matter : null,
+        hubMesh: networkData.hubMesh && !networkData.hubMesh.error ? [
+            enabled: hubMeshRaw.hubMeshEnabled != null ? hubMeshRaw.hubMeshEnabled : hubMeshRaw.enabled,
+            sharedDevices: hubMeshRaw.sharedDevices?.size() ?: 0, linkedDevices: hubMeshRaw.linkedDevices?.size() ?: 0,
+            sharedVars: hubMeshRaw.sharedVars?.size() ?: 0, linkedVars: hubMeshRaw.linkedVars?.size() ?: 0, peers: hubMeshPeers
+        ] : null
+    ]
+
+    // Build health data
+    def hub = (location.hubs && location.hubs.size() > 0) ? location.hubs[0] : null
+    Map mem = systemHealth.memory ?: [:]
+    Map healthData = [
+        hub: [name: hubInfo.name, hubId: hub?.id, hardware: hubInfo.hardware, firmware: hubInfo.firmware,
+              ip: hubInfo.ip, zigbeeId: hub?.zigbeeId, location: location.name,
+              mode: location.currentMode?.toString(), timeZone: location.timeZone?.ID],
+        resources: mem ?: null, temperature: systemHealth.temperature, databaseSize: systemHealth.databaseSize,
+        stateCompression: systemHealth.stateCompression, eventStateLimits: systemHealth.eventStateLimits,
+        alerts: getStructuredAlerts()
+    ]
+
+    // Assemble full report data
+    Map reportData = [
+        _generated: timestamp,
+        dashboard: dashboardData,
+        devices: devicesData,
+        apps: appsData,
+        network: networkApiData,
+        health: healthData,
+        "health/history": [dataPoints: memHistory ?: []],
+        performance: [
+            stats: stats, resources: resources, checkpointCount: checkpoints?.size() ?: 0,
+            maxCheckpoints: (settings.maxCheckpoints ?: 10) as int,
+            checkpoints: (checkpoints ?: []).collect { Map cp -> [timestamp: cp.timestamp, stats: cp.stats, resources: cp.resources, radioStats: cp.radioStats] },
+            savedComparison: loadPerformanceComparisonPayload()
+        ],
+        snapshots: [
+            snapshotCount: snapshots?.size() ?: 0, maxSnapshots: (settings.maxSnapshots ?: 10) as int,
+            snapshots: (snapshots ?: []).collect { Map snap -> [
+                timestamp: snap.timestamp, hubInfo: snap.hubInfo,
+                devices: [totalDevices: snap.devices?.totalDevices ?: 0, activeDevices: snap.devices?.activeDevices ?: 0,
+                          inactiveDevices: snap.devices?.inactiveDevices ?: 0, disabledDevices: snap.devices?.disabledDevices ?: 0,
+                          byProtocol: snap.devices?.byProtocol],
+                apps: [totalApps: snap.apps?.totalApps ?: 0, builtInApps: snap.apps?.builtInApps ?: 0, userApps: snap.apps?.userApps ?: 0],
+                memory: snap.systemHealth?.memory?.freeOSMemory
+            ]}
+        ],
+        reports: [lastReport: null, reports: []]
+    ]
+
+    // Read SPA template from File Manager
+    String html
+    try {
+        html = new String(downloadHubFile("hub_diagnostics_ui.html"), "UTF-8")
+    } catch (Exception e) {
+        logError "Could not read hub_diagnostics_ui.html from File Manager: ${e.message}"
+        return jsonResponse([success: false, error: "SPA template not found in File Manager"])
+    }
+
+    // Inject REPORT_DATA before </head>
+    String dataJson = JsonOutput.toJson(reportData)
+    html = html.replace("</head>", "<script>window.REPORT_DATA=${dataJson}</script>\n</head>")
+
+    // Clear token placeholders (report doesn't need API access)
+    html = html.replace('${access_token}', '')
+    html = html.replace('${api_base}', '')
+
+    // Save to File Manager
+    String filename = "hub_diagnostics_report_${new Date().format('yyyyMMdd_HHmmss')}.html"
+    writeFile(filename, html)
+    state.lastReportFile = filename
+    logInfo "Zero-bloat report generated: ${filename} (${(dataJson.length() / 1024).intValue()} KB data)"
+
+    return jsonResponse([success: true, filename: filename])
+}
+
+List getStructuredAlerts() {
+    List alerts = []
+    Map resources = fetchSystemResources()
+    Float temperature = fetchTemperature()
+    Map hubAlerts = fetchHubAlerts()
+
+    // Calculated alerts
+    if (resources && resources.freeOSMemory < 76800) {
+        alerts << [severity: "critical", name: "OS memory critically low (${formatMemory(resources.freeOSMemory)})"]
+    } else if (resources && resources.freeOSMemory < 102400) {
+        alerts << [severity: "warning", name: "Low OS memory (${formatMemory(resources.freeOSMemory)})"]
+    }
+    
+    if (resources && (resources.cpuAvg5min ?: 0) > 8.0) {
+        alerts << [severity: "critical", name: "Very high CPU load (${String.format('%.2f', resources.cpuAvg5min as float)})"]
+    } else if (resources && (resources.cpuAvg5min ?: 0) > 4.0) {
+        alerts << [severity: "warning", name: "Elevated CPU load (${String.format('%.2f', resources.cpuAvg5min as float)})"]
+    }
+    
+    if (temperature != null && temperature > 77) {
+        alerts << [severity: "critical", name: "Hub temperature very high (${String.format('%.1f', temperature)}\u00B0C)"]
+    } else if (temperature != null && temperature > 50) {
+        alerts << [severity: "warning", name: "Hub temperature elevated (${String.format('%.1f', temperature)}\u00B0C)"]
+    }
+
+    // Platform alerts
+    if (hubAlerts?.alerts) {
+        ALERT_DISPLAY_NAMES.each { String key, String displayName ->
+            if (hubAlerts.alerts[key] == true) {
+                String severity = (key in ["hubLoadSevere", "hubZwaveCrashed", "hubHugeDatabase", "zwaveOffline", "zigbeeOffline"]) ? "critical" : "warning"
+                alerts << [key: key, name: displayName, severity: severity]
+            }
+        }
+    }
+    if (hubAlerts?.spammyDevicesMessage) {
+        alerts << [key: "spammyDevices", name: "Spammy Devices", severity: "warning", message: hubAlerts.spammyDevicesMessage]
+    }
+    
+    return alerts
+}
+
 // ===== BUTTON HANDLER =====
 
 void appButtonHandler(String btn) {
     switch (btn) {
-        case "btnDashSnapshot":
-        case "btnCreateSnapshot":
-            createSnapshot()
-            break
-        case "btnDashCheckpoint":
-        case "btnCreateCheckpoint":
-            createCheckpoint()
-            break
-        case "btnClearCheckpoints":
-            clearAllCheckpoints()
-            break
-        case "btnClearSnapshots":
-            clearAllSnapshots()
-            break
-        case "btnFullReport":
-            generateFullReport()
-            break
-        case "btnCompare":
-            executePerformanceComparison()
-            break
-        case "btnClearComparison":
-            clearPerformanceComparison()
-            break
-        case "btnDiffSnapshots":
-            executeSnapshotDiff()
-            break
         default:
-            if (btn.startsWith("btnDeleteCheckpoint_")) {
-                int idx = btn.replace("btnDeleteCheckpoint_", "").toInteger()
-                deleteCheckpoint(idx)
-            } else if (btn.startsWith("btnDeleteSnapshot_")) {
-                int idx = btn.replace("btnDeleteSnapshot_", "").toInteger()
-                deleteSnapshot(idx)
-            } else {
-                logWarn "Unknown button: ${btn}"
-            }
+            logWarn "Unknown button: ${btn}"
+            break
     }
 }
 
@@ -1266,181 +1013,6 @@ List fetchMemoryHistory() {
         logError "Error fetching memory history: ${e.message}"
         return []
     }
-}
-
-String generateResourceChart(List dataPoints) {
-    if (!dataPoints || dataPoints.size() < 2) return "<i>Insufficient history data for chart</i>"
-
-    // Fixed density: pixels per data point — gives ~7 days at 5-min intervals in 800px viewport
-    float pxPerPoint = 4.0
-    int viewportWidth = 800
-    int height = 300
-    int marginLeft = 65
-    int marginRight = 65
-    int marginTop = 25
-    int marginBottom = 50
-    int plotH = height - marginTop - marginBottom
-
-    int numPoints = dataPoints.size()
-    int plotW = Math.max(viewportWidth - marginLeft - marginRight, (numPoints * pxPerPoint) as int)
-    int svgWidth = plotW + marginLeft + marginRight
-
-    // Calculate value ranges across ALL data (not just viewport)
-    int maxFreeOS = dataPoints.collect { it.freeOS }.max()
-    float maxCpu = dataPoints.collect { it.cpuLoad }.max()
-
-    // Pad max to nice round numbers, both axes start at zero
-    maxFreeOS = (Math.ceil(maxFreeOS / 50000.0) * 50000) as int
-    int minFreeOS = 0
-    maxCpu = Math.ceil(maxCpu)
-    if (maxCpu < 1) maxCpu = 1
-
-    int freeOSRange = maxFreeOS - minFreeOS
-    if (freeOSRange == 0) freeOSRange = 1
-
-    // Build polyline points
-    StringBuilder freeOSPath = new StringBuilder()
-    StringBuilder cpuPath = new StringBuilder()
-    StringBuilder freeJavaPath = new StringBuilder()
-
-    dataPoints.eachWithIndex { Map pt, int idx ->
-        float x = marginLeft + (idx / (float)(numPoints - 1)) * plotW
-        float yFreeOS = marginTop + plotH - ((pt.freeOS - minFreeOS) / (float) freeOSRange) * plotH
-        float yCpu = marginTop + plotH - (pt.cpuLoad / maxCpu) * plotH
-        float yFreeJava = marginTop + plotH - ((pt.freeJava - minFreeOS) / (float) freeOSRange) * plotH
-
-        // Clamp to plot area
-        if (yFreeJava < marginTop) yFreeJava = marginTop
-        if (yFreeJava > marginTop + plotH) yFreeJava = marginTop + plotH
-
-        String sep = idx == 0 ? "" : " "
-        freeOSPath.append("${sep}${String.format('%.1f', x)},${String.format('%.1f', yFreeOS)}")
-        cpuPath.append("${sep}${String.format('%.1f', x)},${String.format('%.1f', yCpu)}")
-        freeJavaPath.append("${sep}${String.format('%.1f', x)},${String.format('%.1f', yFreeJava)}")
-    }
-
-    // Threshold lines
-    float warningY = marginTop + plotH - ((102400 - minFreeOS) / (float) freeOSRange) * plotH
-    boolean showWarningLine = warningY > marginTop && warningY < (marginTop + plotH)
-    float criticalY = marginTop + plotH - ((76800 - minFreeOS) / (float) freeOSRange) * plotH
-    boolean showCriticalLine = criticalY > marginTop && criticalY < (marginTop + plotH)
-
-    // Y-axis labels
-    int ySteps = 4
-    int yStepVal = freeOSRange / ySteps
-    int cpuSteps = 4
-
-    // Time axis: label every ~6 hours of data (72 points at 5-min intervals)
-    int labelEvery = Math.max(1, 72)
-    // Detect day boundaries for date labels
-    String prevDay = ""
-
-    String uniqueId = "resChart_${now()}"
-    String containerId = "resChartDiv_${now()}"
-
-    StringBuilder svg = new StringBuilder()
-
-    // Scrollable container — viewport is fixed width, SVG may be wider
-    svg.append("<div id='${containerId}' style='overflow-x: auto; max-width: 100%; border: 1px solid #e0e0e0; border-radius: 4px;'>")
-    svg.append("<svg id='${uniqueId}' width='${svgWidth}' height='${height}' style='font-family: sans-serif; font-size: 10px; display: block;'>")
-
-    // Background
-    svg.append("<rect width='${svgWidth}' height='${height}' fill='#fafafa'/>")
-
-    // Horizontal grid lines + left Y-axis labels
-    for (int i = 0; i <= ySteps; i++) {
-        float y = marginTop + (i / (float) ySteps) * plotH
-        svg.append("<line x1='${marginLeft}' y1='${y}' x2='${marginLeft + plotW}' y2='${y}' stroke='#e0e0e0' stroke-width='0.5'/>")
-        int memVal = maxFreeOS - (i * yStepVal)
-        svg.append("<text x='${marginLeft - 5}' y='${y + 3}' text-anchor='end' fill='#1565C0' font-size='9'>${(memVal / 1024) as int} MB</text>")
-    }
-
-    // Right Y-axis labels (CPU Load) — fixed to right side of SVG
-    for (int i = 0; i <= cpuSteps; i++) {
-        float y = marginTop + (i / (float) cpuSteps) * plotH
-        float cpuVal = maxCpu - (i / (float) cpuSteps) * maxCpu
-        svg.append("<text x='${marginLeft + plotW + 5}' y='${y + 3}' text-anchor='start' fill='#E65100' font-size='9'>${String.format('%.1f', cpuVal)}</text>")
-    }
-
-    // Time axis labels — show time every labelEvery points, date on day changes
-    for (int i = 0; i < numPoints; i++) {
-        String timeStr = dataPoints[i].time
-        String day = timeStr.substring(0, 5)
-        float x = marginLeft + (i / (float)(numPoints - 1)) * plotW
-
-        if (day != prevDay) {
-            // Day boundary — draw date label and vertical separator
-            svg.append("<line x1='${x}' y1='${marginTop}' x2='${x}' y2='${marginTop + plotH}' stroke='#bbb' stroke-width='0.5' stroke-dasharray='4,4'/>")
-            svg.append("<text x='${x + 3}' y='${marginTop + plotH + 28}' text-anchor='start' fill='#333' font-size='9' font-weight='bold'>${day}</text>")
-            prevDay = day
-        } else if (i % labelEvery == 0) {
-            // Time tick
-            String timeOnly = timeStr.length() > 6 ? timeStr.substring(6, 11) : timeStr
-            svg.append("<line x1='${x}' y1='${marginTop + plotH}' x2='${x}' y2='${marginTop + plotH + 4}' stroke='#999'/>")
-            svg.append("<text x='${x}' y='${marginTop + plotH + 16}' text-anchor='middle' fill='#666' font-size='9'>${timeOnly}</text>")
-        }
-    }
-
-    // Threshold lines (span full plot width)
-    if (showWarningLine) {
-        svg.append("<line x1='${marginLeft}' y1='${warningY}' x2='${marginLeft + plotW}' y2='${warningY}' stroke='#ff9800' stroke-width='1' stroke-dasharray='6,3' opacity='0.7'/>")
-    }
-    if (showCriticalLine) {
-        svg.append("<line x1='${marginLeft}' y1='${criticalY}' x2='${marginLeft + plotW}' y2='${criticalY}' stroke='#d32f2f' stroke-width='1' stroke-dasharray='6,3' opacity='0.7'/>")
-    }
-
-    // Plot area border
-    svg.append("<rect x='${marginLeft}' y='${marginTop}' width='${plotW}' height='${plotH}' fill='none' stroke='#ccc' stroke-width='1'/>")
-
-    // Data lines
-    svg.append("<polyline points='${freeJavaPath}' fill='none' stroke='#66BB6A' stroke-width='1.2' opacity='0.7'/>")
-    svg.append("<polyline points='${freeOSPath}' fill='none' stroke='#1565C0' stroke-width='1.8'/>")
-    svg.append("<polyline points='${cpuPath}' fill='none' stroke='#E65100' stroke-width='1.2' opacity='0.8'/>")
-
-    // Axis labels
-    svg.append("<text x='${marginLeft - 5}' y='${marginTop - 8}' text-anchor='end' fill='#1565C0' font-size='10' font-weight='bold'>Memory</text>")
-    svg.append("<text x='${marginLeft + plotW + 5}' y='${marginTop - 8}' text-anchor='start' fill='#E65100' font-size='10' font-weight='bold'>CPU Load</text>")
-
-    // Legend (positioned near top-right of current viewport via JS)
-    int legendX = marginLeft + plotW - 90
-    int legendY = marginTop + 12
-    svg.append("<g id='${uniqueId}_legend'>")
-    svg.append("<rect x='${legendX}' y='${legendY - 9}' width='85' height='52' fill='white' fill-opacity='0.9' stroke='#ddd' rx='3'/>")
-    svg.append("<line x1='${legendX + 4}' y1='${legendY}' x2='${legendX + 18}' y2='${legendY}' stroke='#1565C0' stroke-width='2'/>")
-    svg.append("<text x='${legendX + 22}' y='${legendY + 3}' fill='#333' font-size='9'>Free OS</text>")
-    svg.append("<line x1='${legendX + 4}' y1='${legendY + 13}' x2='${legendX + 18}' y2='${legendY + 13}' stroke='#66BB6A' stroke-width='1.5'/>")
-    svg.append("<text x='${legendX + 22}' y='${legendY + 16}' fill='#333' font-size='9'>Free Java</text>")
-    svg.append("<line x1='${legendX + 4}' y1='${legendY + 26}' x2='${legendX + 18}' y2='${legendY + 26}' stroke='#E65100' stroke-width='1.5'/>")
-    svg.append("<text x='${legendX + 22}' y='${legendY + 29}' fill='#333' font-size='9'>CPU Load</text>")
-    if (showWarningLine) {
-        svg.append("<line x1='${legendX + 4}' y1='${legendY + 39}' x2='${legendX + 18}' y2='${legendY + 39}' stroke='#ff9800' stroke-width='1' stroke-dasharray='4,2'/>")
-        svg.append("<text x='${legendX + 22}' y='${legendY + 42}' fill='#ff9800' font-size='8'>100 / 75 MB</text>")
-    }
-    svg.append("</g>")
-
-    // Hover tooltip elements
-    svg.append("<rect id='${uniqueId}_hover' x='0' y='0' width='${plotW}' height='${plotH}' transform='translate(${marginLeft},${marginTop})' fill='transparent'/>")
-    svg.append("<line id='${uniqueId}_vline' x1='0' y1='${marginTop}' x2='0' y2='${marginTop + plotH}' stroke='#999' stroke-width='0.5' stroke-dasharray='3,3' visibility='hidden'/>")
-    svg.append("<rect id='${uniqueId}_tipbg' x='0' y='0' width='1' height='1' fill='white' stroke='#ccc' rx='3' visibility='hidden'/>")
-    svg.append("<text id='${uniqueId}_tip' x='0' y='0' font-size='10' fill='#333' visibility='hidden'></text>")
-
-    svg.append("</svg>")
-
-    // Tooltip JS + scroll-to-end
-    List tooltipData = dataPoints.collect { Map pt ->
-        "{t:'${pt.time}',m:${pt.freeOS},c:${pt.cpuLoad},j:${pt.freeJava}}"
-    }
-
-    svg.append(renderMemoryChartTooltipScript(uniqueId, containerId, tooltipData.join(','), marginLeft, plotW, marginTop, svgWidth))
-
-    svg.append("</div>")
-
-    // Summary line
-    String firstTimeStr = dataPoints[0].time
-    String lastTimeStr = dataPoints[-1].time
-    svg.append("<div style='font-size: 11px; color: #666; margin-top: 4px;'>${numPoints} samples from ${firstTimeStr} to ${lastTimeStr} (since last reboot)</div>")
-
-    return svg.toString()
 }
 
 Map fetchStateCompression() {
@@ -1584,7 +1156,23 @@ Map fetchZigbeeMeshInfo() {
 }
 
 String fetchZwaveVersion() {
-    return fetchPlainText(ZWAVE_VERSION_URL, "Z-Wave version")
+    String raw = fetchPlainText(ZWAVE_VERSION_URL, "Z-Wave version")
+    return parseZWaveVersion(raw)
+}
+
+String parseZWaveVersion(String raw) {
+    if (!raw || raw == "N/A" || !raw.contains("VersionReport")) return raw
+    // Extract SDK version if present in targetVersions or protocol version
+    // Example: VersionReport(..., zWaveProtocolVersion:7, zWaveProtocolSubVersion:23, ..., targetVersions:[[target:1, version:7, subVersion:18]])
+    def mProtocol = raw =~ /zWaveProtocolVersion:(\d+), zWaveProtocolSubVersion:(\d+)/
+    def mTarget = raw =~ /targetVersions:\[\[target:1, version:(\d+), subVersion:(\d+)\]\]/
+    
+    String protocolVer = mProtocol ? "${mProtocol[0][1]}.${mProtocol[0][2]}" : ""
+    String sdkVer = mTarget ? "${mTarget[0][1]}.${mTarget[0][2]}" : ""
+    
+    if (sdkVer) return "${sdkVer} (Protocol ${protocolVer})"
+    if (protocolVer) return protocolVer
+    return raw
 }
 
 Map extractZwaveMeshQuality(Map zwaveData) {
@@ -1691,29 +1279,7 @@ Map analyzeDevices() {
     }
 
     // Flatten the device list while preserving parent device context from nested child entries
-    List devicesList = []
-    Closure flattenDevices
-    flattenDevices = { List entries, Object parentDeviceId = null, String parentDeviceName = null ->
-        entries.each { entry ->
-            devicesList << [
-                data: entry.data,
-                key: entry.key,
-                parent: entry.parent,
-                child: entry.child,
-                linked: entry.linked,
-                parentDeviceId: parentDeviceId,
-                parentDeviceName: parentDeviceName
-            ]
-
-            Map entryDevice = entry.data instanceof Map ? (Map) entry.data : null
-            Object entryDeviceId = entryDevice?.id
-            String entryDeviceName = entryDevice?.label ?: entryDevice?.name ?: (entryDeviceId != null ? "Device ${entryDeviceId}" : null)
-            if (entry.children) {
-                flattenDevices(entry.children as List, entryDeviceId, entryDeviceName)
-            }
-        }
-    }
-    flattenDevices(response.devices as List)
+    List devicesList = flattenDeviceEntries(response.devices as List, true)
 
     Map stats = [
         totalDevices: 0,
@@ -1869,7 +1435,7 @@ Map analyzeApps() {
         runtimeTotalApps: 0
     ]
 
-    // Recursive closure to count and catalog all apps at any nesting depth
+    // Dedicated recursion remains here because hierarchy generation mutates nested child lists
     Closure processAppList
     processAppList = { List entries, boolean isChildLevel, List parentHierarchyList ->
         entries.each { appEntry ->
@@ -1911,13 +1477,10 @@ Map analyzeApps() {
                         children: []
                     ]
 
-                    // Recursively process children
                     processAppList(children, true, parentInfo.children)
                     parentInfo.childCount = parentInfo.children.size()
-
                     parentHierarchyList << parentInfo
                 } else if (isChildLevel) {
-                    // Leaf child — add to parent's hierarchy children list
                     parentHierarchyList << [
                         id: app.id,
                         type: appType,
@@ -1930,7 +1493,6 @@ Map analyzeApps() {
             }
         }
     }
-
     processAppList(appsList, false, stats.parentChildHierarchy)
 
     // Identify platform-only apps by comparing runtime stats against appsList
@@ -1943,14 +1505,9 @@ Map analyzeApps() {
 
             // Collect all IDs from appsList (including nested children)
             Set apiIds = new HashSet()
-            Closure collectIds
-            collectIds = { List entries ->
-                entries.each { entry ->
-                    if (entry.data?.id) apiIds << entry.data.id
-                    if (entry.children) collectIds(entry.children as List)
-                }
+            visitAppEntries(appsList) { Map appEntry, Map app, boolean isChildLevel, List parentHierarchyList ->
+                if (app?.id) apiIds << app.id
             }
-            collectIds(appsList)
 
             // Platform apps = in runtime stats but not in appsList
             runtimeAppStats.each { Map app ->
@@ -2009,21 +1566,21 @@ Map analyzeSystemHealth() {
         alerts: []
     ]
 
-    // Generate alerts from observed data
+    // Generate structured alerts from observed data
     if (memory && memory.freeOSMemory < 76800) {
-        health.alerts << "<span style='color: #d32f2f;'>Critical: OS memory critically low (${formatMemory(memory.freeOSMemory)}) — hub may become unresponsive</span>"
+        health.alerts << [severity: "critical", name: "OS memory critically low (${formatMemory(memory.freeOSMemory)}) — hub may become unresponsive"]
     } else if (memory && memory.freeOSMemory < 102400) {
-        health.alerts << "<span style='color: #ff9800;'>Warning: Low OS memory (${formatMemory(memory.freeOSMemory)})</span>"
+        health.alerts << [severity: "warning", name: "Low OS memory (${formatMemory(memory.freeOSMemory)})"]
     }
     if (memory && memory.cpuAvg5min > 8.0) {
-        health.alerts << "<span style='color: #d32f2f;'>Critical: Very high CPU load (${String.format('%.2f', memory.cpuAvg5min as float)} — 4 cores)</span>"
+        health.alerts << [severity: "critical", name: "Very high CPU load (${String.format('%.2f', memory.cpuAvg5min as float)} — 4 cores)"]
     } else if (memory && memory.cpuAvg5min > 4.0) {
-        health.alerts << "<span style='color: #ff9800;'>Warning: Elevated CPU load (${String.format('%.2f', memory.cpuAvg5min as float)} — 4 cores fully saturated)</span>"
+        health.alerts << [severity: "warning", name: "Elevated CPU load (${String.format('%.2f', memory.cpuAvg5min as float)} — 4 cores fully saturated)"]
     }
     if (temperature != null && temperature > 77) {
-        health.alerts << "<span style='color: #d32f2f;'>Critical: Hub temperature very high (${String.format('%.1f', temperature)}\u00B0C)</span>"
+        health.alerts << [severity: "critical", name: "Hub temperature very high (${String.format('%.1f', temperature)}\u00B0C)"]
     } else if (temperature != null && temperature > 50) {
-        health.alerts << "<span style='color: #ff9800;'>Warning: Hub temperature elevated (${String.format('%.1f', temperature)}\u00B0C)</span>"
+        health.alerts << [severity: "warning", name: "Hub temperature elevated (${String.format('%.1f', temperature)}\u00B0C)"]
     }
 
     // Incorporate platform alerts
@@ -2031,13 +1588,13 @@ Map analyzeSystemHealth() {
         Map platformAlerts = hubAlerts.alerts
         ALERT_DISPLAY_NAMES.each { String key, String displayName ->
             if (platformAlerts[key] == true) {
-                String severity = (key in ["hubLoadSevere", "hubZwaveCrashed", "hubHugeDatabase", "zwaveOffline", "zigbeeOffline"]) ? "#d32f2f" : "#ff9800"
-                health.alerts << "<span style='color: ${severity};'>${displayName}</span>"
+                String severity = (key in ["hubLoadSevere", "hubZwaveCrashed", "hubHugeDatabase", "zwaveOffline", "zigbeeOffline"]) ? "critical" : "warning"
+                health.alerts << [severity: severity, key: key, name: displayName]
             }
         }
     }
     if (hubAlerts.spammyDevicesMessage) {
-        health.alerts << "<span style='color: #ff9800;'>Spammy Devices: ${hubAlerts.spammyDevicesMessage}</span>"
+        health.alerts << [severity: "warning", key: "spammyDevices", name: "Spammy Devices", message: hubAlerts.spammyDevicesMessage]
     }
 
     return health
@@ -2045,10 +1602,68 @@ Map analyzeSystemHealth() {
 
 // ===== PROTOCOL DETECTION =====
 
-String deviceListLink(Object count, List ids) {
-    if (!ids || ids.size() == 0) return count.toString()
-    String idStr = ids.collect { it.toString() }.join(',')
-    return "<a href='/device/list?ids=${idStr}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${count}</a>"
+List flattenDeviceEntries(List entries, boolean includeParentContext = false) {
+    List flattened = []
+    Closure visitEntries
+    visitEntries = { List currentEntries, Object parentDeviceId = null, String parentDeviceName = null ->
+        (currentEntries ?: []).each { Map entry ->
+            if (includeParentContext) {
+                flattened << [
+                    data: entry.data,
+                    key: entry.key,
+                    parent: entry.parent,
+                    child: entry.child,
+                    linked: entry.linked,
+                    parentDeviceId: parentDeviceId,
+                    parentDeviceName: parentDeviceName
+                ]
+            } else {
+                flattened << entry
+            }
+
+            Map entryDevice = entry?.data instanceof Map ? (Map) entry.data : null
+            Object entryId = entryDevice?.id
+            String entryName = entryDevice?.label ?: entryDevice?.name ?: (entryId != null ? "Device ${entryId}" : null)
+            if (entry?.children) {
+                visitEntries(entry.children as List, includeParentContext ? entryId : null, includeParentContext ? entryName : null)
+            }
+        }
+    }
+    visitEntries(entries ?: [])
+    return flattened
+}
+
+void visitAppEntries(List entries, Closure visitor, boolean isChildLevel = false, List parentHierarchyList = []) {
+    (entries ?: []).each { Map appEntry ->
+        Map app = appEntry?.data instanceof Map ? (Map) appEntry.data : null
+        visitor(appEntry, app, isChildLevel, parentHierarchyList)
+        List children = appEntry?.children ?: []
+        if (children) {
+            List nextParents = parentHierarchyList
+            if (app) nextParents = parentHierarchyList + [app]
+            visitAppEntries(children as List, visitor, true, nextParents)
+        }
+    }
+}
+
+List buildZwaveGhostNodes(Map zwaveDetails) {
+    List ghostNodes = []
+    (zwaveDetails?.zwDevices ?: [:]).each { nodeId, nodeData ->
+        if (nodeData instanceof Map) {
+            boolean isFailed = nodeData.status == "FAILED" || nodeData.failed == true
+            boolean noRoute = nodeData.route == null || nodeData.route == "" || nodeData.route == "No route"
+            boolean noName = !nodeData.name || nodeData.name == "Unknown" || nodeData.name == ""
+            if (isFailed || (noRoute && noName)) {
+                ghostNodes << [
+                    id: nodeId,
+                    deviceId: nodeData.deviceId,
+                    name: nodeData.name ?: "Unknown",
+                    status: nodeData.status ?: "No route"
+                ]
+            }
+        }
+    }
+    return ghostNodes
 }
 
 Map buildRadioProtocolMap() {
@@ -2079,20 +1694,12 @@ Map buildAppLookupMap() {
     }
 
     Map appLookup = [:]
-    Closure visitApps
-    visitApps = { List entries ->
-        (entries ?: []).each { Map appEntry ->
-            Map app = appEntry?.data instanceof Map ? (Map) appEntry.data : null
-            String appId = normalizeAppLookupId(appEntry?.key ?: app?.id)
-            if (appId) {
-                appLookup[appId] = app?.label ?: app?.name ?: "App ${appId}"
-            }
-            if (appEntry?.children) {
-                visitApps(appEntry.children as List)
-            }
+    visitAppEntries(response.apps as List) { Map appEntry, Map app, boolean isChildLevel, List parentHierarchyList ->
+        String appId = normalizeAppLookupId(appEntry?.key ?: app?.id)
+        if (appId) {
+            appLookup[appId] = app?.label ?: app?.name ?: "App ${appId}"
         }
     }
-    visitApps(response.apps as List)
     return appLookup
 }
 
@@ -2205,117 +1812,6 @@ void createCheckpoint() {
     logInfo "Perf checkpoint created successfully"
 }
 
-void executePerformanceComparison() {
-    if (compareBaseline == null || compareCheckpoint == null) {
-        logWarn "compareBaseline or compareCheckpoint is null"
-        return
-    }
-
-    if (compareCheckpoint == "now") {
-        performComparisonWithNow(compareBaseline as String)
-    } else if (compareBaseline == "startup") {
-        performComparisonSinceStartup((compareCheckpoint as String).toInteger())
-    } else {
-        performComparison((compareBaseline as String).toInteger(), (compareCheckpoint as String).toInteger())
-    }
-}
-
-void performComparisonWithNow(String baseline) {
-    Map currentStats = fetchCurrentStats()
-    if (!currentStats) {
-        logError "Failed to fetch current stats"
-        return
-    }
-
-    Map currentResources = fetchSystemResources()
-    currentStats.resources = currentResources
-
-    // Fetch current radio stats for "now" comparison
-    Map zwaveData = fetchEndpoint(ZWAVE_DETAILS_URL, "Z-Wave details", 20)
-    Map zigbeeData = fetchEndpoint(ZIGBEE_DETAILS_URL, "Zigbee details", 20)
-    currentStats.radioStats = [
-        zwave: extractZwaveMessageCounts(zwaveData),
-        zigbee: extractZigbeeMessageCounts(zigbeeData)
-    ]
-
-    if (baseline == "startup") {
-        Map zeroBaseline = buildZeroBaseline(currentStats, currentResources)
-        savePerformanceComparisonPayload(buildPerformanceComparisonPayload(
-            zeroBaseline,
-            currentStats,
-            "Startup (0:00:00)",
-            "Now (${new Date().format('yyyy-MM-dd HH:mm:ss')})"
-        ))
-    } else {
-        List checkpoints = loadCheckpoints()
-        int baselineIdx = baseline.toInteger()
-        if (baselineIdx >= checkpoints.size()) {
-            logError "Invalid baseline index"
-            return
-        }
-
-        Map baselineCp = checkpoints[baselineIdx]
-        Map baselineStats = baselineCp.stats
-        baselineStats.resources = baselineCp.resources
-        baselineStats.radioStats = baselineCp.radioStats
-
-        savePerformanceComparisonPayload(buildPerformanceComparisonPayload(
-            baselineStats,
-            currentStats,
-            baselineCp.timestamp,
-            "Now (${new Date().format('yyyy-MM-dd HH:mm:ss')})"
-        ))
-    }
-}
-
-void performComparison(int baselineIdx, int checkpointIdx) {
-    List checkpoints = loadCheckpoints()
-
-    if (baselineIdx >= checkpoints.size() || checkpointIdx >= checkpoints.size()) {
-        logError "Invalid checkpoint indices"
-        return
-    }
-
-    Map baselineCp = checkpoints[baselineIdx]
-    Map checkpointCp = checkpoints[checkpointIdx]
-
-    Map baselineStats = baselineCp.stats
-    baselineStats.resources = baselineCp.resources
-    baselineStats.radioStats = baselineCp.radioStats
-    Map checkpointStats = checkpointCp.stats
-    checkpointStats.resources = checkpointCp.resources
-    checkpointStats.radioStats = checkpointCp.radioStats
-
-    savePerformanceComparisonPayload(buildPerformanceComparisonPayload(
-        baselineStats,
-        checkpointStats,
-        baselineCp.timestamp,
-        checkpointCp.timestamp
-    ))
-}
-
-void performComparisonSinceStartup(int checkpointIdx) {
-    List checkpoints = loadCheckpoints()
-
-    if (checkpointIdx >= checkpoints.size()) {
-        logError "Invalid checkpoint index"
-        return
-    }
-
-    Map checkpointCp = checkpoints[checkpointIdx]
-    Map checkpointStats = checkpointCp.stats
-    checkpointStats.resources = checkpointCp.resources
-    checkpointStats.radioStats = checkpointCp.radioStats
-    Map zeroBaseline = buildZeroBaseline(checkpointStats, checkpointCp.resources)
-
-    savePerformanceComparisonPayload(buildPerformanceComparisonPayload(
-        zeroBaseline,
-        checkpointStats,
-        "Startup (0:00:00)",
-        checkpointCp.timestamp
-    ))
-}
-
 Map buildZeroBaseline(Map stats, Map resources) {
     return [
         uptime: "0h 0m 0s",
@@ -2360,357 +1856,6 @@ Map buildPerformanceComparisonPayload(Map baselineStats, Map checkpointStats, St
         baselineStats   : baselineStats ?: [:],
         checkpointStats : checkpointStats ?: [:]
     ]
-}
-
-String renderPerformanceComparisonPayload(Map payload) {
-    if (!payload) return null
-    return generateComparison(
-        payload.baselineStats ?: [:],
-        payload.checkpointStats ?: [:],
-        payload.baselineLabel ?: "Baseline",
-        payload.checkpointLabel ?: "Current"
-    )
-}
-
-String buildSnapshotDiffHtml() {
-    Map payload = loadSnapshotDiffPayload()
-    if (!payload) return null
-    return generateSnapshotDiff(payload.older ?: [:], payload.newer ?: [:])
-}
-
-String generateComparison(Map baselineStats, Map checkpointStats, String baselineLabel, String checkpointLabel) {
-    StringBuilder sb = new StringBuilder()
-    sb.append("<b>Comparison: Activity Since Baseline</b><br>")
-    sb.append("<b>Baseline:</b> ${baselineLabel}<br>")
-    sb.append("<b>Current:</b> ${checkpointLabel}<br><br>")
-
-    // Time comparison
-    int baselineUptime = parseUptime(baselineStats.uptime as String)
-    int checkpointUptime = parseUptime(checkpointStats.uptime as String)
-    int uptimeDiff = checkpointUptime - baselineUptime
-    sb.append("<b>Time Since Baseline:</b> ${formatDuration(uptimeDiff)}<br><br>")
-
-    // Runtime comparison
-    int baselineDevTime = parseUptime(baselineStats.totalDevicesRuntime as String)
-    int checkpointDevTime = parseUptime(checkpointStats.totalDevicesRuntime as String)
-    int baselineAppTime = parseUptime(baselineStats.totalAppsRuntime as String)
-    int checkpointAppTime = parseUptime(checkpointStats.totalAppsRuntime as String)
-
-    int devTimeDiff = checkpointDevTime - baselineDevTime
-    int appTimeDiff = checkpointAppTime - baselineAppTime
-
-    // System resources
-    Map baselineResources = baselineStats.resources
-    Map checkpointResources = checkpointStats.resources
-
-    if (baselineResources && checkpointResources) {
-        sb.append("<b>System Resources:</b><br>")
-
-        int freeOSDelta = (checkpointResources.freeOSMemory ?: 0) - (baselineResources.freeOSMemory ?: 0)
-        String freeOSSign = freeOSDelta > 0 ? "+" : ""
-        String freeOSColor = freeOSDelta < 0 ? "#d32f2f" : "#388e3c"
-        sb.append("&nbsp;&nbsp;Free OS Memory: ${formatMemory(baselineResources.freeOSMemory ?: 0)} -> ${formatMemory(checkpointResources.freeOSMemory ?: 0)} (<span style='color: ${freeOSColor};'>${freeOSSign}${formatMemory(freeOSDelta)}</span>)<br>")
-
-        float cpuDelta = ((checkpointResources.cpuAvg5min ?: 0) as float) - ((baselineResources.cpuAvg5min ?: 0) as float)
-        String cpuSign = cpuDelta > 0 ? "+" : ""
-        String cpuColor = cpuDelta > 0 ? "#d32f2f" : "#388e3c"
-        sb.append("&nbsp;&nbsp;CPU Load Avg (5m): ${String.format('%.2f', (baselineResources.cpuAvg5min ?: 0) as float)} -> ${String.format('%.2f', (checkpointResources.cpuAvg5min ?: 0) as float)} (<span style='color: ${cpuColor};'>${cpuSign}${String.format('%.2f', cpuDelta)}</span>)<br>")
-
-        int freeJavaDelta = (checkpointResources.freeJavaMemory ?: 0) - (baselineResources.freeJavaMemory ?: 0)
-        String freeJavaSign = freeJavaDelta > 0 ? "+" : ""
-        String freeJavaColor = freeJavaDelta < 0 ? "#d32f2f" : "#388e3c"
-        sb.append("&nbsp;&nbsp;Free Java Memory: ${formatMemory(baselineResources.freeJavaMemory ?: 0)} -> ${formatMemory(checkpointResources.freeJavaMemory ?: 0)} (<span style='color: ${freeJavaColor};'>${freeJavaSign}${formatMemory(freeJavaDelta)}</span>)<br>")
-
-        sb.append("<br>")
-    }
-
-    // Device activity
-    int devCount = countComparisonRows(baselineStats.deviceStats as List, checkpointStats.deviceStats as List)
-    String devOpen = devCount <= 10 ? " open" : ""
-    sb.append("<details${devOpen}><summary style='cursor: pointer; font-weight: bold; margin: 8px 0;'>Device Activity (${devCount} active) — Total Runtime: ${formatDuration(devTimeDiff)}</summary>")
-    sb.append("<i>Click column headers to sort. % Busy is calculated for the selected period.</i><br><br>")
-    sb.append(generateComparisonTable(baselineStats.deviceStats as List, checkpointStats.deviceStats as List, "device", (devTimeDiff * 1000L)))
-    sb.append("</details><br>")
-
-    // App activity
-    int appCount = countComparisonRows(baselineStats.appStats as List, checkpointStats.appStats as List)
-    String appOpen = appCount <= 10 ? " open" : ""
-    sb.append("<details${appOpen}><summary style='cursor: pointer; font-weight: bold; margin: 8px 0;'>App Activity (${appCount} active) — Total Runtime: ${formatDuration(appTimeDiff)}</summary>")
-    sb.append("<i>Click column headers to sort. % Busy is calculated for the selected period.</i><br><br>")
-    sb.append(generateComparisonTable(baselineStats.appStats as List, checkpointStats.appStats as List, "app", (appTimeDiff * 1000L)))
-    sb.append("</details>")
-
-    // Radio message activity
-    Map baselineRadio = baselineStats.radioStats ?: [:]
-    Map checkpointRadio = checkpointStats.radioStats ?: [:]
-    long periodMinutes = uptimeDiff > 0 ? Math.max(1, (uptimeDiff / 60) as long) : 1
-
-    if (baselineRadio.zwave || checkpointRadio.zwave || baselineRadio.zigbee || checkpointRadio.zigbee) {
-        int zwRadioCount = countRadioRows(checkpointRadio.zwave ?: [], baselineRadio.zwave ?: [])
-        int zbRadioCount = countRadioRows(checkpointRadio.zigbee ?: [], baselineRadio.zigbee ?: [])
-        int totalRadioCount = zwRadioCount + zbRadioCount
-        String radioOpen = totalRadioCount <= 10 ? " open" : ""
-        sb.append("<br><details${radioOpen}><summary style='cursor: pointer; font-weight: bold; margin: 8px 0;'>Radio Message Activity (${totalRadioCount} active devices)</summary>")
-        sb.append("<i>Message counts reset on hub reboot. If counts went backwards, a reboot occurred between the two points in time.</i><br><br>")
-
-        sb.append(generateRadioComparisonTable(baselineRadio.zwave ?: [], checkpointRadio.zwave ?: [], "zwave", periodMinutes))
-        sb.append("<br><br>")
-        sb.append(generateRadioComparisonTable(baselineRadio.zigbee ?: [], checkpointRadio.zigbee ?: [], "zigbee", periodMinutes))
-
-        // Chatty device detection
-        float threshold = (settings.chattyDeviceThreshold ?: 10) as float
-        List chattyDevices = []
-        [baselineRadio.zwave ?: [], baselineRadio.zigbee ?: []].eachWithIndex { List baseList, int protoIdx ->
-            String proto = protoIdx == 0 ? "Z-Wave" : "Zigbee"
-            List cpList = protoIdx == 0 ? (checkpointRadio.zwave ?: []) : (checkpointRadio.zigbee ?: [])
-            Map baseMap = baseList.collectEntries { [(it.id): it] }
-            cpList.each { Map cpItem ->
-                Map blItem = baseMap[cpItem.id]
-                int delta = ((cpItem.msgCount ?: 0) as int) - ((blItem?.msgCount ?: 0) as int)
-                if (delta > 0) {
-                    float msgsPerMin = periodMinutes > 0 ? (delta / (float) periodMinutes) : 0
-                    if (msgsPerMin >= threshold) {
-                        chattyDevices << [name: cpItem.name, deviceId: cpItem.deviceId ?: cpItem.id, protocol: proto, msgsPerMin: msgsPerMin, total: delta]
-                    }
-                }
-            }
-        }
-
-        if (chattyDevices) {
-            chattyDevices.sort { -it.msgsPerMin }
-            sb.append("<br><br><b style='color: #d32f2f;'>\u26A0 Chatty Devices Detected (>${threshold.intValue()} msgs/min):</b><br>")
-            chattyDevices.each { Map dev ->
-                String chattyNameHtml = dev.deviceId ? "<a href='/device/edit/${dev.deviceId}' target='_blank' style='color: #d32f2f; text-decoration: underline;'>${dev.name}</a>" : dev.name
-                sb.append("&nbsp;&nbsp;<span style='color: #d32f2f;'><b>${chattyNameHtml}</b> (${dev.protocol}) — ${String.format('%.1f', dev.msgsPerMin)} msgs/min (${dev.total} total)</span><br>")
-            }
-            sb.append("<i>Chatty devices can degrade hub performance. Check if device polling intervals are too aggressive or if the device is malfunctioning.</i><br>")
-        }
-        sb.append("</details>")
-    }
-
-    return sb.toString()
-}
-
-int countComparisonRows(List baselineItems, List checkpointItems) {
-    return buildComparisonData(baselineItems, checkpointItems, 0L).size()
-}
-
-int countRadioRows(List checkpointItems, List baselineItems) {
-    if (!checkpointItems) return 0
-    Map blMap = (baselineItems ?: []).collectEntries { [(it.id): it] }
-    int count = 0
-    checkpointItems.each { Map cpItem ->
-        int cpMsg = (cpItem.msgCount ?: 0) as int
-        int blMsg = (blMap[cpItem.id]?.msgCount ?: 0) as int
-        if (cpMsg - blMsg > 0) count++
-    }
-    return count
-}
-
-String generateComparisonTable(List baselineItems, List checkpointItems, String type, long overallDeltaMs) {
-    if ((!baselineItems || baselineItems.size() == 0) && (!checkpointItems || checkpointItems.size() == 0)) {
-        return "No ${type} data available"
-    }
-
-    List comparisonData = buildComparisonData(baselineItems, checkpointItems, overallDeltaMs)
-
-    if (comparisonData.size() == 0) {
-        return "No changes detected for ${type}s"
-    }
-
-    String tableId = "${type}CompTable_${now()}"
-    List columns = [
-        [label: "Name", field: "name", type: "string"],
-        [label: "Total (ms)", field: "totalMs", type: "number"],
-        [label: "% Busy", field: "periodPctBusy", type: "number"],
-        [label: "Count", field: "count", type: "number"],
-        [label: "Avg (ms)", field: "avgMs", type: "number"],
-        [label: "State Size", field: "stateSize", type: "number"],
-        [label: "Hub Actions", field: "hubActions", type: "number"],
-        [label: "Cloud Calls", field: "cloudCalls", type: "number"]
-    ]
-
-    List rows = comparisonData.collect { Map item ->
-        String linkUrl = type == "device" ? "/device/edit/${item.id}" : "/installedapp/configure/${item.id}"
-        Map row = [
-            name: "<a href='${linkUrl}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml(item.name as String)}</a>",
-            _nameSort: item.name,
-            totalMs: item.totalMs,
-            periodPctBusy: String.format('%.1f', (item.periodPctBusy as Number).floatValue()) + "%",
-            _periodPctBusySort: item.periodPctBusy,
-            count: item.count,
-            avgMs: String.format('%.1f', (item.avgMs as Number).floatValue()),
-            _avgMsSort: item.avgMs,
-            stateSize: item.stateSize,
-            hubActions: item.hubActions,
-            cloudCalls: item.cloudCalls
-        ]
-        // Color coding
-        if (item.totalMs > 10000) row._totalMsColor = "#d32f2f"
-        else if (item.totalMs > 1000) row._totalMsColor = "#ff9800"
-        if (item.periodPctBusy > 1.0) row._periodPctBusyColor = "#d32f2f"
-        else if (item.periodPctBusy > 0.1) row._periodPctBusyColor = "#ff9800"
-        if (item.avgMs > 100) row._avgMsColor = "#d32f2f"
-        else if (item.avgMs > 10) row._avgMsColor = "#ff9800"
-        return row
-    }
-
-    return generateSortableTable(tableId, columns, rows)
-}
-
-Map normalizeComparisonItem(Map item, Object fallbackId = null) {
-    Map source = item ?: [:]
-    Object itemId = source.id != null ? source.id : fallbackId
-    return [
-        id: itemId,
-        name: source.name ?: (itemId != null ? "${itemId}" : "Unknown"),
-        total: (source.total ?: 0) as long,
-        count: (source.count ?: 0) as long,
-        stateSize: (source.stateSize ?: 0) as int,
-        hubActionCount: (source.hubActionCount ?: 0) as long,
-        cloudCallCount: (source.cloudCallCount ?: 0) as long
-    ]
-}
-
-Map buildComparisonItemMap(List items) {
-    Map result = [:]
-    (items ?: []).each { Map item ->
-        if (item?.id != null) {
-            result[item.id] = normalizeComparisonItem(item, item.id)
-        }
-    }
-    return result
-}
-
-List buildComparisonData(List baselineItems, List checkpointItems, long overallDeltaMs) {
-    Map baselineMap = buildComparisonItemMap(baselineItems)
-    Map checkpointMap = buildComparisonItemMap(checkpointItems)
-
-    List comparisonData = []
-    checkpointMap.each { Object itemId, Map checkpointItem ->
-        Map baselineItem = baselineMap[itemId] ?: normalizeComparisonItem([id: itemId, name: checkpointItem.name], itemId)
-
-        long totalMs = checkpointItem.total - baselineItem.total
-        long count = checkpointItem.count - baselineItem.count
-        int stateSize = checkpointItem.stateSize
-        long hubActions = checkpointItem.hubActionCount - baselineItem.hubActionCount
-        long cloudCalls = checkpointItem.cloudCallCount - baselineItem.cloudCallCount
-        float avgMs = count > 0 ? (totalMs / count) as float : 0
-        float periodPctBusy = overallDeltaMs > 0 ? ((totalMs / (float) overallDeltaMs) * 100) : 0
-
-        if (totalMs != 0 || count != 0 || stateSize != 0 || hubActions != 0 || cloudCalls != 0) {
-            comparisonData << [
-                name: checkpointItem.name ?: baselineItem.name,
-                id: itemId,
-                totalMs: totalMs,
-                periodPctBusy: periodPctBusy,
-                count: count,
-                avgMs: avgMs,
-                stateSize: stateSize,
-                hubActions: hubActions,
-                cloudCalls: cloudCalls
-            ]
-        }
-    }
-
-    return comparisonData
-}
-
-String generateRadioComparisonTable(List baselineItems, List checkpointItems, String protocol, long periodMinutes) {
-    String label = protocol == "zwave" ? "Z-Wave" : "Zigbee"
-    if (!checkpointItems || checkpointItems.size() == 0) {
-        return "<b>${label} Messages:</b> No data"
-    }
-
-    Map baselineMap = (baselineItems ?: []).collectEntries { [(it.id): it] }
-
-    List comparisonData = []
-    boolean rebootDetected = false
-
-    checkpointItems.each { Map cpItem ->
-        Map blItem = baselineMap[cpItem.id]
-        int cpMsgCount = (cpItem.msgCount ?: 0) as int
-        int blMsgCount = (blItem?.msgCount ?: 0) as int
-        int delta = cpMsgCount - blMsgCount
-
-        if (delta < 0) {
-            rebootDetected = true
-            return
-        }
-
-        float msgsPerMin = periodMinutes > 0 ? (delta / (float) periodMinutes) : 0
-
-        if (protocol == "zwave") {
-            int cpRouteChanges = (cpItem.routeChanges ?: 0) as int
-            int blRouteChanges = (blItem?.routeChanges ?: 0) as int
-            int routeDelta = cpRouteChanges - blRouteChanges
-            if (routeDelta < 0) routeDelta = 0
-
-            if (delta > 0 || routeDelta > 0) {
-                comparisonData << [
-                    name: cpItem.name, id: cpItem.deviceId ?: cpItem.id,
-                    messages: delta, msgsPerMin: msgsPerMin,
-                    routeChanges: routeDelta
-                ]
-            }
-        } else {
-            if (delta > 0) {
-                comparisonData << [
-                    name: cpItem.name, id: cpItem.id,
-                    messages: delta, msgsPerMin: msgsPerMin
-                ]
-            }
-        }
-    }
-
-    if (rebootDetected) {
-        return "<b>${label} Messages:</b> <i>Reboot detected — message counts reset, comparison not available.</i>"
-    }
-
-    if (comparisonData.size() == 0) {
-        return "<b>${label} Messages:</b> No activity detected"
-    }
-
-    // Sort by messages descending
-    comparisonData.sort { -it.messages }
-
-    String tableId = "${protocol}RadioComp"
-    List columns = [
-        [label: "Device", field: "name", type: "string"],
-        [label: "Messages", field: "messages", type: "number"],
-        [label: "Msgs/min", field: "msgsPerMin", type: "number"]
-    ]
-    if (protocol == "zwave") {
-        columns << [label: "Route Changes", field: "routeChanges", type: "number"]
-    }
-
-    // Calculate average for color coding
-    float avgMsgs = comparisonData.sum { it.messages } / comparisonData.size()
-
-    List rows = comparisonData.collect { Map item ->
-        String rcNameHtml = item.id ? "<a href='/device/edit/${item.id}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml(item.name as String)}</a>" : escapeHtml(item.name as String)
-        Map row = [
-            name: rcNameHtml,
-            _nameSort: item.name,
-            messages: item.messages,
-            msgsPerMin: String.format('%.1f', (item.msgsPerMin as Number).floatValue()),
-            _msgsPerMinSort: item.msgsPerMin
-        ]
-        if (protocol == "zwave") {
-            row.routeChanges = item.routeChanges
-            if (item.routeChanges > 5) row._routeChangesColor = "#d32f2f"
-            else if (item.routeChanges > 0) row._routeChangesColor = "#ff9800"
-        }
-        // Highlight devices significantly above average
-        if (item.messages > avgMsgs * 3) row._messagesColor = "#d32f2f"
-        else if (item.messages > avgMsgs * 2) row._messagesColor = "#ff9800"
-        return row
-    }
-
-    StringBuilder sb = new StringBuilder()
-    sb.append("<b>${label} Messages (${comparisonData.size()} active devices):</b><br>")
-    sb.append(generateSortableTable(tableId, columns, rows))
-    return sb.toString()
 }
 
 void deleteCheckpoint(int index) {
@@ -2762,284 +1907,6 @@ void createSnapshot() {
     logInfo "Config snapshot created successfully (${snapshots.size()} total)"
 }
 
-void executeSnapshotDiff() {
-    if (diffOlder == null || diffNewer == null || diffOlder == diffNewer) {
-        logWarn "Invalid snapshot selection for diff"
-        return
-    }
-
-    List snapshots = loadSnapshots()
-    int olderIdx = parseSnapshotSelectionIndex(diffOlder, "diff_")
-    if (olderIdx < 0) {
-        logError "Invalid older snapshot selection"
-        return
-    }
-
-    Map newer
-    if (diffNewer == "now") {
-        createSnapshot()
-        snapshots = loadSnapshots()
-        newer = snapshots[0]  // createSnapshot adds at index 0
-    } else {
-        int newerIdx = parseSnapshotSelectionIndex(diffNewer, "diff_")
-        if (newerIdx < 0) {
-            logError "Invalid newer snapshot selection"
-            return
-        }
-        if (newerIdx >= snapshots.size()) {
-            logError "Invalid snapshot index"
-            return
-        }
-        newer = snapshots[newerIdx]
-    }
-
-    if (olderIdx >= snapshots.size()) {
-        logError "Invalid snapshot index"
-        return
-    }
-    Map older = snapshots[olderIdx]
-
-    // Ensure older is actually older by timestamp
-    if ((older.timestampMs ?: 0) > (newer.timestampMs ?: 0)) {
-        Map temp = older
-        older = newer
-        newer = temp
-    }
-
-    saveSnapshotDiffPayload([
-        generatedAt: new Date().format("yyyy-MM-dd HH:mm:ss"),
-        older      : older,
-        newer      : newer
-    ])
-}
-
-String generateSnapshotDiff(Map older, Map newer) {
-    StringBuilder sb = new StringBuilder()
-    sb.append("<b>Config Snapshot Comparison</b><br>")
-    sb.append("<b>Older:</b> ${older.timestamp}<br>")
-    sb.append("<b>Newer:</b> ${newer.timestamp}<br><br>")
-
-    // Firmware change
-    String olderFw = older.hubInfo?.firmware ?: "Unknown"
-    String newerFw = newer.hubInfo?.firmware ?: "Unknown"
-    if (olderFw != newerFw) {
-        sb.append("<b>Firmware:</b> <span style='color: #1A77C9;'>${olderFw} \u2192 ${newerFw}</span><br><br>")
-    } else {
-        sb.append("<b>Firmware:</b> ${newerFw}<br><br>")
-    }
-
-    // Device changes
-    List olderDevices = older.devices?.allDevices ?: []
-    List newerDevices = newer.devices?.allDevices ?: []
-
-    Set olderIds = olderDevices.collect { it.id }.toSet()
-    Set newerIds = newerDevices.collect { it.id }.toSet()
-
-    List added = newerDevices.findAll { !olderIds.contains(it.id) }
-    List removed = olderDevices.findAll { !newerIds.contains(it.id) }
-
-    // Devices that changed status or protocol
-    Map olderDeviceMap = olderDevices.collectEntries { [(it.id): it] }
-    Map newerDeviceMap = newerDevices.collectEntries { [(it.id): it] }
-    List changed = []
-    newerDevices.each { Map dev ->
-        Map olderDev = olderDeviceMap[dev.id]
-        if (olderDev) {
-            List changes = []
-            if (dev.status != olderDev.status) changes << "status: ${olderDev.status} -> ${dev.status}"
-            if (dev.protocol != olderDev.protocol) changes << "protocol: ${olderDev.protocol} -> ${dev.protocol}"
-            if (changes) changed << [id: dev.id, name: dev.name, changes: changes.join(", ")]
-        }
-    }
-
-    sb.append("<b>Device Changes:</b><br>")
-    int deviceCountDelta = (newer.devices?.totalDevices ?: 0) - (older.devices?.totalDevices ?: 0)
-    String deviceSign = deviceCountDelta > 0 ? "+" : ""
-    sb.append("&nbsp;&nbsp;Total: ${older.devices?.totalDevices ?: 0} -> ${newer.devices?.totalDevices ?: 0} (${deviceSign}${deviceCountDelta})<br>")
-
-    if (added) {
-        sb.append("<br>&nbsp;&nbsp;<span style='color: #388e3c;'><b>Added (${added.size()}):</b></span><br>")
-        added.each { sb.append("&nbsp;&nbsp;&nbsp;&nbsp;+ <a href='/device/edit/${it.id}' target='_blank' style='color: #388e3c;'>${it.name}</a> (${PROTOCOL_DISPLAY[it.protocol] ?: it.protocol})<br>") }
-    }
-    if (removed) {
-        sb.append("<br>&nbsp;&nbsp;<span style='color: #d32f2f;'><b>Removed (${removed.size()}):</b></span><br>")
-        removed.each { sb.append("&nbsp;&nbsp;&nbsp;&nbsp;- <a href='/device/edit/${it.id}' target='_blank' style='color: #d32f2f;'>${it.name}</a> (${PROTOCOL_DISPLAY[it.protocol] ?: it.protocol})<br>") }
-    }
-    if (changed) {
-        sb.append("<br>&nbsp;&nbsp;<span style='color: #ff9800;'><b>Changed (${changed.size()}):</b></span><br>")
-        changed.each { sb.append("&nbsp;&nbsp;&nbsp;&nbsp;~ <a href='/device/edit/${it.id}' target='_blank' style='color: #ff9800;'>${it.name}</a>: ${it.changes}<br>") }
-    }
-    if (!added && !removed && !changed) {
-        sb.append("&nbsp;&nbsp;<i>No device changes detected</i><br>")
-    }
-
-    // Protocol deltas
-    Map olderProtocol = older.devices?.byProtocol ?: [:]
-    Map newerProtocol = newer.devices?.byProtocol ?: [:]
-    List protocolChanges = []
-    (olderProtocol.keySet() + newerProtocol.keySet()).unique().each { String key ->
-        int olderCount = (olderProtocol[key] ?: 0) as int
-        int newerCount = (newerProtocol[key] ?: 0) as int
-        if (olderCount != newerCount) {
-            String sign = (newerCount - olderCount) > 0 ? "+" : ""
-            protocolChanges << "${PROTOCOL_DISPLAY[key] ?: key}: ${olderCount} -> ${newerCount} (${sign}${newerCount - olderCount})"
-        }
-    }
-    if (protocolChanges) {
-        sb.append("<br><b>Protocol Changes:</b><br>")
-        protocolChanges.each { sb.append("&nbsp;&nbsp;${it}<br>") }
-    }
-
-    // App changes
-    sb.append("<br><b>App Changes:</b><br>")
-    int appCountDelta = (newer.apps?.totalApps ?: 0) - (older.apps?.totalApps ?: 0)
-    String appSign = appCountDelta > 0 ? "+" : ""
-    sb.append("&nbsp;&nbsp;Total: ${older.apps?.totalApps ?: 0} -> ${newer.apps?.totalApps ?: 0} (${appSign}${appCountDelta})<br>")
-
-    // Memory delta
-    if (older.systemHealth?.memory && newer.systemHealth?.memory) {
-        int olderMem = (older.systemHealth.memory.freeOSMemory ?: 0) as int
-        int newerMem = (newer.systemHealth.memory.freeOSMemory ?: 0) as int
-        int memDelta = newerMem - olderMem
-        String memSign = memDelta > 0 ? "+" : ""
-        String memColor = memDelta < 0 ? "#d32f2f" : "#388e3c"
-        sb.append("<b>Free OS Memory:</b> ${formatMemory(olderMem)} -> ${formatMemory(newerMem)} (<span style='color: ${memColor};'>${memSign}${formatMemory(memDelta)}</span>)<br>")
-    }
-
-    return sb.toString()
-}
-
-String renderSnapshotView(Map snap) {
-    StringBuilder sb = new StringBuilder()
-    Map snapshotHealth = normalizeSnapshotSystemHealth(snap.systemHealth)
-
-    // Header
-    Map info = snap.hubInfo ?: [:]
-    sb.append("<b>Config Snapshot — ${snap.timestamp}</b><br>")
-    sb.append("<b>Hub:</b> ${info.name ?: 'Unknown'} | Firmware: ${info.firmware ?: 'Unknown'} | Hardware: ${info.hardware ?: 'Unknown'}<br><br>")
-
-    // System health
-    if (snapshotHealth.memory) {
-        Map mem = snapshotHealth.memory
-        sb.append("<b>System Resources:</b><br>")
-        if (mem.freeOSMemory) sb.append("&nbsp;&nbsp;Free OS Memory: ${formatMemory(mem.freeOSMemory as int)}<br>")
-        if (mem.cpuAvg5min != null) sb.append("&nbsp;&nbsp;CPU Load Avg (5m): ${String.format('%.2f', (mem.cpuAvg5min ?: 0) as float)}<br>")
-        if (mem.freeJavaMemory) sb.append("&nbsp;&nbsp;Free Java Memory: ${formatMemory(mem.freeJavaMemory as int)}<br>")
-        sb.append("<br>")
-    }
-    if (snapshotHealth.databaseSize != null) {
-        sb.append("<b>Database:</b> ${snapshotHealth.databaseSize} MB<br><br>")
-    }
-
-    // Device summary
-    Map devs = snap.devices ?: [:]
-    sb.append("<b>Devices:</b> ${devs.totalDevices ?: 0} total<br>")
-    sb.append("&nbsp;&nbsp;Active: ${devs.activeDevices ?: 0} | Inactive: ${devs.inactiveDevices ?: 0} | Disabled: ${devs.disabledDevices ?: 0}<br>")
-
-    Map byProto = devs.byProtocol ?: [:]
-    List protoItems = []
-    byProto.each { String key, val ->
-        if ((val as int) > 0) protoItems << "${PROTOCOL_DISPLAY[key] ?: key}: ${val}"
-    }
-    if (protoItems) sb.append("&nbsp;&nbsp;${protoItems.join(' | ')}<br>")
-    sb.append("<br>")
-
-    // Device list
-    List allDevs = devs.allDevices ?: []
-    if (allDevs) {
-        sb.append("<b>Device List (${allDevs.size()}):</b><br>")
-        sb.append("<table style='width:100%; border-collapse: collapse; font-size: 11px;'>")
-        sb.append("<thead><tr style='background-color: #1A77C9; color: white;'>")
-        sb.append("<th style='padding: 4px 8px; text-align: left; border: 1px solid #ddd;'>Name</th>")
-        sb.append("<th style='padding: 4px 8px; text-align: left; border: 1px solid #ddd;'>Type</th>")
-        sb.append("<th style='padding: 4px 8px; text-align: center; border: 1px solid #ddd;'>Protocol</th>")
-        sb.append("<th style='padding: 4px 8px; text-align: center; border: 1px solid #ddd;'>Status</th>")
-        sb.append("</tr></thead><tbody>")
-        allDevs.sort { (it.name ?: "").toString().toLowerCase() }.eachWithIndex { Map dev, int idx ->
-            String rowBg = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-            String statusColor = dev.status == "Active" ? "#388e3c" : (dev.status == "Disabled" ? "#d32f2f" : "#ff9800")
-            String nameLink = "<a href='/device/edit/${dev.id}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml(dev.name as String)}</a>"
-            sb.append("<tr style='background-color: ${rowBg};'>")
-            sb.append("<td style='padding: 4px 8px; border: 1px solid #ddd;'>${nameLink}</td>")
-            sb.append("<td style='padding: 4px 8px; border: 1px solid #ddd;'>${dev.type ?: ''}</td>")
-            sb.append("<td style='padding: 4px 8px; text-align: center; border: 1px solid #ddd;'>${PROTOCOL_DISPLAY[dev.protocol] ?: dev.protocol ?: ''}</td>")
-            sb.append("<td style='padding: 4px 8px; text-align: center; border: 1px solid #ddd;'><span style='color: ${statusColor};'>${dev.status ?: ''}</span></td>")
-            sb.append("</tr>")
-        }
-        sb.append("</tbody></table><br>")
-    }
-
-    // App summary
-    Map apps = snap.apps ?: [:]
-    sb.append("<b>Apps:</b> ${apps.totalApps ?: 0} total (System: ${apps.builtInApps ?: 0} | User: ${apps.userApps ?: 0})<br>")
-
-    // App type breakdown
-    Map byNs = apps.byNamespace ?: [:]
-    if (byNs) {
-        sb.append("<br><b>App Types (${byNs.size()}):</b><br>")
-        sb.append("<table style='width:100%; border-collapse: collapse; font-size: 11px;'>")
-        sb.append("<thead><tr style='background-color: #1A77C9; color: white;'>")
-        sb.append("<th style='padding: 4px 8px; text-align: left; border: 1px solid #ddd;'>App Type</th>")
-        sb.append("<th style='padding: 4px 8px; text-align: center; border: 1px solid #ddd;'>Instances</th>")
-        sb.append("</tr></thead><tbody>")
-        byNs.sort { -it.value }.eachWithIndex { entry, int idx ->
-            String rowBg = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-            sb.append("<tr style='background-color: ${rowBg};'>")
-            sb.append("<td style='padding: 4px 8px; border: 1px solid #ddd;'>${escapeHtml(entry.key as String)}</td>")
-            sb.append("<td style='padding: 4px 8px; text-align: center; border: 1px solid #ddd;'>${entry.value}</td>")
-            sb.append("</tr>")
-        }
-        sb.append("</tbody></table><br>")
-    }
-
-    // User app instances
-    List userApps = apps.userAppsList ?: []
-    if (userApps) {
-        sb.append("<b>User App Instances (${userApps.size()}):</b><br>")
-        sb.append("<table style='width:100%; border-collapse: collapse; font-size: 11px;'>")
-        sb.append("<thead><tr style='background-color: #1A77C9; color: white;'>")
-        sb.append("<th style='padding: 4px 8px; text-align: left; border: 1px solid #ddd;'>Label</th>")
-        sb.append("<th style='padding: 4px 8px; text-align: left; border: 1px solid #ddd;'>Type</th>")
-        sb.append("</tr></thead><tbody>")
-        userApps.sort { (it.label ?: it.name ?: "").toString().toLowerCase() }.eachWithIndex { Map app, int idx ->
-            String rowBg = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-            String appId = (app.id ?: "").toString().replace("APP-", "")
-            String nameLink = appId ? "<a href='/installedapp/configure/${appId}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml((app.label ?: app.name) as String)}</a>" : escapeHtml((app.label ?: app.name) as String)
-            sb.append("<tr style='background-color: ${rowBg};'>")
-            sb.append("<td style='padding: 4px 8px; border: 1px solid #ddd;'>${nameLink}</td>")
-            sb.append("<td style='padding: 4px 8px; border: 1px solid #ddd;'>${escapeHtml(app.name as String)}</td>")
-            sb.append("</tr>")
-        }
-        sb.append("</tbody></table><br>")
-    }
-
-    // Platform apps
-    List platformApps = apps.platformApps ?: []
-    if (platformApps) {
-        sb.append("<b>Platform Apps (${platformApps.size()}):</b><br>")
-        sb.append("<table style='width:100%; border-collapse: collapse; font-size: 11px;'>")
-        sb.append("<thead><tr style='background-color: #1A77C9; color: white;'>")
-        sb.append("<th style='padding: 4px 8px; text-align: left; border: 1px solid #ddd;'>Name</th>")
-        sb.append("<th style='padding: 4px 8px; text-align: center; border: 1px solid #ddd;'>State Size</th>")
-        sb.append("</tr></thead><tbody>")
-        platformApps.sort { (it.name ?: "").toString().toLowerCase() }.eachWithIndex { Map app, int idx ->
-            String rowBg = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-            int stateSize = (app.stateSize ?: 0) as int
-            String stateSizeColor = stateSize > 10000 ? "#d32f2f" : (stateSize > 5000 ? "#ff9800" : "")
-            String stateSizeHtml = stateSizeColor ? "<span style='color: ${stateSizeColor};'>${stateSize}</span>" : "${stateSize}"
-            String appName = escapeHtml(app.name as String)
-            String appNameHtml = app.id ? "<a href='/installedapp/status/${app.id}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${appName}</a>" : appName
-            sb.append("<tr style='background-color: ${rowBg};'>")
-            sb.append("<td style='padding: 4px 8px; border: 1px solid #ddd;'>${appNameHtml}</td>")
-            sb.append("<td style='padding: 4px 8px; text-align: center; border: 1px solid #ddd;'>${stateSizeHtml}</td>")
-            sb.append("</tr>")
-        }
-        sb.append("</tbody></table><br>")
-    }
-
-    return sb.toString()
-}
-
 void deleteSnapshot(int index) {
     List snapshots = loadSnapshots()
     if (index >= 0 && index < snapshots.size()) {
@@ -3055,534 +1922,7 @@ void clearAllSnapshots() {
     logInfo "All config snapshots cleared"
 }
 
-// ===== REPORT GENERATION =====
-
-void generateFullReport() {
-    logInfo "Generating full configuration report..."
-
-    String timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
-    Map stats = fetchCurrentStats()
-    Map resources = fetchSystemResources()
-    List checkpoints = loadCheckpoints()
-    Map performancePageModel = buildPerformancePageModel(stats, resources, checkpoints)
-    Map deviceStats = analyzeDevices()
-    Map appStats = analyzeApps()
-    Map networkData = analyzeNetwork()
-    Map systemHealth = analyzeSystemHealth()
-    Map hubInfo = getHubInfo()
-    Map zigbeeMesh = fetchZigbeeMeshInfo()
-    String zwaveVersion = fetchZwaveVersion()
-    Map zwaveMesh = extractZwaveMeshQuality(networkData.zwave ?: [:])
-    Map reportData = [
-        timestamp  : timestamp,
-        hubInfo    : hubInfo,
-        stats      : stats,
-        resources  : resources,
-        checkpoints: checkpoints,
-        performancePageModel: performancePageModel,
-        deviceStats: deviceStats,
-        appStats   : appStats,
-        networkData: networkData,
-        systemHealth: systemHealth,
-        zigbeeMesh : zigbeeMesh,
-        zwaveVersion: zwaveVersion,
-        zwaveMesh  : zwaveMesh
-    ]
-
-    String body = new StringBuilder()
-        .append(renderExportHeader(reportData))
-        .append(renderExportSection("Executive Summary", renderExportMetricTable([
-            ["Total Devices", deviceStats.totalDevices],
-            ["Total Apps", appStats.totalApps],
-            ["Firmware", hubInfo.firmware],
-            ["Hardware", hubInfo.hardware]
-        ])))
-        .append(renderExportSection("System Health", renderExportSystemHealth(reportData)))
-        .append(renderExportSection("Performance", renderExportPerformance(reportData)))
-        .append(renderExportSection("Network", renderExportNetwork(reportData)))
-        .append(renderExportSection("Devices", renderExportDevices(reportData)))
-        .append(renderExportSection("Applications", renderExportApps(reportData)))
-        .append("<div class='footer'><p>Generated by Hub Diagnostics v${APP_VERSION}</p><p>Hubitat Elevation - ${hubInfo.name}</p></div>")
-        .toString()
-
-    String html = renderExportShell("Hub Diagnostics Report - ${timestamp}", body, EXPORT_SORT_SCRIPT)
-    if ((settings.reportLinkMode ?: "relative") == "absoluteLocal") {
-        html = absolutizeReportLinks(html, hubInfo)
-    }
-
-    String filename = "hub_diagnostics_report_${new Date().format('yyyyMMdd_HHmmss')}.html"
-    writeFile(filename, html)
-    state.lastReportFile = filename
-    logInfo "Report generated: ${filename}"
-}
-
-String renderExportShell(String title, String body, String scripts = "") {
-    return """<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>${title}</title>
-    <style>
-${FULL_REPORT_STYLES}
-    th.sortable { cursor: pointer; }
-    .section-block { margin-top: 28px; }
-    .section-block > h2 { margin-bottom: 12px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-${body}
-    </div>
-${scripts ?: ""}
-</body>
-</html>"""
-}
-
-String renderExportHeader(Map reportData) {
-    Map hubInfo = reportData.hubInfo ?: [:]
-    return """<h1>Hub Diagnostics Report</h1>
-<p><strong>Generated:</strong> ${reportData.timestamp}</p>
-<p><strong>Hub:</strong> ${hubInfo.name}</p>
-<p><strong>Firmware:</strong> ${hubInfo.firmware}</p>"""
-}
-
-String renderExportSection(String title, String body) {
-    return "<div class='section-block'><h2>${title}</h2>${body ?: '<p>No data available</p>'}</div>"
-}
-
-String renderExportCollapsible(String title, String body, int itemCount, int collapseThreshold = 10) {
-    if (!body) return ""
-    boolean shouldCollapse = itemCount > collapseThreshold
-    String openAttr = shouldCollapse ? "" : " open"
-    return "<details${openAttr}><summary style='cursor: pointer; font-weight: bold; margin: 8px 0;'>${title}</summary>${body}</details>"
-}
-
-String renderExportMetricTable(List metrics) {
-    return formatMetricsTable(metrics ?: [])
-}
-
-String renderExportSystemHealth(Map reportData) {
-    Map systemHealth = reportData.systemHealth ?: [:]
-    StringBuilder sb = new StringBuilder()
-
-    if (systemHealth.alerts && systemHealth.alerts.size() > 0) {
-        sb.append("<div class='warning'><strong>Alerts:</strong><ul>")
-        systemHealth.alerts.each { String alert -> sb.append("<li>${alert}</li>") }
-        sb.append("</ul></div>")
-    } else {
-        sb.append("<p>No system alerts</p>")
-    }
-
-    List resourceMetrics = buildSystemResourceMetrics(systemHealth)
-    if (resourceMetrics) {
-        sb.append("<h3>Resources</h3>")
-        sb.append(renderExportMetricTable(resourceMetrics))
-    }
-
-    List dbMetrics = buildDatabaseMetrics(systemHealth)
-    if (dbMetrics) {
-        sb.append("<h3>Database & Limits</h3>")
-        sb.append(renderExportMetricTable(dbMetrics))
-    }
-
-    return sb.toString()
-}
-
-String renderExportPerformance(Map reportData) {
-    Map stats = reportData.stats
-    Map resources = reportData.resources
-    List checkpoints = reportData.checkpoints ?: []
-    Map pageModel = reportData.performancePageModel ?: [:]
-    StringBuilder sb = new StringBuilder()
-
-    sb.append("<h3>Current Runtime Stats</h3>")
-    sb.append(generateRuntimeSummary(stats, resources))
-
-    sb.append("<h3>Perf Checkpoints</h3>")
-    sb.append("<p><i>Create perf checkpoints to compare activity over a specific time window. By default, the tables below show all activity since the last reboot.</i></p>")
-    sb.append("<p>Current checkpoints: ${pageModel.checkpointCount ?: 0}/${settings.maxCheckpoints ?: 10}</p>")
-    if (checkpoints) {
-        sb.append(renderExportCollapsible(
-            "Saved Checkpoints (${checkpoints.size()})",
-            stripDeleteButtons(generateCheckpointTable(checkpoints)),
-            checkpoints.size(),
-            10
-        ))
-    }
-
-    if (pageModel.comparisonHtml) {
-        sb.append("<h3>Performance Breakdown</h3>")
-        sb.append(pageModel.comparisonHtml)
-    }
-
-    return sb.toString()
-}
-
-String renderExportNetwork(Map reportData) {
-    Map networkData = reportData.networkData ?: [:]
-    Map zwaveMesh = reportData.zwaveMesh ?: [:]
-    Map zigbeeMesh = reportData.zigbeeMesh ?: [:]
-    String zwaveVersion = reportData.zwaveVersion
-    StringBuilder sb = new StringBuilder()
-
-    Map net = networkData.network ?: [:]
-    if (net && !net.error) {
-        List netMetrics = [
-            ["IP Address", net.lanAddr ?: "N/A"],
-            ["Connection Type", net.usingStaticIP ? "Static IP" : "DHCP"],
-            ["Gateway", net.staticGateway ?: "N/A"],
-            ["Subnet Mask", net.staticSubnetMask ?: "N/A"],
-            ["Ethernet", net.hasEthernet ? "Connected" : "Not Connected"],
-            ["WiFi Available", net.hasWiFi ? "Yes" : "No"]
-        ]
-        if (net.hasWiFi && net.wifiNetwork) netMetrics << ["WiFi Network", net.wifiNetwork]
-        sb.append("<h3>Network Configuration</h3>")
-        sb.append(renderExportMetricTable(netMetrics))
-    }
-
-    Map zw = networkData.zwave ?: [:]
-    if (zw && !zw.error) {
-        String healthyColor = zw.healthy ? "#388e3c" : "#d32f2f"
-        List zwMetrics = [
-            ["Enabled", zw.enabled ? "Yes" : "No"],
-            ["Healthy", "<span style='color: ${healthyColor};'>${zw.healthy ? 'Yes' : 'No'}</span>"],
-            ["Region", zw.region ?: "N/A"],
-            ["Node Count", zw.nodes ? zw.nodes.size() : 0]
-        ]
-        if (zwaveVersion) zwMetrics << ["Firmware", zwaveVersion]
-        sb.append("<h3>Z-Wave</h3>")
-        sb.append(renderExportMetricTable(zwMetrics))
-        if (zw.isRadioUpdateNeeded) {
-            sb.append("<p><span style='color: #ff9800;'>\u26A0 Radio firmware update recommended</span></p>")
-        }
-
-        if (zw.zwDevices) {
-            List ghostNodes = []
-            zw.zwDevices.each { nodeId, nodeData ->
-                if (nodeData instanceof Map) {
-                    boolean isFailed = nodeData.status == "FAILED" || nodeData.failed == true
-                    boolean noRoute = nodeData.route == null || nodeData.route == "" || nodeData.route == "No route"
-                    boolean noName = !nodeData.name || nodeData.name == "Unknown" || nodeData.name == ""
-                    if (isFailed || (noRoute && noName)) {
-                        ghostNodes << [id: nodeId, deviceId: nodeData.deviceId, name: nodeData.name ?: "Unknown", status: nodeData.status ?: "No route"]
-                    }
-                }
-            }
-            if (ghostNodes) {
-                sb.append("<p><b style='color: #d32f2f;'>Possible Ghost Nodes (${ghostNodes.size()}):</b></p>")
-                ghostNodes.each { Map ghost ->
-                    String ghostNameHtml = ghost.deviceId ? "<a href='/device/edit/${ghost.deviceId}' target='_blank' style='color: #d32f2f; text-decoration: underline;'>${ghost.name}</a>" : ghost.name
-                    sb.append("<p>&nbsp;&nbsp;<span style='color: #d32f2f;'>Node ${ghost.id}: ${ghostNameHtml} (${ghost.status})</span></p>")
-                }
-                sb.append("<p><i>Ghost nodes can cause Z-Wave mesh instability. Remove them from Settings > Z-Wave Details.</i></p>")
-            }
-        }
-    }
-
-    if (zwaveMesh?.nodes) {
-        List nodeRows = buildExportZwaveMeshRows(zwaveMesh.nodes ?: [])
-        sb.append("<h3>Z-Wave Mesh</h3>")
-        sb.append(renderExportMetricTable([
-            ["Node Count", zwaveMesh.nodeCount ?: 0],
-            ["Average PER", String.format('%.1f%%', (zwaveMesh.avgPer ?: 0) as float)],
-            ["Nodes with Packet Errors", zwaveMesh.nodesWithErrors ?: 0],
-            ["Total Route Changes", zwaveMesh.totalRouteChanges ?: 0]
-        ]))
-        sb.append(renderExportCollapsible(
-            "Z-Wave Mesh Nodes (${nodeRows.size()})",
-            renderExportSortableTable("exportZwaveMesh", [
-                [label: "Device", field: "name", type: "string"],
-                [label: "RSSI", field: "rssi", type: "number"],
-                [label: "PER %", field: "per", type: "number"],
-                [label: "Neighbors", field: "neighbors", type: "number"],
-                [label: "Route", field: "route", type: "string"],
-                [label: "Route Changes", field: "routeChanges", type: "number"],
-                [label: "State", field: "state", type: "string"]
-            ], nodeRows),
-            nodeRows.size(),
-            10
-        ))
-
-        List problemNodes = zwaveMesh.nodes.findAll { Map n -> n.state != "OK" || n.per > 1 }
-        if (problemNodes) {
-            sb.append("<p><b style='color: #d32f2f;'>Problem Nodes (${problemNodes.size()}):</b></p>")
-            problemNodes.each { Map n ->
-                List issues = []
-                if (n.state != "OK") issues << "State: ${n.state}"
-                if (n.per > 1) issues << "PER: ${n.per}%"
-                String probNameHtml = n.deviceId ? "<a href='/device/edit/${n.deviceId}' target='_blank' style='color: #d32f2f; text-decoration: underline;'>${escapeHtml(n.name as String)}</a>" : escapeHtml(n.name as String)
-                sb.append("<p>&nbsp;&nbsp;<span style='color: #d32f2f;'>${probNameHtml} — ${issues.join(', ')}</span></p>")
-            }
-            sb.append("<p><i>High PER (Packet Error Rate) indicates unreliable communication. Check device distance, interference, or replace failed nodes.</i></p>")
-        }
-    }
-
-    Map zb = networkData.zigbee ?: [:]
-    if (zb && !zb.error) {
-        String healthyColor = zb.healthy ? "#388e3c" : "#d32f2f"
-        List zbMetrics = [
-            ["Enabled", zb.enabled ? "Yes" : "No"],
-            ["Healthy", "<span style='color: ${healthyColor};'>${zb.healthy ? 'Yes' : 'No'}</span>"],
-            ["Network State", zb.networkState ?: "Unknown"],
-            ["Channel", zb.channel ?: "N/A"],
-            ["Device Count", zb.devices ? zb.devices.size() : 0]
-        ]
-        sb.append("<h3>Zigbee</h3>")
-        sb.append(renderExportMetricTable(zbMetrics))
-        if (zb.devices) {
-            int totalDevices = zb.devices.size()
-            int activeDevices = zb.devices.count { it.active == true }
-            int inactiveDevices = totalDevices - activeDevices
-            if (inactiveDevices > 0) {
-                List nonResponsive = zb.devices.findAll { it.active != true }.collect { Map d ->
-                    String dName = d.name ?: "Device ${d.id}"
-                    d.id ? "<a href='/device/edit/${d.id}' target='_blank' style='color: #d32f2f;'>${dName}</a>" : dName
-                }
-                sb.append("<p><b style='color: #d32f2f;'>Non-Responsive Devices:</b> ${nonResponsive.join(', ')}</p>")
-            }
-        }
-    }
-
-    if (zigbeeMesh?.neighbors) {
-        List zigbeeMetrics = [
-            ["Repeater Neighbors", zigbeeMesh.neighbors.size()],
-            ["End Devices (Direct)", zigbeeMesh.childDevices?.size() ?: 0],
-            ["Routes", zigbeeMesh.routes?.size() ?: 0]
-        ]
-        if (zigbeeMesh.avgLqi != null) zigbeeMetrics << ["Average LQI", zigbeeMesh.avgLqi]
-        sb.append("<h3>Zigbee Mesh</h3>")
-        sb.append(renderExportMetricTable(zigbeeMetrics))
-        if (zigbeeMesh.weakNeighbors && zigbeeMesh.weakNeighbors.size() > 0) {
-            sb.append("<p><b style='color: #d32f2f;'>Weak Neighbor Details:</b></p>")
-            zigbeeMesh.weakNeighbors.each { Map n ->
-                sb.append("<p>&nbsp;&nbsp;${n.shortId ?: 'Unknown'} — LQI: ${n.lqi}</p>")
-            }
-            sb.append("<p><i>Low LQI indicates poor signal quality. Consider adding Zigbee repeaters near these devices.</i></p>")
-        }
-    }
-
-    Map matter = networkData.matter ?: [:]
-    if (matter && !matter.error) {
-        List matterMetrics = [
-            ["Devices", matter.devices ? matter.devices.size() : 0],
-            ["Fabrics", matter.fabrics ? matter.fabrics.size() : "N/A"]
-        ]
-        sb.append("<h3>Matter</h3>")
-        sb.append(renderExportMetricTable(matterMetrics))
-        if (matter.rebootRequired) {
-            sb.append("<p><span style='color: #d32f2f;'>\u26A0 Reboot required for Matter changes</span></p>")
-        }
-    }
-
-    Map hubMesh = networkData.hubMesh ?: [:]
-    if (hubMesh && !hubMesh.error) {
-        List hubMeshMetrics = [
-            ["Status", hubMesh.hubMeshEnabled ? "Enabled" : "Disabled"],
-            ["Shared Devices from this Hub", hubMesh.sharedDevices ? hubMesh.sharedDevices.size() : 0],
-            ["Devices Linked from Other Hubs", hubMesh.localLinkedDevices ? hubMesh.localLinkedDevices.size() : 0],
-            ["Shared Hub Variables", hubMesh.sharedHubVariables ? hubMesh.sharedHubVariables.size() : 0],
-            ["Linked Hub Variables", hubMesh.localLinkedHubVariables ? hubMesh.localLinkedHubVariables.size() : 0]
-        ]
-        sb.append("<h3>Hub Mesh</h3>")
-        sb.append(renderExportMetricTable(hubMeshMetrics))
-        if (hubMesh.hubList && hubMesh.hubList.size() > 0) {
-            sb.append("<p><b>Linked Hubs (${hubMesh.hubList.size()}):</b></p>")
-            hubMesh.hubList.each { hub ->
-                String status = hub.offline ? "Offline" : "Online"
-                String statusColor = hub.offline ? "#d32f2f" : "#388e3c"
-                int sharedDevCount = hub.deviceIds ? hub.deviceIds.size() : 0
-                int sharedVarCount = hub.hubVarNames ? hub.hubVarNames.size() : 0
-                sb.append("<p>&nbsp;&nbsp;<span style='color: ${statusColor};'><b>${hub.name}</b></span> (${hub.ipAddress}) — ${status} | ${sharedDevCount} devices, ${sharedVarCount} variables</p>")
-            }
-        }
-    }
-
-    return sb.toString()
-}
-
-String renderExportDevices(Map reportData) {
-    Map deviceStats = reportData.deviceStats ?: [:]
-    Map pageModel = buildDevicesPageModel(deviceStats)
-    StringBuilder sb = new StringBuilder()
-    sb.append(renderExportMetricTable(buildDeviceSummaryMetrics(deviceStats)))
-    sb.append("<h3>Protocol Distribution</h3>")
-    sb.append(formatProtocolTable(deviceStats.byProtocol ?: [:], deviceStats.idsByProtocol ?: [:]))
-    List deviceRows = pageModel.deviceRows ?: []
-    sb.append(renderExportCollapsible(
-        "All Devices (${deviceRows.size()})",
-        renderExportSortableTable("exportDevices", [
-            [label: "Name", field: "name", type: "string"],
-            [label: "Type", field: "type", type: "string"],
-            [label: "Protocol", field: "protocol", type: "string"],
-            [label: "Room", field: "room", type: "string"],
-            [label: "Status", field: "status", type: "string"],
-            [label: "Last Activity", field: "lastActivity", type: "string"],
-            [label: "Battery", field: "battery", type: "number"],
-            [label: "Parent", field: "parent", type: "string"]
-        ], deviceRows),
-        deviceRows.size(),
-        20
-    ))
-    if (pageModel.lowBatteryHtml) {
-        sb.append("<h3>Low Battery Alerts</h3>")
-        sb.append(pageModel.lowBatteryHtml)
-    }
-    return sb.toString()
-}
-
-String renderExportApps(Map reportData) {
-    Map appStats = reportData.appStats ?: [:]
-    Map pageModel = buildAppsPageModel(appStats)
-    StringBuilder sb = new StringBuilder()
-    sb.append(renderExportMetricTable(buildAppSummaryMetrics(appStats)))
-    if (pageModel.appTypeCount > 0) {
-        sb.append(renderExportCollapsible(
-            "App Types (${pageModel.appTypeCount})",
-            formatAppsByTypeTable(appStats),
-            pageModel.appTypeCount,
-            10
-        ))
-    }
-    if (pageModel.hierarchyCount > 0) {
-        sb.append(renderExportCollapsible(
-            "Parent/Child Hierarchy (${pageModel.hierarchyCount})",
-            formatParentChildHierarchy(appStats.parentChildHierarchy),
-            pageModel.hierarchyCount,
-            10
-        ))
-    }
-    if (appStats.userAppsList) {
-        sb.append(renderExportCollapsible(
-            "User App Instances (${appStats.userAppsList.size()})",
-            renderExportUserAppsTable(appStats.userAppsList ?: []),
-            appStats.userAppsList.size(),
-            10
-        ))
-    }
-    if (pageModel.platformAppCount > 0) {
-        sb.append(renderExportCollapsible(
-            "Platform Apps (${pageModel.platformAppCount})",
-            renderExportSortableTable("exportPlatformApps", [
-                [label: "Name", field: "name", type: "string"],
-                [label: "State Size", field: "stateSize", type: "number"],
-                [label: "CPU %", field: "pctTotal", type: "number"],
-                [label: "Exec Count", field: "count", type: "number"],
-                [label: "Avg (ms)", field: "average", type: "number"],
-                [label: "Hub Actions", field: "hubActions", type: "number"],
-                [label: "Cloud Calls", field: "cloudCalls", type: "number"]
-            ], pageModel.platformRows ?: []),
-            pageModel.platformAppCount,
-            10
-        ))
-    }
-    return sb.toString()
-}
-
-String renderExportUserAppsTable(List userApps) {
-    if (!userApps) return "<p>No user app instances</p>"
-
-    StringBuilder sb = new StringBuilder()
-    sb.append("<table style='width:100%; border-collapse: collapse; font-size: 11px;'>")
-    sb.append("<thead><tr style='background-color: #1A77C9; color: white;'>")
-    sb.append("<th style='padding: 4px 8px; text-align: left; border: 1px solid #ddd;'>Label</th>")
-    sb.append("<th style='padding: 4px 8px; text-align: left; border: 1px solid #ddd;'>Type</th>")
-    sb.append("</tr></thead><tbody>")
-    userApps.sort { (it.label ?: it.name ?: "").toString().toLowerCase() }.eachWithIndex { Map app, int idx ->
-        String rowBg = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-        String appId = (app.id ?: "").toString().replace("APP-", "")
-        String nameLink = appId ? "<a href='/installedapp/configure/${appId}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml((app.label ?: app.name) as String)}</a>" : escapeHtml((app.label ?: app.name) as String)
-        sb.append("<tr style='background-color: ${rowBg};'>")
-        sb.append("<td style='padding: 4px 8px; border: 1px solid #ddd;'>${nameLink}</td>")
-        sb.append("<td style='padding: 4px 8px; border: 1px solid #ddd;'>${escapeHtml(app.name as String)}</td>")
-        sb.append("</tr>")
-    }
-    sb.append("</tbody></table>")
-    return sb.toString()
-}
-
-String stripDeleteButtons(String html) {
-    if (!html) return html
-    return html.replaceAll(/<input type='button' name='btnDeleteCheckpoint_[^>]+>/, "")
-}
-
-List buildExportZwaveMeshRows(List nodes) {
-    return (nodes ?: []).collect { Map n ->
-        String stateColor = n.state == "OK" ? "" : "#d32f2f"
-        String perColor = n.per > 1 ? "#d32f2f" : (n.per > 0 ? "#ff9800" : "")
-        String rssiColor = ""
-        if (n.rssi != null) {
-            rssiColor = n.rssi >= -60 ? "#388e3c" : (n.rssi >= -80 ? "#ff9800" : "#d32f2f")
-        }
-        String nameHtml = n.deviceId ? "<a href='/device/edit/${n.deviceId}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${escapeHtml(n.name as String)}</a>" : escapeHtml(n.name as String)
-        Map row = [
-            name: nameHtml,
-            _nameSort: n.name,
-            rssi: n.rssiStr ?: "N/A",
-            _rssiSort: n.rssi ?: -999,
-            per: n.per,
-            neighbors: n.neighbors,
-            route: n.route ?: "None",
-            routeChanges: n.routeChanges,
-            state: n.state
-        ]
-        if (stateColor) row._stateColor = stateColor
-        if (perColor) row._perColor = perColor
-        if (rssiColor) row._rssiColor = rssiColor
-        return row
-    }
-}
-
-String renderExportSortableTable(String tableId, List columns, List rows) {
-    if (!rows || rows.size() == 0) {
-        return "<p>No data available</p>"
-    }
-
-    StringBuilder sb = new StringBuilder()
-    sb.append("<div style='overflow-x: auto;'>")
-    sb.append("<table id='${tableId}' data-sort-col='-1' data-sort-order='desc' style='width:100%; border-collapse: collapse; font-size: 11px;'>")
-    sb.append('<thead><tr style="background-color: #1A77C9; color: white;">')
-    columns.eachWithIndex { Map col, int idx ->
-        String align = col.type == "number" ? "right" : "left"
-        sb.append("<th class='sortable' onclick='sortExportTable(\"${tableId}\", ${idx}, \"${col.type}\")' style='padding: 6px; text-align: ${align}; border: 1px solid #ddd;'>${col.label}<span class='sort-arrow'> \u21C5</span></th>")
-    }
-    sb.append("</tr></thead><tbody>")
-
-    rows.eachWithIndex { Map row, int rowIdx ->
-        String rowColor = rowIdx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-        sb.append("<tr style='background-color: ${rowColor};'>")
-        columns.each { Map col ->
-            String field = col.field
-            def value = row[field]
-            String displayValue = value != null ? value.toString() : ""
-            def sortValue = row["_${field}Sort"] ?: value
-            String sortStr = sortValue != null ? sortValue.toString() : ""
-            String color = row["_${field}Color"] ?: ""
-            String colorStyle = color ? " color: ${color};" : ""
-            String align = col.type == "number" ? "right" : "left"
-            sb.append("<td data-value='${escapeAttr(sortStr)}' style='padding: 6px; text-align: ${align}; border: 1px solid #ddd;${colorStyle}'>${displayValue}</td>")
-        }
-        sb.append("</tr>")
-    }
-
-    sb.append("</tbody></table></div>")
-    return sb.toString()
-}
-
-String absolutizeReportLinks(String html, Map hubInfo) {
-    String ip = safeToString(hubInfo?.ip, "")
-    if (!ip || ip == "Unknown") return html
-    return html.replace("href='/", "href='http://${ip}/")
-}
-
-String buildLastReportLinkHtml() {
-    String fileName = safeToString(state.lastReportFile, "")
-    if (!fileName) return null
-    if (!fileExists(fileName)) {
-        state.remove("lastReportFile")
-        return null
-    }
-    return "<a href='/local/${fileName}' target='_blank' style='color: #1A77C9; text-decoration: none;'>Open latest full report</a>"
-}
+// ===== FILE MANAGEMENT =====
 
 List<Map> listHubFiles(String nameContains = null) {
     try {
@@ -3611,168 +1951,22 @@ List<Map> listHubFilesByNames(List<String> names) {
     return listHubFiles().findAll { Map rec -> wanted.contains(rec.name) }
 }
 
-String renderHubFileTable(List<Map> files, String actionLabel = "Open") {
-    if (!files) return "No files available"
-
-    StringBuilder sb = new StringBuilder()
-    sb.append("<table style='width:100%; border-collapse: collapse; font-size: 12px;'>")
-    sb.append("<thead><tr style='background-color: #1A77C9; color: white;'>")
-    sb.append("<th style='padding: 8px; text-align: left; border: 1px solid #ddd;'>File</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Size</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Date</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Action</th>")
-    sb.append("</tr></thead><tbody>")
-
-    files.eachWithIndex { Map file, int idx ->
-        String rowColor = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-        String fileName = escapeHtml(file.name as String)
-        String fileUrl = "/local/${file.name}"
-        String sizeDisplay = formatFileSize(file.size)
-        String dateDisplay = escapeHtml(safeToString(file.date, ""))
-        sb.append("<tr style='background-color: ${rowColor};'>")
-        sb.append("<td style='padding: 8px; border: 1px solid #ddd;'>${fileName}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${sizeDisplay}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${dateDisplay ?: '-'}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'><a href='${fileUrl}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${actionLabel}</a></td>")
-        sb.append("</tr>")
-    }
-
-    sb.append("</tbody></table>")
-    return sb.toString()
-}
-
-String formatFileSize(Object sizeValue) {
-    if (sizeValue == null) return "-"
-    long bytes
-    try {
-        bytes = sizeValue.toString().toLong()
-    } catch (Exception e) {
-        return escapeHtml(sizeValue.toString())
-    }
-    if (bytes < 1024) return "${bytes} B"
-    if (bytes < 1024L * 1024L) return String.format('%.1f KB', bytes / 1024.0)
-    return String.format('%.1f MB', bytes / (1024.0 * 1024.0))
-}
-
-// ===== SHARED TABLE GENERATION =====
-
-String renderSortableTableScript(String uniqueId) {
-    return SORTABLE_TABLE_SCRIPT_TEMPLATE.replace("__UNIQUE_ID__", uniqueId)
-}
-
-String renderMemoryChartTooltipScript(String uniqueId, String containerId, String tooltipData, int marginLeft, int plotW, int marginTop, int svgWidth) {
-    return MEMORY_CHART_TOOLTIP_SCRIPT_TEMPLATE
-        .replace("__TOOLTIP_DATA__", tooltipData)
-        .replace("__SVG_ID__", uniqueId)
-        .replace("__CONTAINER_ID__", containerId)
-        .replace("__MARGIN_LEFT__", "${marginLeft}")
-        .replace("__PLOT_WIDTH__", "${plotW}")
-        .replace("__MARGIN_TOP__", "${marginTop}")
-        .replace("__SVG_WIDTH__", "${svgWidth}")
-}
-
-String generateSortableTable(String tableId, List columns, List rows) {
-    if (!rows || rows.size() == 0) {
-        return "No data available"
-    }
-
-    String uniqueId = "${tableId}_${now()}"
-
-    StringBuilder sb = new StringBuilder()
-
-    sb.append(renderSortableTableScript(uniqueId))
-
-    sb.append("<div style='overflow-x: auto;'>")
-    sb.append("<table id='${uniqueId}' data-sort-col='-1' data-sort-order='desc' style='width:100%; border-collapse: collapse; font-size: 11px;'>")
-
-    // Header
-    sb.append('<thead><tr style="background-color: #1A77C9; color: white;">')
-    columns.eachWithIndex { Map col, int idx ->
-        String align = col.type == "number" ? "right" : "left"
-        sb.append("<th onclick='sortTable_${uniqueId}(${idx}, \"${col.type}\")' style='padding: 6px; text-align: ${align}; border: 1px solid #ddd; cursor: pointer;'>${col.label}<span class='sort-arrow'> \u21C5</span></th>")
-    }
-    sb.append('</tr></thead><tbody>')
-
-    // Rows
-    rows.eachWithIndex { Map row, int rowIdx ->
-        String rowColor = rowIdx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-        sb.append("<tr style='background-color: ${rowColor};'>")
-
-        columns.each { Map col ->
-            String field = col.field
-            def value = row[field]
-            String displayValue = value != null ? value.toString() : ""
-
-            // Check for sort override value
-            def sortValue = row["_${field}Sort"] ?: value
-            String sortStr = sortValue != null ? sortValue.toString() : ""
-
-            // Check for color override
-            String color = row["_${field}Color"] ?: ""
-            String colorStyle = color ? " color: ${color};" : ""
-
-            String align = col.type == "number" ? "right" : "left"
-            sb.append("<td data-value='${escapeAttr(sortStr)}' style='padding: 6px; text-align: ${align}; border: 1px solid #ddd;${colorStyle}'>${displayValue}</td>")
-        }
-
-        sb.append('</tr>')
-    }
-
-    sb.append('</tbody></table></div>')
-    return sb.toString()
-}
-
 // ===== FORMATTING HELPERS =====
 
 String generateQuickSummary() {
     try {
-        // Lightweight summary — single API call per section, no per-device fetches
         Map deviceStats = analyzeDevicesQuick()
         Map appStats = analyzeAppsQuick()
         Map hubInfo = getHubInfo()
-
-        // Lightweight health: memory, CPU, hub alerts
         Map resources = fetchSystemResources()
-        Map hubAlerts = fetchHubAlerts()
-        Float temperature = fetchTemperature()
-        Integer databaseSize = fetchDatabaseSize()
 
-        String resourceLine = ""
+        String summary = "Hub: ${hubInfo.name} | Firmware: ${hubInfo.firmware} | Hardware: ${hubInfo.hardware}\n"
+        summary += "Devices: ${deviceStats.totalDevices} total (Active: ${deviceStats.activeDevices} | Inactive: ${deviceStats.inactiveDevices} | Disabled: ${deviceStats.disabledDevices})\n"
+        summary += "Apps: ${appStats.totalApps} total (System: ${appStats.builtInApps} | User: ${appStats.userApps})"
         if (resources) {
-            String memColor = (resources.freeOSMemory ?: 0) < 76800 ? "#d32f2f" : ((resources.freeOSMemory ?: 0) < 102400 ? "#ff9800" : "#388e3c")
-            String cpuColor = (resources.cpuAvg5min ?: 0) > 8.0 ? "#d32f2f" : ((resources.cpuAvg5min ?: 0) > 4.0 ? "#ff9800" : "#388e3c")
-            resourceLine = "\n<b>Resources:</b> <span style='color: ${memColor};'>${formatMemory(resources.freeOSMemory ?: 0)} free</span> | CPU Load: <span style='color: ${cpuColor};'>${String.format('%.2f', (resources.cpuAvg5min ?: 0) as float)}</span>"
-            if (temperature != null) {
-                String tempColor = temperature > 77 ? "#d32f2f" : (temperature > 50 ? "#ff9800" : "#388e3c")
-                resourceLine += " | Temp: <span style='color: ${tempColor};'>${String.format('%.1f', temperature)}\u00B0C</span>"
-            }
-            if (databaseSize != null) {
-                resourceLine += " | DB: ${databaseSize} MB"
-            }
+            summary += "\nResources: ${formatMemory(resources.freeOSMemory ?: 0)} free | CPU: ${String.format('%.2f', (resources.cpuAvg5min ?: 0) as float)}"
         }
-
-        // Count active platform alerts
-        int alertCount = 0
-        if (hubAlerts.alerts) {
-            ALERT_DISPLAY_NAMES.each { String key, String name ->
-                if (hubAlerts.alerts[key] == true) alertCount++
-            }
-        }
-        String alertLine = alertCount > 0 ? "\n<span style='color: #d32f2f;'><b>Platform Alerts:</b> ${alertCount} active — check System Health for details</span>" : ""
-
-        Map idsByP = deviceStats.idsByProtocol ?: [:]
-        Map idsByS = deviceStats.idsByStatus ?: [:]
-
-        return """<b>Hub Diagnostics Summary</b>
-<b>Hub:</b> ${hubInfo.name} | Firmware: ${hubInfo.firmware} | Hardware: ${hubInfo.hardware}
-
-<b>Devices:</b> <a href='/device/list' target='_blank' style='color: #1A77C9; text-decoration: none;'>${deviceStats.totalDevices}</a> total
-  Active: ${deviceListLink(deviceStats.activeDevices, idsByS.active)} | Inactive: ${deviceListLink(deviceStats.inactiveDevices, (idsByS.inactive ?: []) + (idsByS.disabled ?: []))} | Disabled: ${deviceListLink(deviceStats.disabledDevices, idsByS.disabled)}
-  Z-Wave: ${deviceListLink(deviceStats.byProtocol[PROTOCOL_ZWAVE], idsByP[PROTOCOL_ZWAVE])} | Zigbee: ${deviceListLink(deviceStats.byProtocol[PROTOCOL_ZIGBEE], idsByP[PROTOCOL_ZIGBEE])} | Matter: ${deviceListLink(deviceStats.byProtocol[PROTOCOL_MATTER], idsByP[PROTOCOL_MATTER])}
-  Hub Mesh: ${deviceListLink(deviceStats.byProtocol[PROTOCOL_HUBMESH], idsByP[PROTOCOL_HUBMESH])} | Virtual: ${deviceListLink(deviceStats.byProtocol[PROTOCOL_VIRTUAL], idsByP[PROTOCOL_VIRTUAL])} | LAN: ${deviceListLink(deviceStats.byProtocol[PROTOCOL_LAN], idsByP[PROTOCOL_LAN])}
-
-<b>Applications:</b> ${appStats.totalApps} total (System: ${appStats.builtInApps} | User: ${appStats.userApps})
-${resourceLine}${alertLine}"""
+        return summary
     } catch (Exception e) {
         logError "Error generating summary: ${getObjectClassName(e)}: ${e.message}"
         return "Error generating summary. Please check logs."
@@ -3788,17 +1982,7 @@ Map analyzeDevicesQuick() {
     }
 
     // Flatten the device list — child devices are nested inside parent entries' 'children' arrays
-    List devicesList = []
-    Closure flattenDevices
-    flattenDevices = { List entries ->
-        entries.each { entry ->
-            devicesList << entry
-            if (entry.children) {
-                flattenDevices(entry.children as List)
-            }
-        }
-    }
-    flattenDevices(response.devices as List)
+    List devicesList = flattenDeviceEntries(response.devices as List, false)
 
     Map stats = [
         totalDevices: 0, activeDevices: 0, inactiveDevices: 0, disabledDevices: 0,
@@ -3877,245 +2061,16 @@ Map analyzeAppsQuick() {
     int userApps = 0
     int builtInApps = 0
 
-    Closure countApps
-    countApps = { List appList ->
-        appList.each { appEntry ->
-            Map app = appEntry.data
-            if (!app || !(app instanceof Map)) return
-            totalApps++
-            if (app.user) userApps++
-            else builtInApps++
-            List children = appEntry.children ?: []
-            if (children) countApps(children)
-        }
+    visitAppEntries(response.apps as List) { Map appEntry, Map app, boolean isChildLevel, List parentHierarchyList ->
+        if (!app) return
+        totalApps++
+        if (app.user) userApps++
+        else builtInApps++
     }
-    countApps(response.apps)
 
     return [totalApps: totalApps, userApps: userApps, builtInApps: builtInApps]
 }
 
-String generateRuntimeSummary(Map stats, Map resources) {
-    if (!stats) {
-        return "Unable to fetch current runtime stats"
-    }
-
-    String devPctColor = "#388e3c"
-    String appPctColor = "#388e3c"
-    try {
-        float devPct = (stats.devicePct ?: "0%").toString().replace('%', '').toFloat()
-        float appPct = (stats.appPct ?: "0%").toString().replace('%', '').toFloat()
-        if (devPct + appPct > 10) { devPctColor = "#d32f2f"; appPctColor = "#d32f2f" }
-        else if (devPct + appPct > 6) { devPctColor = "#ff9800"; appPctColor = "#ff9800" }
-    } catch (Exception e) { /* ignore */ }
-
-    List metrics = [
-        ["Hub Uptime", stats.uptime ?: "N/A"],
-        ["Devices Runtime", "${stats.totalDevicesRuntime ?: 'N/A'} (<span style='color: ${devPctColor};'>${stats.devicePct ?: 'N/A'}</span>)"],
-        ["Apps Runtime", "${stats.totalAppsRuntime ?: 'N/A'} (<span style='color: ${appPctColor};'>${stats.appPct ?: 'N/A'}</span>)"],
-        ["Total Devices", stats.deviceStats?.size() ?: 0],
-        ["Total Apps", stats.appStats?.size() ?: 0],
-        ["Scheduled Jobs", stats.jobs?.size() ?: 0]
-    ]
-
-    if (resources) {
-        String memColor = (resources.freeOSMemory ?: 0) < 76800 ? "#d32f2f" : ((resources.freeOSMemory ?: 0) < 102400 ? "#ff9800" : "#388e3c")
-        String cpuColor = (resources.cpuAvg5min ?: 0) > 8.0 ? "#d32f2f" : ((resources.cpuAvg5min ?: 0) > 4.0 ? "#ff9800" : "#388e3c")
-        metrics << ["Free OS Memory", "<span style='color: ${memColor};'>${formatMemory(resources.freeOSMemory ?: 0)}</span>"]
-        metrics << ["CPU Load Avg (5m)", "<span style='color: ${cpuColor};'>${String.format('%.2f', (resources.cpuAvg5min ?: 0) as float)}</span>"]
-    }
-
-    return formatMetricsTable(metrics)
-}
-
-String generateCheckpointTable(List checkpoints) {
-    StringBuilder sb = new StringBuilder()
-    sb.append("<table style='width:100%; border-collapse: collapse; font-size: 12px;'>")
-    sb.append('<thead><tr style="background-color: #1A77C9; color: white;">')
-    sb.append("<th style='padding: 8px; text-align: left; border: 1px solid #ddd;'>Timestamp</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Uptime</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Device Runtime</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>App Runtime</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'></th>")
-    sb.append('</tr></thead><tbody>')
-
-    checkpoints.eachWithIndex { Map cp, int idx ->
-        String rowColor = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-        sb.append("<tr style='background-color: ${rowColor};'>")
-        sb.append("<td style='padding: 8px; border: 1px solid #ddd;'>${cp.timestamp}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${cp.stats?.uptime ?: 'N/A'}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${cp.stats?.totalDevicesRuntime ?: 'N/A'}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${cp.stats?.totalAppsRuntime ?: 'N/A'}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>")
-        sb.append("<input type='button' name='btnDeleteCheckpoint_${idx}' value='\uD83D\uDDD1' title='Delete checkpoint' style='font-size: 14px; background: none; border: none; cursor: pointer; padding: 2px 6px;' />")
-        sb.append("</td></tr>")
-    }
-
-    sb.append('</tbody></table>')
-    return sb.toString()
-}
-
-String generateSnapshotsTable(List snapshots) {
-    if (!snapshots || snapshots.size() == 0) {
-        return "No config snapshots available"
-    }
-
-    StringBuilder sb = new StringBuilder()
-    sb.append("<table style='width:100%; border-collapse: collapse; font-size: 12px;'>")
-    sb.append('<thead><tr style="background-color: #1A77C9; color: white;">')
-    sb.append("<th style='padding: 8px; text-align: left; border: 1px solid #ddd;'>Timestamp</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Firmware</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Devices</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Apps</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Memory</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'></th>")
-    sb.append('</tr></thead><tbody>')
-
-    snapshots.eachWithIndex { Map snap, int idx ->
-        String rowColor = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-        String memDisplay = "N/A"
-        if (snap.systemHealth?.memory?.freeOSMemory) {
-            memDisplay = formatMemory(snap.systemHealth.memory.freeOSMemory as int)
-        }
-
-        sb.append("<tr style='background-color: ${rowColor};'>")
-        String firmware = snap.hubInfo?.firmware ?: "N/A"
-        sb.append("<td style='padding: 8px; border: 1px solid #ddd;'>${snap.timestamp}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${firmware}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${snap.devices?.totalDevices ?: 0}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${snap.apps?.totalApps ?: 0}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${memDisplay}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd; white-space: nowrap;'>")
-        sb.append("<input type='button' name='btnDeleteSnapshot_${idx}' value='\uD83D\uDDD1' title='Delete snapshot' style='font-size: 14px; background: none; border: none; cursor: pointer; padding: 2px 6px;' />")
-        sb.append("</td></tr>")
-    }
-
-    sb.append('</tbody></table>')
-    return sb.toString()
-}
-
-String formatMetricsTable(List metrics) {
-    StringBuilder sb = new StringBuilder()
-    sb.append("<table style='width:100%; border-collapse: collapse; font-size: 12px;'>")
-    sb.append("<thead><tr style='background-color: #1A77C9; color: white;'>")
-    sb.append("<th style='padding: 8px; text-align: left; border: 1px solid #ddd;'>Metric</th>")
-    sb.append("<th style='padding: 8px; text-align: right; border: 1px solid #ddd;'>Value</th>")
-    sb.append("</tr></thead><tbody>")
-
-    metrics.eachWithIndex { List metric, int idx ->
-        String rowColor = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-        sb.append("<tr style='background-color: ${rowColor};'>")
-        sb.append("<td style='padding: 8px; border: 1px solid #ddd;'><b>${metric[0]}</b></td>")
-        sb.append("<td style='padding: 8px; text-align: right; border: 1px solid #ddd;'>${metric[1]}</td>")
-        sb.append("</tr>")
-    }
-
-    sb.append("</tbody></table>")
-    return sb.toString()
-}
-
-String formatProtocolTable(Map protocolMap, Map idsByProtocol = [:]) {
-    if (!protocolMap || protocolMap.isEmpty()) {
-        return "No protocol data available"
-    }
-
-    StringBuilder sb = new StringBuilder()
-    sb.append("<table style='width:100%; border-collapse: collapse;'>")
-    sb.append("<tr><th style='text-align:left; border-bottom: 1px solid #ddd; padding: 4px;'>Protocol</th>")
-    sb.append("<th style='text-align:right; border-bottom: 1px solid #ddd; padding: 4px;'>Count</th></tr>")
-
-    PROTOCOL_DISPLAY.each { String key, String displayName ->
-        int count = (protocolMap[key] ?: 0) as int
-        if (count > 0) {
-            List ids = idsByProtocol[key] ?: []
-            String countDisplay = ids ? deviceListLink(count, ids) : count.toString()
-            sb.append("<tr><td style='padding: 4px;'>${displayName}</td>")
-            sb.append("<td style='text-align:right; padding: 4px;'>${countDisplay}</td></tr>")
-        }
-    }
-    sb.append("</table>")
-    return sb.toString()
-}
-
-String formatSimpleTable(Map dataMap, String header1, String header2) {
-    if (!dataMap || dataMap.isEmpty()) {
-        return "No data available"
-    }
-
-    Map sorted = dataMap.sort { -it.value }
-    StringBuilder sb = new StringBuilder()
-    sb.append("<table style='width:100%; border-collapse: collapse;'>")
-    sb.append("<tr><th style='text-align:left; border-bottom: 1px solid #ddd; padding: 4px;'>${header1}</th>")
-    sb.append("<th style='text-align:right; border-bottom: 1px solid #ddd; padding: 4px;'>${header2}</th></tr>")
-
-    sorted.each { key, value ->
-        if (value > 0 || dataMap.size() < 20) {
-            sb.append("<tr><td style='padding: 4px;'>${key.toString().capitalize()}</td>")
-            sb.append("<td style='text-align:right; padding: 4px;'>${value}</td></tr>")
-        }
-    }
-    sb.append("</table>")
-    return sb.toString()
-}
-
-String formatAppsByTypeTable(Map appStats) {
-    StringBuilder sb = new StringBuilder()
-    sb.append("<table style='width:100%; border-collapse: collapse; font-size: 12px;'>")
-    sb.append("<thead><tr style='background-color: #1A77C9; color: white;'>")
-    sb.append("<th style='padding: 8px; text-align: left; border: 1px solid #ddd;'>App Type</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Instances</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>User/System</th>")
-    sb.append("</tr></thead><tbody>")
-
-    Map sorted = ((Map) appStats.byNamespace).sort { -it.value }
-    sorted.eachWithIndex { entry, int idx ->
-        String rowColor = idx % 2 == 0 ? "#f9f9f9" : "#ffffff"
-        String appType = entry.key
-        boolean userApp = ((List) appStats.userAppsList).any { it.name == appType }
-
-        sb.append("<tr style='background-color: ${rowColor};'>")
-        sb.append("<td style='padding: 8px; border: 1px solid #ddd;'>${appType}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${entry.value}</td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'>${userApp ? 'User' : 'System'}</td>")
-        sb.append("</tr>")
-    }
-
-    sb.append("</tbody></table>")
-    return sb.toString()
-}
-
-String formatParentChildHierarchy(List hierarchy) {
-    if (!hierarchy || hierarchy.isEmpty()) {
-        return "No parent/child app relationships found"
-    }
-
-    StringBuilder sb = new StringBuilder()
-    sb.append("<table style='width:100%; border-collapse: collapse; font-size: 12px;'>")
-    sb.append("<thead><tr style='background-color: #1A77C9; color: white;'>")
-    sb.append("<th style='padding: 8px; text-align: left; border: 1px solid #ddd;'>Parent App Type</th>")
-    sb.append("<th style='padding: 8px; text-align: center; border: 1px solid #ddd;'>Children</th>")
-    sb.append("</tr></thead><tbody>")
-
-    hierarchy.each { Map parent ->
-        sb.append("<tr style='background-color: #f9f9f9;'>")
-        sb.append("<td style='padding: 8px; border: 1px solid #ddd;'><b>${parent.type}</b><br><small>ID: ${parent.id}</small></td>")
-        sb.append("<td style='padding: 8px; text-align: center; border: 1px solid #ddd;'><b>${parent.childCount}</b></td>")
-        sb.append("</tr>")
-
-        if (parent.children && parent.children.size() > 0) {
-            sb.append("<tr style='background-color: #ffffff;'>")
-            sb.append("<td colspan='2' style='padding: 8px 8px 8px 30px; border: 1px solid #ddd; font-size: 11px;'>")
-            parent.children.each { Map child ->
-                String disabledText = child.disabled ? " <span style='color: #d32f2f;'>(Disabled)</span>" : ""
-                sb.append("<b><a href='/installedapp/configure/${child.id}' target='_blank' style='color: #1A77C9; text-decoration: none;'>${child.name}</a></b>${disabledText}<br>")
-                sb.append("&nbsp;&nbsp;<small style='color: #666;'>Type: ${child.type} | ID: ${child.id}</small><br>")
-            }
-            sb.append("</td></tr>")
-        }
-    }
-
-    sb.append("</tbody></table>")
-    return sb.toString()
-}
 
 // ===== UTILITY METHODS =====
 
@@ -4173,14 +2128,6 @@ Map getEmptyDeviceStats() {
         childIds: [],
         linkedIds: [],
         batteryIds: []
-    ]
-}
-
-Map normalizeSnapshotSystemHealth(Map health) {
-    Map source = health ?: [:]
-    return [
-        memory: source.memory instanceof Map ? source.memory : null,
-        databaseSize: source.databaseSize != null ? source.databaseSize : source.database?.databaseSize
     ]
 }
 
@@ -4255,18 +2202,6 @@ String formatMemory(int kb) {
     } else {
         return "${kb} KB"
     }
-}
-
-String escapeHtml(String text) {
-    if (!text) return ""
-    return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-        .replaceAll("'", "&#39;").replaceAll('"', "&quot;")
-}
-
-String escapeAttr(String text) {
-    if (!text) return ""
-    return text.replaceAll("'", "&#39;").replaceAll('"', "&quot;")
-        .replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 }
 
 // ===== FILE I/O HELPERS =====
@@ -4389,6 +2324,7 @@ void deleteFile(String fileName) {
 
 void installed() {
     logInfo "Hub Diagnostics installed"
+    if (!state.accessToken) createAccessToken()
     initialize()
 }
 
