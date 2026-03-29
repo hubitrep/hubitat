@@ -10,31 +10,32 @@ import groovy.transform.Field
 import groovy.transform.CompileStatic
 import groovy.json.JsonOutput
 
-@Field static final String APP_VERSION = "4.0.0"
+@Field static final String APP_VERSION = "4.2.0"
 @Field static final String STORAGE_SCHEMA_VERSION = "3.2.0"
 
-// API Endpoint URLs (localhost access)
-@Field static final String DEVICES_LIST_URL = "http://127.0.0.1:8080/hub2/devicesList"
-@Field static final String APPS_LIST_URL = "http://127.0.0.1:8080/hub2/appsList"
-@Field static final String APP_FULL_JSON_URL = "http://127.0.0.1:8080/app/fullJson/"
-@Field static final String NETWORK_CONFIG_URL = "http://127.0.0.1:8080/hub2/networkConfiguration"
-@Field static final String ZWAVE_DETAILS_URL = "http://127.0.0.1:8080/hub/zwaveDetails/json"
-@Field static final String ZIGBEE_DETAILS_URL = "http://127.0.0.1:8080/hub/zigbeeDetails/json"
-@Field static final String MATTER_DETAILS_URL = "http://127.0.0.1:8080/hub/matterDetails/json"
-@Field static final String HUB_DATA_URL = "http://127.0.0.1:8080/hub2/hubData"
-@Field static final String MODES_URL = "http://127.0.0.1:8080/modes/json"
-@Field static final String HUB_MESH_URL = "http://127.0.0.1:8080/hub2/hubMeshJson"
-@Field static final String STATE_COMPRESSION_URL = "http://127.0.0.1:8080/hub/advanced/stateCompressionStatus"
-@Field static final String FREE_MEMORY_URL = "http://127.0.0.1:8080/hub/advanced/freeOSMemoryLast"
-@Field static final String RUNTIME_STATS_URL = "http://127.0.0.1:8080/logs/json"
-@Field static final String DATABASE_SIZE_URL = "http://127.0.0.1:8080/hub/advanced/databaseSize"
-@Field static final String INTERNAL_TEMP_URL = "http://127.0.0.1:8080/hub/advanced/internalTempCelsius"
-@Field static final String ZIGBEE_CHILD_ROUTE_URL = "http://127.0.0.1:8080/hub/zigbee/getChildAndRouteInfo"
-@Field static final String ZWAVE_VERSION_URL = "http://127.0.0.1:8080/hub/zwaveVersion"
-@Field static final String EVENT_LIMIT_URL = "http://127.0.0.1:8080/hub/advanced/event/limit"
-@Field static final String MAX_EVENT_AGE_URL = "http://127.0.0.1:8080/hub/advanced/maxEventAgeDays"
-@Field static final String MAX_STATE_AGE_URL = "http://127.0.0.1:8080/hub/advanced/maxDeviceStateAgeDays"
-@Field static final String MEMORY_HISTORY_URL = "http://127.0.0.1:8080/hub/advanced/freeOSMemoryHistory"
+// API endpoint paths (all relative to HUB_BASE)
+@Field static final String HUB_BASE = "http://127.0.0.1:8080"
+@Field static final String DEVICES_LIST_PATH = "/hub2/devicesList"
+@Field static final String APPS_LIST_PATH = "/hub2/appsList"
+@Field static final String APP_FULL_JSON_PATH = "/app/fullJson/"
+@Field static final String NETWORK_CONFIG_PATH = "/hub2/networkConfiguration"
+@Field static final String ZWAVE_DETAILS_PATH = "/hub/zwaveDetails/json"
+@Field static final String ZIGBEE_DETAILS_PATH = "/hub/zigbeeDetails/json"
+@Field static final String MATTER_DETAILS_PATH = "/hub/matterDetails/json"
+@Field static final String HUB_DATA_PATH = "/hub2/hubData"
+@Field static final String MODES_PATH = "/modes/json"
+@Field static final String HUB_MESH_PATH = "/hub2/hubMeshJson"
+@Field static final String STATE_COMPRESSION_PATH = "/hub/advanced/stateCompressionStatus"
+@Field static final String FREE_MEMORY_PATH = "/hub/advanced/freeOSMemoryLast"
+@Field static final String RUNTIME_STATS_PATH = "/logs/json"
+@Field static final String DATABASE_SIZE_PATH = "/hub/advanced/databaseSize"
+@Field static final String INTERNAL_TEMP_PATH = "/hub/advanced/internalTempCelsius"
+@Field static final String ZIGBEE_CHILD_ROUTE_PATH = "/hub/zigbee/getChildAndRouteInfo"
+@Field static final String ZWAVE_VERSION_PATH = "/hub/zwaveVersion"
+@Field static final String EVENT_LIMIT_PATH = "/hub/advanced/event/limit"
+@Field static final String MAX_EVENT_AGE_PATH = "/hub/advanced/maxEventAgeDays"
+@Field static final String MAX_STATE_AGE_PATH = "/hub/advanced/maxDeviceStateAgeDays"
+@Field static final String MEMORY_HISTORY_PATH = "/hub/advanced/freeOSMemoryHistory"
 
 // Zigbee channels recommended to avoid WiFi interference
 @Field static final List RECOMMENDED_ZIGBEE_CHANNELS = [15, 20, 25]
@@ -72,6 +73,10 @@ import groovy.json.JsonOutput
 @Field static final String PROTOCOL_OTHER = "other"
 
 @Field static final long ONE_DAY_MS = 86400000
+@Field static final int API_TIMING_WINDOW = 20
+
+// In-memory API response time tracking (reset on hub reboot)
+@Field static Map apiTimings = [:]
 
 // Protocol display names
 @Field static final Map PROTOCOL_DISPLAY = [
@@ -102,7 +107,7 @@ definition(
     description: "Comprehensive hub diagnostics: inventory, performance tracking, network analysis, and snapshot comparison",
     category: "Utility",
     singleInstance: true,
-    importUrl: IMPORT_URL_AP,
+    importUrl: IMPORT_URL_APP,
     oauth: true,
     iconUrl: "",
     iconX2Url: "",
@@ -131,6 +136,7 @@ mappings {
     path('/api/snapshots')        { action: [GET: 'apiSnapshots'] }
     path('/api/snapshot/view')    { action: [GET: 'apiSnapshotView'] }
     path('/api/snapshot/diff')    { action: [GET: 'apiSnapshotDiff'] }
+    path('/api/stats')            { action: [GET: 'apiStats'] }
 
     // Actions
     path('/api/snapshot/create')    { action: [POST: 'apiCreateSnapshot'] }
@@ -234,6 +240,7 @@ Map serveUI() {
 }
 
 Map apiDashboard() {
+    long start = now()
     Map deviceStats = analyzeDevicesQuick()
     Map appStats = analyzeAppsQuick()
     Map hubInfo = getHubInfo()
@@ -241,6 +248,9 @@ Map apiDashboard() {
     Float temperature = fetchTemperature()
     Integer databaseSize = fetchDatabaseSize()
 
+    long elapsed = now() - start
+    logDebug "apiDashboard completed in ${elapsed}ms"
+    recordApiTiming("dashboard", elapsed)
     return jsonResponse([
         hub: hubInfo,
         devices: [
@@ -262,6 +272,7 @@ Map apiDashboard() {
 }
 
 Map apiDevices() {
+    long start = now()
     Map deviceStats = analyzeDevices()
     List deviceRows = (deviceStats.allDevices ?: []).collect { Map dev ->
         [
@@ -280,6 +291,9 @@ Map apiDevices() {
     List lowBattery = (deviceStats.lowBatteryDevices ?: []).collect { Map dev ->
         [id: dev.id, name: dev.name, battery: dev.battery]
     }
+    long elapsed = now() - start
+    logDebug "apiDevices completed in ${elapsed}ms"
+    recordApiTiming("devices", elapsed)
     return jsonResponse([
         summary: [
             totalDevices: deviceStats.totalDevices, activeDevices: deviceStats.activeDevices,
@@ -289,6 +303,8 @@ Map apiDevices() {
         ],
         byProtocol: deviceStats.byProtocol,
         idsByProtocol: deviceStats.idsByProtocol,
+        byType: deviceStats.byType,
+        idsByType: deviceStats.idsByType,
         idsByStatus: deviceStats.idsByStatus,
         deviceRows: deviceRows,
         lowBatteryDevices: lowBattery,
@@ -297,6 +313,7 @@ Map apiDevices() {
 }
 
 Map apiApps() {
+    long start = now()
     Map appStats = analyzeApps()
     List platformRows = (appStats.platformApps ?: []).collect { Map app ->
         [id: app.id, name: app.name, stateSize: app.stateSize as int, pctTotal: app.pctTotal,
@@ -308,6 +325,9 @@ Map apiApps() {
             [id: app.id, label: app.label ?: app.name, type: app.name,
              parentId: app.parentAppId, disabled: app.state == "disabled"]
         }
+    long elapsed = now() - start
+    logDebug "apiApps completed in ${elapsed}ms"
+    recordApiTiming("apps", elapsed)
     return jsonResponse([
         summary: [
             totalApps: appStats.totalApps, builtInApps: appStats.builtInApps, userApps: appStats.userApps,
@@ -322,6 +342,7 @@ Map apiApps() {
 }
 
 Map apiNetwork() {
+    long start = now()
     Map networkData = analyzeNetwork()
     Map zigbeeMesh = fetchZigbeeMeshInfo()
     String zwaveVersion = fetchZwaveVersion()
@@ -351,6 +372,9 @@ Map apiNetwork() {
         }
     }
 
+    long elapsed = now() - start
+    logDebug "apiNetwork completed in ${elapsed}ms"
+    recordApiTiming("network", elapsed)
     return jsonResponse([
         network: networkData.network && !networkData.network.error ? networkData.network : null,
         zwave: networkData.zwave && !networkData.zwave.error ? [
@@ -396,11 +420,15 @@ Map apiNetwork() {
 }
 
 Map apiHealth() {
+    long start = now()
     Map systemHealth = analyzeSystemHealth()
     Map hubInfo = getHubInfo()
     def hub = (location.hubs && location.hubs.size() > 0) ? location.hubs[0] : null
     Map mem = systemHealth.memory ?: [:]
 
+    long elapsed = now() - start
+    logDebug "apiHealth completed in ${elapsed}ms"
+    recordApiTiming("health", elapsed)
     return jsonResponse([
         hub: [
             name: hubInfo.name, hubId: hub?.id, hardware: hubInfo.hardware,
@@ -423,11 +451,15 @@ Map apiHealthHistory() {
 }
 
 Map apiPerformance() {
+    long start = now()
     Map stats = fetchCurrentStats()
     Map resources = fetchSystemResources()
     List checkpoints = loadCheckpoints()
     Map savedComparison = loadPerformanceComparisonPayload()
 
+    long elapsed = now() - start
+    logDebug "apiPerformance completed in ${elapsed}ms"
+    recordApiTiming("performance", elapsed)
     return jsonResponse([
         stats: stats,
         resources: resources,
@@ -440,7 +472,6 @@ Map apiPerformance() {
             radioStats: cp.radioStats
         ]},
         savedComparison: savedComparison
-        //savedComparisonHtml: renderPerformanceComparisonPayload(savedComparison)
     ])
 }
 
@@ -476,8 +507,8 @@ Map apiPerformanceCompare() {
         checkpointStats = fetchCurrentStats()
         Map currentResources = fetchSystemResources()
         checkpointStats.resources = currentResources
-        Map zwaveData = fetchEndpoint(ZWAVE_DETAILS_URL, "Z-Wave details", 20)
-        Map zigbeeData = fetchEndpoint(ZIGBEE_DETAILS_URL, "Zigbee details", 20)
+        Map zwaveData = fetchEndpoint(ZWAVE_DETAILS_PATH, "Z-Wave details", 20)
+        Map zigbeeData = fetchEndpoint(ZIGBEE_DETAILS_PATH, "Zigbee details", 20)
         checkpointStats.radioStats = [
             zwave: extractZwaveMessageCounts(zwaveData),
             zigbee: extractZigbeeMessageCounts(zigbeeData)
@@ -499,8 +530,11 @@ Map apiPerformanceCompare() {
     }
 
     // Save for persistence
-    savePerformanceComparisonPayload(buildPerformanceComparisonPayload(
-        baselineStats, checkpointStats, baselineLabel, checkpointLabel))
+    savePerformanceComparisonPayload([
+        generatedAt: new Date().format("yyyy-MM-dd HH:mm:ss"),
+        baselineLabel: baselineLabel, checkpointLabel: checkpointLabel,
+        baselineStats: baselineStats ?: [:], checkpointStats: checkpointStats ?: [:]
+    ])
 
     return jsonResponse([
         success: true,
@@ -508,8 +542,6 @@ Map apiPerformanceCompare() {
         checkpointLabel: checkpointLabel,
         baselineStats: baselineStats,
         checkpointStats: checkpointStats
-        //comparisonHtml: renderPerformanceComparisonPayload(buildPerformanceComparisonPayload(
-          //  baselineStats, checkpointStats, baselineLabel, checkpointLabel))
     ])
 }
 
@@ -917,20 +949,50 @@ List getStructuredAlerts() {
 
 // ===== BUTTON HANDLER =====
 
-void appButtonHandler(String btn) {
-    switch (btn) {
-        default:
-            logWarn "Unknown button: ${btn}"
-            break
+// ===== API TIMING =====
+
+void recordApiTiming(String endpoint, long elapsedMs) {
+    synchronized (apiTimings) {
+        Map entry = apiTimings[endpoint]
+        if (!entry) {
+            entry = [samples: [], median: 0, count: 0]
+            apiTimings[endpoint] = entry
+        }
+        List samples = entry.samples
+        samples << elapsedMs
+        if (samples.size() > API_TIMING_WINDOW) {
+            samples.remove(0)
+        }
+        entry.count = (entry.count as int) + 1
+        List sorted = samples.collect().sort()
+        int mid = sorted.size() / 2
+        entry.median = sorted.size() % 2 == 0 ? ((sorted[mid - 1] + sorted[mid]) / 2) as long : sorted[mid]
     }
+}
+
+Map apiStats() {
+    Map stats = [:]
+    synchronized (apiTimings) {
+        apiTimings.each { String endpoint, Map entry ->
+            stats[endpoint] = [
+                median: entry.median,
+                count: entry.count,
+                recent: entry.samples.size(),
+                lastSamples: entry.samples.collect()
+            ]
+        }
+    }
+    return jsonResponse([timings: stats])
 }
 
 // ===== DATA COLLECTION =====
 
-Map fetchEndpoint(String url, String name, int timeout = 30) {
+Map fetchEndpoint(String path, String name, int timeout = 30) {
+    long start = now()
     try {
         Map params = [
-            uri: url,
+            uri: HUB_BASE,
+            path: path,
             contentType: "application/json",
             timeout: timeout
         ]
@@ -940,17 +1002,20 @@ Map fetchEndpoint(String url, String name, int timeout = 30) {
                 result = resp.data
             }
         }
+        logDebug "Fetched ${name} in ${now() - start}ms"
         return result ?: [:]
     } catch (Exception e) {
-        logError "Error fetching ${name}: ${getObjectClassName(e)}: ${e.message}"
+        logError "Error fetching ${name} (${now() - start}ms): ${getObjectClassName(e)}: ${e.message}"
         return [error: true, message: e.message]
     }
 }
 
 Map fetchSystemResources() {
+    long start = now()
     try {
         Map params = [
-            uri: FREE_MEMORY_URL,
+            uri: HUB_BASE,
+            path: FREE_MEMORY_PATH,
             contentType: "text/plain",
             timeout: 15
         ]
@@ -973,9 +1038,10 @@ Map fetchSystemResources() {
                 }
             }
         }
+        logDebug "Fetched system resources in ${now() - start}ms"
         return resourceData
     } catch (Exception e) {
-        logError "Error fetching system resources: ${e.message}"
+        logError "Error fetching system resources (${now() - start}ms): ${e.message}"
         return null
     }
 }
@@ -983,7 +1049,8 @@ Map fetchSystemResources() {
 List fetchMemoryHistory() {
     try {
         Map params = [
-            uri: MEMORY_HISTORY_URL,
+            uri: HUB_BASE,
+            path: MEMORY_HISTORY_PATH,
             contentType: "text/plain",
             timeout: 30
         ]
@@ -1018,7 +1085,8 @@ List fetchMemoryHistory() {
 Map fetchStateCompression() {
     try {
         Map params = [
-            uri: STATE_COMPRESSION_URL,
+            uri: HUB_BASE,
+            path: STATE_COMPRESSION_PATH,
             contentType: "text/plain",
             timeout: 10
         ]
@@ -1036,10 +1104,12 @@ Map fetchStateCompression() {
     }
 }
 
-String fetchPlainText(String url, String name, int timeout = 10) {
+String fetchPlainText(String path, String name, int timeout = 10) {
+    long start = now()
     try {
         Map params = [
-            uri: url,
+            uri: HUB_BASE,
+            path: path,
             contentType: "text/plain",
             timeout: timeout
         ]
@@ -1049,6 +1119,7 @@ String fetchPlainText(String url, String name, int timeout = 10) {
                 result = resp.data?.text?.trim() ?: resp.data?.toString()?.trim()
             }
         }
+        logDebug "Fetched ${name} in ${now() - start}ms"
         return result
     } catch (Exception e) {
         logDebug "Error fetching ${name}: ${e.message}"
@@ -1057,7 +1128,7 @@ String fetchPlainText(String url, String name, int timeout = 10) {
 }
 
 Integer fetchDatabaseSize() {
-    String text = fetchPlainText(DATABASE_SIZE_URL, "database size")
+    String text = fetchPlainText(DATABASE_SIZE_PATH, "database size")
     if (text) {
         try { return text.toInteger() } catch (Exception e) { /* ignore */ }
     }
@@ -1065,7 +1136,7 @@ Integer fetchDatabaseSize() {
 }
 
 Float fetchTemperature() {
-    String text = fetchPlainText(INTERNAL_TEMP_URL, "internal temperature")
+    String text = fetchPlainText(INTERNAL_TEMP_PATH, "internal temperature")
     if (text) {
         try { return text.toFloat() } catch (Exception e) { /* ignore */ }
     }
@@ -1073,7 +1144,7 @@ Float fetchTemperature() {
 }
 
 Map fetchHubAlerts() {
-    Map hubData = fetchEndpoint(HUB_DATA_URL, "hub data", 10)
+    Map hubData = fetchEndpoint(HUB_DATA_PATH, "hub data", 10)
     if (!hubData || hubData.error) return [:]
 
     Map result = [
@@ -1086,9 +1157,9 @@ Map fetchHubAlerts() {
 }
 
 Map fetchEventStateLimits() {
-    String eventLimit = fetchPlainText(EVENT_LIMIT_URL, "event limit")
-    String maxEventAge = fetchPlainText(MAX_EVENT_AGE_URL, "max event age")
-    String maxStateAge = fetchPlainText(MAX_STATE_AGE_URL, "max state age")
+    String eventLimit = fetchPlainText(EVENT_LIMIT_PATH, "event limit")
+    String maxEventAge = fetchPlainText(MAX_EVENT_AGE_PATH, "max event age")
+    String maxStateAge = fetchPlainText(MAX_STATE_AGE_PATH, "max state age")
 
     Map limits = [:]
 
@@ -1107,7 +1178,7 @@ Map fetchEventStateLimits() {
 }
 
 Map fetchZigbeeMeshInfo() {
-    String text = fetchPlainText(ZIGBEE_CHILD_ROUTE_URL, "zigbee child/route info", 15)
+    String text = fetchPlainText(ZIGBEE_CHILD_ROUTE_PATH, "zigbee child/route info", 15)
     if (!text) return [:]
 
     Map result = [childDevices: [], neighbors: [], routes: [], raw: text]
@@ -1156,7 +1227,7 @@ Map fetchZigbeeMeshInfo() {
 }
 
 String fetchZwaveVersion() {
-    String raw = fetchPlainText(ZWAVE_VERSION_URL, "Z-Wave version")
+    String raw = fetchPlainText(ZWAVE_VERSION_PATH, "Z-Wave version")
     return parseZWaveVersion(raw)
 }
 
@@ -1251,7 +1322,8 @@ List extractZigbeeMessageCounts(Map zigbeeData) {
 Map fetchCurrentStats() {
     try {
         Map params = [
-            uri: RUNTIME_STATS_URL,
+            uri: HUB_BASE,
+            path: RUNTIME_STATS_PATH,
             contentType: "application/json",
             timeout: 30
         ]
@@ -1271,7 +1343,7 @@ Map fetchCurrentStats() {
 // ===== ANALYSIS MODULES =====
 
 Map analyzeDevices() {
-    Map response = fetchEndpoint(DEVICES_LIST_URL, "devices list")
+    Map response = fetchEndpoint(DEVICES_LIST_PATH, "devices list")
 
     if (!response || response.error || !response.devices) {
         logWarn "Failed to fetch devices list"
@@ -1293,6 +1365,7 @@ Map analyzeDevices() {
         lowBatteryDevices: [],
         allDevices: [],
         byType: [:],
+        idsByType: [:],
         byProtocol: [(PROTOCOL_ZIGBEE): 0, (PROTOCOL_ZWAVE): 0, (PROTOCOL_MATTER): 0,
                      (PROTOCOL_LAN): 0, (PROTOCOL_VIRTUAL): 0, (PROTOCOL_MAKER): 0,
                      (PROTOCOL_CLOUD): 0, (PROTOCOL_HUBMESH): 0, (PROTOCOL_OTHER): 0],
@@ -1353,6 +1426,8 @@ Map analyzeDevices() {
             // Device type
             String typeName = safeToString(device.type, "Unknown")
             stats.byType[typeName] = (stats.byType[typeName] ?: 0) + 1
+            if (!stats.idsByType.containsKey(typeName)) stats.idsByType[typeName] = []
+            stats.idsByType[typeName] << device.id
 
             // Protocol detection — radio map first, then heuristic fallback
             String protocol = PROTOCOL_OTHER
@@ -1415,7 +1490,7 @@ Map analyzeDevices() {
 }
 
 Map analyzeApps() {
-    Map response = fetchEndpoint(APPS_LIST_URL, "apps list")
+    Map response = fetchEndpoint(APPS_LIST_PATH, "apps list")
 
     if (!response || response.error || !response.apps) {
         return getEmptyAppStats()
@@ -1498,7 +1573,7 @@ Map analyzeApps() {
     // Identify platform-only apps by comparing runtime stats against appsList
     stats.platformApps = []
     try {
-        Map runtimeResponse = fetchEndpoint(RUNTIME_STATS_URL, "runtime stats")
+        Map runtimeResponse = fetchEndpoint(RUNTIME_STATS_PATH, "runtime stats")
         if (runtimeResponse && !runtimeResponse.error) {
             List runtimeAppStats = runtimeResponse.appStats ?: []
             stats.runtimeTotalApps = runtimeAppStats.size()
@@ -1540,11 +1615,11 @@ Map analyzeApps() {
 
 Map analyzeNetwork() {
     return [
-        network: fetchEndpoint(NETWORK_CONFIG_URL, "network configuration", 15),
-        zwave: fetchEndpoint(ZWAVE_DETAILS_URL, "Z-Wave details", 20),
-        zigbee: fetchEndpoint(ZIGBEE_DETAILS_URL, "Zigbee details", 20),
-        matter: fetchEndpoint(MATTER_DETAILS_URL, "Matter details", 15),
-        hubMesh: fetchEndpoint(HUB_MESH_URL, "Hub Mesh", 15)
+        network: fetchEndpoint(NETWORK_CONFIG_PATH, "network configuration", 15),
+        zwave: fetchEndpoint(ZWAVE_DETAILS_PATH, "Z-Wave details", 20),
+        zigbee: fetchEndpoint(ZIGBEE_DETAILS_PATH, "Zigbee details", 20),
+        matter: fetchEndpoint(MATTER_DETAILS_PATH, "Matter details", 15),
+        hubMesh: fetchEndpoint(HUB_MESH_PATH, "Hub Mesh", 15)
     ]
 }
 
@@ -1669,15 +1744,15 @@ List buildZwaveGhostNodes(Map zwaveDetails) {
 Map buildRadioProtocolMap() {
     Map protocols = [:]
     try {
-        Map zigbeeData = fetchEndpoint(ZIGBEE_DETAILS_URL, "Zigbee details", 20)
+        Map zigbeeData = fetchEndpoint(ZIGBEE_DETAILS_PATH, "Zigbee details", 20)
         if (zigbeeData && !zigbeeData.error && zigbeeData.devices) {
             zigbeeData.devices.each { Map d -> if (d.id) protocols[d.id] = PROTOCOL_ZIGBEE }
         }
-        Map zwaveData = fetchEndpoint(ZWAVE_DETAILS_URL, "Z-Wave details", 20)
+        Map zwaveData = fetchEndpoint(ZWAVE_DETAILS_PATH, "Z-Wave details", 20)
         if (zwaveData && !zwaveData.error && zwaveData.nodes) {
             zwaveData.nodes.each { Map n -> if (n.deviceId) protocols[n.deviceId] = PROTOCOL_ZWAVE }
         }
-        Map matterData = fetchEndpoint(MATTER_DETAILS_URL, "Matter details", 15)
+        Map matterData = fetchEndpoint(MATTER_DETAILS_PATH, "Matter details", 15)
         if (matterData && !matterData.error && matterData.devices) {
             matterData.devices.each { Map d -> if (d.id) protocols[d.id] = PROTOCOL_MATTER }
         }
@@ -1688,7 +1763,7 @@ Map buildRadioProtocolMap() {
 }
 
 Map buildAppLookupMap() {
-    Map response = fetchEndpoint(APPS_LIST_URL, "apps list", 20)
+    Map response = fetchEndpoint(APPS_LIST_PATH, "apps list", 20)
     if (!response || response.error || !response.apps) {
         return [:]
     }
@@ -1784,8 +1859,8 @@ void createCheckpoint() {
     Map resources = fetchSystemResources()
 
     // Capture radio message counts for Z-Wave and Zigbee
-    Map zwaveData = fetchEndpoint(ZWAVE_DETAILS_URL, "Z-Wave details", 20)
-    Map zigbeeData = fetchEndpoint(ZIGBEE_DETAILS_URL, "Zigbee details", 20)
+    Map zwaveData = fetchEndpoint(ZWAVE_DETAILS_PATH, "Z-Wave details", 20)
+    Map zigbeeData = fetchEndpoint(ZIGBEE_DETAILS_PATH, "Zigbee details", 20)
     List zwaveRadio = extractZwaveMessageCounts(zwaveData)
     List zigbeeRadio = extractZigbeeMessageCounts(zigbeeData)
 
@@ -1848,16 +1923,6 @@ Map buildZeroBaseline(Map stats, Map resources) {
     ]
 }
 
-Map buildPerformanceComparisonPayload(Map baselineStats, Map checkpointStats, String baselineLabel, String checkpointLabel) {
-    return [
-        generatedAt     : new Date().format("yyyy-MM-dd HH:mm:ss"),
-        baselineLabel   : baselineLabel,
-        checkpointLabel : checkpointLabel,
-        baselineStats   : baselineStats ?: [:],
-        checkpointStats : checkpointStats ?: [:]
-    ]
-}
-
 void deleteCheckpoint(int index) {
     List checkpoints = loadCheckpoints()
     if (index >= 0 && index < checkpoints.size()) {
@@ -1869,7 +1934,7 @@ void deleteCheckpoint(int index) {
 
 void clearAllCheckpoints() {
     deleteFile(CHECKPOINTS_FILE)
-    clearPerformanceComparison()
+    deleteFile(PERFORMANCE_COMPARISON_FILE)
     logInfo "All perf checkpoints cleared"
 }
 
@@ -1918,7 +1983,7 @@ void deleteSnapshot(int index) {
 
 void clearAllSnapshots() {
     deleteFile(SNAPSHOTS_FILE)
-    clearSnapshotDiff()
+    deleteFile(SNAPSHOT_DIFF_FILE)
     logInfo "All config snapshots cleared"
 }
 
@@ -1966,6 +2031,14 @@ String generateQuickSummary() {
         if (resources) {
             summary += "\nResources: ${formatMemory(resources.freeOSMemory ?: 0)} free | CPU: ${String.format('%.2f', (resources.cpuAvg5min ?: 0) as float)}"
         }
+        synchronized (apiTimings) {
+            if (apiTimings) {
+                List timingParts = apiTimings.collect { String ep, Map entry ->
+                    "${ep}: ${entry.median}ms"
+                }.sort()
+                summary += "\nAPI medians: ${timingParts.join(' | ')}"
+            }
+        }
         return summary
     } catch (Exception e) {
         logError "Error generating summary: ${getObjectClassName(e)}: ${e.message}"
@@ -1975,7 +2048,7 @@ String generateQuickSummary() {
 
 Map analyzeDevicesQuick() {
     // Fast single-pass device analysis — one API call, heuristic-only protocol detection
-    Map response = fetchEndpoint(DEVICES_LIST_URL, "devices list")
+    Map response = fetchEndpoint(DEVICES_LIST_PATH, "devices list")
 
     if (!response || response.error || !response.devices) {
         return getEmptyDeviceStats()
@@ -2051,7 +2124,7 @@ Map analyzeDevicesQuick() {
 
 Map analyzeAppsQuick() {
     // Fast app count — single API call, counts children recursively
-    Map response = fetchEndpoint(APPS_LIST_URL, "apps list")
+    Map response = fetchEndpoint(APPS_LIST_PATH, "apps list")
 
     if (!response || response.error || !response.apps) {
         return [totalApps: 0, userApps: 0, builtInApps: 0]
@@ -2103,7 +2176,7 @@ Map getHubInfo() {
         info.ip = hub.localIP ?: "Unknown"
     }
     // Fetch model from hubData for accurate hardware name (e.g. "C-7", "C-8 Pro")
-    Map hubData = fetchEndpoint(HUB_DATA_URL, "hub data", 10)
+    Map hubData = fetchEndpoint(HUB_DATA_PATH, "hub data", 10)
     if (hubData && !hubData.error && hubData.model) {
         info.hardware = hubData.model
     }
@@ -2116,6 +2189,7 @@ Map getEmptyDeviceStats() {
         parentDevices: 0, childDevices: 0, linkedDevices: 0, batteryDevices: 0,
         lowBatteryDevices: [], allDevices: [],
         byType: [:],
+        idsByType: [:],
         byProtocol: [(PROTOCOL_ZIGBEE): 0, (PROTOCOL_ZWAVE): 0, (PROTOCOL_MATTER): 0,
                      (PROTOCOL_LAN): 0, (PROTOCOL_VIRTUAL): 0, (PROTOCOL_MAKER): 0,
                      (PROTOCOL_CLOUD): 0, (PROTOCOL_HUBMESH): 0, (PROTOCOL_OTHER): 0],
@@ -2255,14 +2329,6 @@ void savePerformanceComparisonPayload(Map payload) {
     }
 }
 
-void clearPerformanceComparison() {
-    deleteFile(PERFORMANCE_COMPARISON_FILE)
-}
-
-boolean hasSavedPerformanceComparison() {
-    return loadPerformanceComparisonPayload() != null
-}
-
 Map loadSnapshotDiffPayload() {
     def data = readFile(SNAPSHOT_DIFF_FILE)
     return data instanceof Map ? (Map) data : null
@@ -2272,14 +2338,6 @@ void saveSnapshotDiffPayload(Map payload) {
     if (payload) {
         writeFile(SNAPSHOT_DIFF_FILE, groovy.json.JsonOutput.toJson(payload))
     }
-}
-
-void clearSnapshotDiff() {
-    deleteFile(SNAPSHOT_DIFF_FILE)
-}
-
-boolean hasSavedSnapshotDiff() {
-    return loadSnapshotDiffPayload() != null
 }
 
 def readFile(String fileName) {
@@ -2341,9 +2399,28 @@ void uninstalled() {
     logInfo "Hub Diagnostics uninstalled"
 }
 
+void updateUIIfNeeded() {
+    if (state.lastInstalledVersion == APP_VERSION) return
+    try {
+        logInfo "App version changed (${state.lastInstalledVersion ?: 'none'} → ${APP_VERSION}), downloading UI..."
+        Map params = [uri: IMPORT_URL_WEB, contentType: "text/plain", timeout: 30]
+        httpGet(params) { resp ->
+            if (resp.success) {
+                byte[] htmlBytes = resp.data.text.getBytes("UTF-8")
+                uploadHubFile("hub_diagnostics_ui.html", htmlBytes)
+                state.lastInstalledVersion = APP_VERSION
+                logInfo "UI updated to version ${APP_VERSION} (${htmlBytes.length} bytes)"
+            }
+        }
+    } catch (Exception e) {
+        logWarn "Failed to auto-download UI from GitHub: ${e.message}"
+    }
+}
+
 void initialize() {
     logInfo "Hub Diagnostics initialized"
     migrateStorageIfNeeded()
+    updateUIIfNeeded()
 
     if (settings.autoSnapshot) {
         int interval = (settings.snapshotInterval ?: "24").toInteger()
