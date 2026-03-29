@@ -401,17 +401,6 @@ async function rDashboard(){const P='p-dashboard';loading(P);try{
   o+=mc('Applications',d.apps.total);o+=mc('User Apps',d.apps.user);
   o+='</div></div></div>';
 
-  // System & Updates
-  const upToDate = (d.appVersion === UI_VERSION && UI_VERSION !== 'Unknown');
-  o+='<div class="card"><div class="card-h">System & Updates</div><div class="card-b">';
-  o+='<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">';
-  o+='<div><b>App Version:</b> '+d.appVersion+'</div>';
-  o+='<div><b>UI Version:</b> '+UI_VERSION+'</div>';
-  o+='<div class="badge '+(upToDate?'b-ok':'b-warn')+'">'+(upToDate?'In Sync':'Update Recommended')+'</div>';
-  o+='</div>';
-  o+='<div class="actions"><button class="btn btn-p" id="btnSyncUI">Check for updates</button></div>';
-  o+='</div></div>';
-
   // Resources
   if(d.resources){const r=d.resources;
     o+='<div class="card"><div class="card-h">Resources</div><div class="card-b"><div class="metrics">';
@@ -439,6 +428,16 @@ async function rDashboard(){const P='p-dashboard';loading(P);try{
       const dt=r.date?new Date(Number(r.date)).toLocaleString():'';
       o+='<div style="display:flex;gap:12px;padding:3px 0"><a href="/local/'+h(r.name)+'" target="_blank" style="color:var(--link)">'+h(r.name)+'</a><span style="color:var(--muted)">'+sz+'</span><span style="color:var(--muted)">'+dt+'</span></div>'});
     o+='</div></details>'}
+  o+='</div></div>';
+  // App settings
+  const upToDate = (d.appVersion === UI_VERSION && UI_VERSION !== 'Unknown');
+  o+='<div class="card"><div class="card-h">Hub Diagnostic App</div><div class="card-b">';
+  o+='<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">';
+  o+='<div><b>App Version:</b> '+d.appVersion+'</div>';
+  o+='<div><b>UI Version:</b> '+UI_VERSION+'</div>';
+  o+='<div class="badge '+(upToDate?'b-ok':'b-warn')+'">'+(upToDate?'In Sync':'Update Recommended')+'</div>';
+  o+='</div>';
+  o+='<div class="actions"><button class="btn btn-p" id="btnSyncUI">Check for updates</button></div>';
   o+='</div></div>';
   document.getElementById(P).innerHTML=o;
   
