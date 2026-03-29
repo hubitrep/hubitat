@@ -308,9 +308,12 @@ Map apiDashboard() {
 
 String getUIVersion() {
     try {
-        String html = new String(downloadHubFile('hub_diagnostics_ui.html'), 'UTF-8')
-        java.util.regex.Matcher m = (html =~ /const UI_VERSION = "([^"]+)"/)
-        if (m.find()) return m.group(1)
+        byte[] htmlBytes = downloadHubFile('hub_diagnostics_ui.html')
+        if (htmlBytes) {
+            String html = new String(htmlBytes, 'UTF-8')
+            java.util.regex.Matcher m = (html =~ /const UI_VERSION = "([^"]+)"/)
+            if (m.find()) return m.group(1)
+        }
     } catch (Exception e) {
         logDebug "Error reading UI version: ${e.message}"
     }
@@ -2456,14 +2459,25 @@ boolean syncUI(boolean force = false) {
         logInfo "Hub Diagnostics: Syncing UI from GitHub..."
         Map params = [uri: IMPORT_URL_WEB, contentType: "text/plain", timeout: 30]
         boolean success = false
+        // Use synchronous httpGet by not providing a closure to params
         httpGet(params) { resp ->
-            if (resp.success) {
-                byte[] htmlBytes = resp.data.text.getBytes("UTF-8")
-                uploadHubFile("hub_diagnostics_ui.html", htmlBytes)
-                state.lastInstalledVersion = APP_VERSION
-                state.lastUIUpdateCheck = now()
-                logInfo "UI updated from GitHub (${htmlBytes.length} bytes)"
-                success = true
+            if (resp.success && resp.data) {
+                String htmlText = resp.data.text ?: resp.data.toString()
+                if (htmlText && htmlText.contains("Hub Diagnostics")) {
+                    // Enforce version sync: downloaded HTML must contain the same version string as the App
+                    if (htmlText.contains("const UI_VERSION = \"${APP_VERSION}\"")) {
+                        byte[] htmlBytes = htmlText.getBytes("UTF-8")
+                        uploadHubFile("hub_diagnostics_ui.html", htmlBytes)
+                        state.lastInstalledVersion = APP_VERSION
+                        state.lastUIUpdateCheck = now()
+                        logInfo "UI updated from GitHub to match App v${APP_VERSION} (${htmlBytes.length} bytes)"
+                        success = true
+                    } else {
+                        logWarn "Sync failed: GitHub UI version does not match App v${APP_VERSION}"
+                    }
+                } else {
+                    logWarn "Sync failed: Downloaded content appears invalid"
+                }
             }
         }
         return success
