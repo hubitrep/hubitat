@@ -241,16 +241,29 @@ Map serveUI() {
     
     // Background sync check (Option 5: once every 24h)
     long lastCheck = state.lastUIUpdateCheck ?: 0
-    if (now() - lastCheck > 86400000) {
-        logDebug "Auto-checking for UI updates from GitHub (24h period)..."
-        syncUI(false)
+    String uiVer = getUIVersion()
+    if (now() - lastCheck > 86400000 || uiVer == "Unknown") {
+        logDebug "Auto-syncing UI (Unknown version or >24h)..."
+        syncUI(uiVer == "Unknown")
     }
 
-    String html = new String(downloadHubFile('hub_diagnostics_ui.html'), 'UTF-8')
-    String apiBase = fullLocalApiServerUrl
-    html = html.replace('${access_token}', state.accessToken)
-        .replace('${api_base}', apiBase)
-    return render(status: 200, contentType: 'text/html', data: html)
+    try {
+        byte[] hubFile = downloadHubFile('hub_diagnostics_ui.html')
+        if (!hubFile) {
+            logError "hub_diagnostics_ui.html missing from hub. Attempting emergency sync..."
+            if (syncUI(true)) hubFile = downloadHubFile('hub_diagnostics_ui.html')
+        }
+        if (!hubFile) return render(status: 404, contentType: 'text/plain', data: 'UI file not found. Check hub logs.')
+        
+        String html = new String(hubFile, 'UTF-8')
+        String apiBase = fullLocalApiServerUrl
+        html = html.replace('${access_token}', state.accessToken)
+            .replace('${api_base}', apiBase)
+        return render(status: 200, contentType: 'text/html', data: html)
+    } catch (Exception e) {
+        logError "Error serving UI: ${e.message}"
+        return render(status: 500, contentType: 'text/plain', data: "Error serving UI: ${e.message}")
+    }
 }
 
 Map apiSyncUI() {
@@ -2423,6 +2436,7 @@ void updated() {
     logInfo "Hub Diagnostics updated"
     unsubscribe()
     unschedule()
+    syncUI(true)
     initialize()
 }
 
@@ -2462,7 +2476,6 @@ boolean syncUI(boolean force = false) {
 void initialize() {
     logInfo "Hub Diagnostics initialized"
     migrateStorageIfNeeded()
-    syncUI(false)
 
     if (settings.autoSnapshot) {
         int interval = (settings.snapshotInterval ?: "24").toInteger()
