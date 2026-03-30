@@ -11,7 +11,7 @@ import groovy.transform.Field
 import groovy.transform.CompileStatic
 import groovy.json.JsonOutput
 
-@Field static final String APP_VERSION = "4.5.2"
+@Field static final String APP_VERSION = "4.5.3"
 @Field static final String STORAGE_SCHEMA_VERSION = "3.2.0"
 
 // API endpoint paths (all relative to HUB_BASE)
@@ -196,8 +196,7 @@ Map dashboardPage() {
             paragraph "<b>App Version:</b> ${APP_VERSION}\n<b>UI Version:</b> ${uiVer}"
             String editorPath = getAppEditorPath()
             if (editorPath) {
-                href url: editorPath, title: "Open App Code Editor", style: "embedded",
-                     description: "Update the Groovy source code via Import"
+                paragraph "<a href='${editorPath}' target='_blank'>Open App Code Editor</a> — update the Groovy source code via Import"
             }
         }
 
