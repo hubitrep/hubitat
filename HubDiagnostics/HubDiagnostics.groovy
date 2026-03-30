@@ -11,7 +11,7 @@ import groovy.transform.Field
 import groovy.transform.CompileStatic
 import groovy.json.JsonOutput
 
-@Field static final String APP_VERSION = "4.5.3"
+@Field static final String APP_VERSION = "4.5.4"
 @Field static final String STORAGE_SCHEMA_VERSION = "3.2.0"
 
 // API endpoint paths (all relative to HUB_BASE)
@@ -774,7 +774,8 @@ Map getNetworkData() {
             region: networkData.zwave.region, nodeCount: (networkData.zwave.zwDevices ?: [:]).size(),
             isRadioUpdateNeeded: networkData.zwave.isRadioUpdateNeeded,
             zwaveJs: networkData.zwave.zwaveJs, version: zwaveVersion,
-            mesh: zwaveMesh, ghostNodes: ghostNodes, problemNodes: problemNodes
+            mesh: zwaveMesh, ghostNodes: ghostNodes, problemNodes: problemNodes,
+            messageCounts: extractZwaveMessageCounts(networkData.zwave ?: [:])
         ] : null,
         zigbee: networkData.zigbee && !networkData.zigbee.error ? [
             enabled: zigbeeRaw.enabled, healthy: zigbeeRaw.healthy,
@@ -784,6 +785,7 @@ Map getNetworkData() {
             powerLevel: zigbeeRaw.powerLevel,
             responsiveCount: zigbeeRaw.devices ? zigbeeRaw.devices.count { it.active == true } : 0,
             totalCount: (zigbeeRaw.devices ?: []).size(), nonResponsive: nonResponsive,
+            messageCounts: extractZigbeeMessageCounts(networkData.zigbee ?: [:]),
             mesh: zigbeeMesh ? [
                 neighbors: zigbeeMesh.neighbors?.size() ?: 0, routes: zigbeeMesh.routes?.size() ?: 0,
                 avgLqi: zigbeeMesh.avgLqi, minLqi: zigbeeMesh.minLqi, maxLqi: zigbeeMesh.maxLqi,
