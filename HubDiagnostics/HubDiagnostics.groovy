@@ -11,7 +11,7 @@ import groovy.transform.Field
 import groovy.transform.CompileStatic
 import groovy.json.JsonOutput
 
-@Field static final String APP_VERSION = "4.5.5"
+@Field static final String APP_VERSION = "4.5.6"
 @Field static final String STORAGE_SCHEMA_VERSION = "3.2.0"
 
 // API endpoint paths (all relative to HUB_BASE)
@@ -833,7 +833,10 @@ Map getPerformanceData() {
         zwave: extractZwaveMessageCounts(zwaveData),
         zigbee: extractZigbeeMessageCounts(zigbeeData)
     ]
-    if (stats) stats.radioStats = radioStats
+    if (stats) {
+        stats.radioStats = radioStats
+        stats.uptimeSeconds = parseUptime(stats.uptime as String)
+    }
     List checkpoints = loadCheckpoints()
     return [
         stats: stats, resources: resources,
