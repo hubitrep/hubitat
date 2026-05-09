@@ -565,14 +565,16 @@ Map apiVersionCheck() {
  */
 private Map buildSharedCache(boolean includeNetwork = false) {
     Map shared = [:]
-    shared.hubData     = (Map) hubRequest(HUB_DATA_PATH, "hub data (shared)", "json", 10)
+    Map hubDataWrap = hubMapRequest(HUB_DATA_PATH, "hub data (shared)", 10)
+    shared.hubData     = hubDataWrap.ok ? hubDataWrap.data : null
     shared.resources   = fetchSystemResources()
     shared.temperature = fetchTemperature()
     shared.databaseSize = fetchDatabaseSize()
     shared.hubAlerts   = fetchHubAlerts(shared.hubData as Map)
     if (includeNetwork) {
         shared.network      = analyzeNetwork()
-        shared.runtimeStats = (Map) hubRequest(RUNTIME_STATS_PATH, "runtime stats (shared)", "json")
+        Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats (shared)")
+        shared.runtimeStats = statsWrap.ok ? statsWrap.data : null
     }
     return shared
 }
@@ -645,7 +647,8 @@ Map apiNetwork() {
     long start = now()
     // Network tab needs hubData (for fetchSecurityInfo's cloudController flag); rest is fetched by analyzeNetwork
     Map shared = [:]
-    shared.hubData = (Map) hubRequest(HUB_DATA_PATH, "hub data (shared)", "json", 10)
+    Map hubDataWrap = hubMapRequest(HUB_DATA_PATH, "hub data (shared)", 10)
+    shared.hubData = hubDataWrap.ok ? hubDataWrap.data : null
     Map data = getNetworkData(shared)
     long elapsed = now() - start
     logDebug "apiNetwork completed in ${elapsed}ms"
@@ -740,12 +743,15 @@ Map apiPerformanceCompare() {
 
     // Resolve checkpoint
     if (checkpoint == "now") {
-        checkpointStats = (Map) hubRequest(RUNTIME_STATS_PATH, "runtime stats")
-        if (!checkpointStats) return jsonResponse([success: false, error: "Unable to fetch current runtime stats"])
+        Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+        if (!statsWrap.ok) return jsonResponse([success: false, error: "Unable to fetch current runtime stats"])
+        checkpointStats = statsWrap.data
         Map currentResources = fetchSystemResources()
         checkpointStats.resources = currentResources
-        Map zwaveData = (Map) hubRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", "json", 20)
-        Map zigbeeData = (Map) hubRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", "json", 20)
+        Map zwWrap = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20)
+        Map zwaveData = zwWrap.ok ? zwWrap.data : [:]
+        Map zbWrap = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20)
+        Map zigbeeData = zbWrap.ok ? zbWrap.data : [:]
         checkpointStats.radioStats = [
             zwave: extractZwaveMessageCounts(zwaveData),
             zigbee: extractZigbeeMessageCounts(zigbeeData)
@@ -1167,9 +1173,10 @@ Map apiGenerateReport() {
     String timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
     List memHistory = fetchMemoryHistory()
 
+    Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
     Map shared = [
         network:      analyzeNetwork(),
-        runtimeStats: (Map) hubRequest(RUNTIME_STATS_PATH, "runtime stats"),
+        runtimeStats: statsWrap.ok ? statsWrap.data : null,
         resources:    fetchSystemResources(),
         temperature:  fetchTemperature(),
         hubAlerts:    fetchHubAlerts(),
@@ -1228,7 +1235,8 @@ Map apiForumExport() {
     List ghostNodes = buildZwaveGhostNodes(zwaveRaw)
     Map zigbeeMesh = fetchZigbeeMeshInfo()
     String zwaveVersion = fetchZwaveVersion()
-    Map stats = (Map) hubRequest(RUNTIME_STATS_PATH, "runtime stats")
+    Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+    Map stats = statsWrap.ok ? statsWrap.data : null
     Integer uptimeSeconds = stats ? parseUptime(stats.uptime as String) : null
     float uptimeMin = uptimeSeconds ? uptimeSeconds / 60.0f : 0
 
@@ -1332,7 +1340,7 @@ Map apiForumExport() {
     }
 
     // ── 4. Z-Wave Network ──
-    if (zwaveRaw && !zwaveRaw.error) {
+    if (zwaveRaw) {
         md << "\n### Z-Wave\n"
         md << "- **Enabled:** ${zwaveRaw.enabled ? 'Yes' : 'No'}, **Healthy:** ${zwaveRaw.healthy ? 'Yes' : 'No'}\n"
         md << "- **Version:** ${zwaveVersion ?: 'N/A'}, **Region:** ${zwaveRaw.region ?: 'N/A'}\n"
@@ -1393,7 +1401,7 @@ Map apiForumExport() {
     }
 
     // ── 5. Zigbee Network ──
-    if (zigbeeRaw && !zigbeeRaw.error && zigbeeRaw.enabled) {
+    if (zigbeeRaw && zigbeeRaw.enabled) {
         int totalZb = (zigbeeRaw.devices ?: []).size()
         md << "\n### Zigbee\n"
         md << "- **Healthy:** ${zigbeeRaw.healthy ? 'Yes' : 'No'}"
@@ -1427,7 +1435,7 @@ Map apiForumExport() {
     }
 
     // ── 6. Hub Mesh ──
-    if (hubMeshRaw && !hubMeshRaw.error && hubMeshRaw.hubList) {
+    if (hubMeshRaw && hubMeshRaw.hubList) {
         List peers = hubMeshRaw.hubList as List
         if (peers) {
             md << "\n### Hub Mesh\n"
@@ -1657,7 +1665,9 @@ Map getAppsData() {
 
 Map getNetworkData(Map shared = [:]) {
     Map networkData = (shared.network as Map) ?: analyzeNetwork()
-    Map stats = (shared.runtimeStats as Map) ?: (Map) hubRequest(RUNTIME_STATS_PATH, "runtime stats")
+    Map statsRaw = (Map) shared.runtimeStats
+    if (!statsRaw) { Map r = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats"); statsRaw = r.ok ? r.data : null }
+    Map stats = statsRaw
     Integer uptimeSeconds = stats ? parseUptime(stats.uptime as String) : null
     Map zigbeeMesh = fetchZigbeeMeshInfo()
     String zwaveVersion = fetchZwaveVersion()
@@ -1679,8 +1689,8 @@ Map getNetworkData(Map shared = [:]) {
     } : []
     return [
         uptimeSeconds: uptimeSeconds,
-        network: networkData.network && !networkData.network.error ? networkData.network : null,
-        zwave: networkData.zwave && !networkData.zwave.error ? [
+        network: networkData.network ?: null,
+        zwave: networkData.zwave ? [
             enabled: networkData.zwave.enabled, healthy: networkData.zwave.healthy,
             region: networkData.zwave.region, nodeCount: (networkData.zwave.zwDevices ?: [:]).size(),
             isRadioUpdateNeeded: networkData.zwave.isRadioUpdateNeeded,
@@ -1689,7 +1699,7 @@ Map getNetworkData(Map shared = [:]) {
             mesh: zwaveMesh, ghostNodes: ghostNodes, problemNodes: problemNodes,
             messageCounts: extractZwaveMessageCounts(networkData.zwave ?: [:])
         ] : null,
-        zigbee: networkData.zigbee && !networkData.zigbee.error ? [
+        zigbee: networkData.zigbee ? [
             enabled: zigbeeRaw.enabled, healthy: zigbeeRaw.healthy,
             networkState: zigbeeRaw.networkState, channel: zigbeeRaw.channel,
             panId: zigbeeRaw.panId, extendedPanId: zigbeeRaw.extendedPanId,
@@ -1708,8 +1718,8 @@ Map getNetworkData(Map shared = [:]) {
                 childDevices: zigbeeMesh.childDevices?.size() ?: 0
             ] : null
         ] : null,
-        matter: networkData.matter && !networkData.matter.error ? networkData.matter : null,
-        hubMesh: networkData.hubMesh && !networkData.hubMesh.error ? [
+        matter: networkData.matter ?: null,
+        hubMesh: networkData.hubMesh ? [
             enabled: hubMeshRaw.hubMeshEnabled != null ? hubMeshRaw.hubMeshEnabled : hubMeshRaw.enabled,
             sharedDevices: hubMeshRaw.sharedDevices?.size() ?: 0,
             linkedDevices: hubMeshRaw.linkedDevices?.size() ?: 0,
@@ -1748,10 +1758,13 @@ Map getHealthData(Map shared = [:]) {
 }
 
 Map getPerformanceData(Map shared = [:]) {
-    Map stats      = (shared.runtimeStats as Map) ?: (Map) hubRequest(RUNTIME_STATS_PATH, "runtime stats")
-    Map resources  = (shared.resources as Map)    ?: fetchSystemResources()
-    Map zwaveData  = (shared.network?.zwave  as Map) ?: (Map) hubRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", "json", 20)
-    Map zigbeeData = (shared.network?.zigbee as Map) ?: (Map) hubRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", "json", 20)
+    Map stats
+    if (shared.runtimeStats) { stats = (Map) shared.runtimeStats } else { Map r = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats"); stats = r.ok ? r.data : null }
+    Map resources  = (shared.resources as Map) ?: fetchSystemResources()
+    Map zwaveData
+    if (shared.network?.zwave) { zwaveData = (Map) shared.network.zwave } else { Map r = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20); zwaveData = r.ok ? r.data : null }
+    Map zigbeeData
+    if (shared.network?.zigbee) { zigbeeData = (Map) shared.network.zigbee } else { Map r = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20); zigbeeData = r.ok ? r.data : null }
     List zwaveMsgCounts = extractZwaveMessageCounts(zwaveData)
     List zigbeeMsgCounts = extractZigbeeMessageCounts(zigbeeData)
     Map radioStats = [zwave: zwaveMsgCounts, zigbee: zigbeeMsgCounts]
@@ -1763,8 +1776,9 @@ Map getPerformanceData(Map shared = [:]) {
 
     // Enrich appStats with source labels (community/builtin/platform)
     Map appSourceById = [:]
-    Map appsListResp = (Map) hubRequest(APPS_LIST_PATH, "apps list")
-    if (appsListResp?.apps) {
+    Map appsListWrap = hubMapRequest(APPS_LIST_PATH, "apps list")
+    Map appsListResp = appsListWrap.ok ? appsListWrap.data : [:]
+    if (appsListResp.apps) {
         visitAppEntries(appsListResp.apps as List) { Map appEntry, Map app, boolean isChildLevel, List _ ->
             if (app?.id != null) appSourceById[app.id] = (app.user ? "community" : "builtin")
         }
@@ -1785,9 +1799,9 @@ Map getPerformanceData(Map shared = [:]) {
     // Walk /hub2/devicesList directly to build id→type map. Skips analyzeDevices' enrichment overhead
     // (we only need the raw type/name from the bulk endpoint, not the cross-classification work).
     Map deviceTypeById = [:]
-    Map devListResp = (Map) hubRequest(DEVICES_LIST_PATH, "devices list (B2 labels)", "json", 15)
-    if (devListResp?.devices) {
-        flattenDeviceEntries(devListResp.devices as List).each { Map entry ->
+    Map devWrap = hubMapRequest(DEVICES_LIST_PATH, "devices list (B2 labels)", 15)
+    if (devWrap.ok && devWrap.data.devices) {
+        flattenDeviceEntries(devWrap.data.devices as List).each { Map entry ->
             Map dev = entry?.data instanceof Map ? (Map) entry.data : null
             if (dev?.id != null) deviceTypeById[dev.id] = (dev.type ?: 'Unknown') as String
         }
@@ -1896,8 +1910,9 @@ List getStructuredAlerts(Map shared = [:]) {
     }
 
     // Network: Ethernet + WiFi both active
-    Map networkConfig = (shared.network?.network as Map) ?: (Map) hubRequest(NETWORK_CONFIG_PATH, "network configuration", "json", 15)
-    if (networkConfig && !networkConfig.error && networkConfig.hasEthernet && networkConfig.hasWiFi) {
+    Map networkConfig = (Map) shared.network?.network
+    if (!networkConfig) { Map r = hubMapRequest(NETWORK_CONFIG_PATH, "network configuration", 15); networkConfig = r.ok ? r.data : null }
+    if (networkConfig && networkConfig.hasEthernet && networkConfig.hasWiFi) {
         alerts << [severity: "warning", name: "Ethernet and WiFi both active \u2014 disable WiFi when using Ethernet"]
     }
 
@@ -1907,8 +1922,9 @@ List getStructuredAlerts(Map shared = [:]) {
     if (!zwRaw) {
         long lastZwCheck = state.lastZwaveGhostCheckMs ?: 0
         if (now() - lastZwCheck > 60000) {
-            zwRaw = (Map) hubRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", "json", 8)
-            if (zwRaw && !zwRaw.error) {
+            Map zwWrap = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 8)
+            zwRaw = zwWrap.ok ? zwWrap.data : null
+            if (zwRaw) {
                 state.lastZwaveGhostCheckMs = now()
                 state.cachedZwaveGhostCount = buildZwaveGhostNodes(zwRaw).size()
             }
@@ -1972,6 +1988,14 @@ Map apiStats() {
  */
 private Object hubRequest(String path, String name, String type = "json", int timeout = 30) {
     return hubRequestInternal(path, name, type, timeout, true)
+}
+
+private Map hubMapRequest(String path, String name, int timeout = 30) {
+    Object raw = hubRequestInternal(path, name, "json", timeout, true)
+    if (raw instanceof Map && ((Map) raw).error) {
+        return [ok: false, data: [:], error: (String) ((Map) raw).message]
+    }
+    return [ok: true, data: (Map)(raw ?: [:]), error: null]
 }
 
 /**
@@ -2117,12 +2141,12 @@ Integer fetchDatabaseSize() {
 }
 
 Map fetchFileManagerStats() {
-    Map fm = (Map) hubRequest("/hub/fileManager/json", "file manager", "json", 10)
-    if (!fm || fm.error) return null
-    List files = (List) (fm.files ?: [])
+    Map wrap = hubMapRequest("/hub/fileManager/json", "file manager", 10)
+    if (!wrap.ok) return null
+    List files = (List) (wrap.data.files ?: [])
     long usedBytes = 0L
     files.each { usedBytes += (it.size?.toString()?.toLong() ?: 0L) }
-    return [fileCount: files.size(), usedBytes: usedBytes, freeSpace: fm.freeSpace]
+    return [fileCount: files.size(), usedBytes: usedBytes, freeSpace: wrap.data.freeSpace]
 }
 
 Float fetchTemperature() {
@@ -2132,8 +2156,9 @@ Float fetchTemperature() {
 }
 
 Map fetchHubAlerts(Map prefetchedHubData = null) {
-    Map hubData = prefetchedHubData ?: (Map) hubRequest(HUB_DATA_PATH, "hub data", "json", 10)
-    if (!hubData || hubData.error) return [:]
+    Map hubData = prefetchedHubData
+    if (!hubData) { Map r = hubMapRequest(HUB_DATA_PATH, "hub data", 10); hubData = r.ok ? r.data : null }
+    if (!hubData) return [:]
     return [
         alerts: hubData.alerts ?: [:],
         databaseSize: hubData.alerts?.databaseSize,
@@ -2146,9 +2171,9 @@ Map fetchHubAlerts(Map prefetchedHubData = null) {
 
 Map fetchBackups() {
     Object localResp = hubRequest(LOCAL_BACKUPS_PATH, "local backups", "json", 10)
-    Map cloudResp = (Map) hubRequest(CLOUD_BACKUPS_PATH, "cloud backups", "json", 15)
+    Map cloudWrap = hubMapRequest(CLOUD_BACKUPS_PATH, "cloud backups", 15)
+    Map cloudResp = cloudWrap.ok ? cloudWrap.data : [:]
     List localList = (localResp instanceof List) ? (List) localResp : []
-    if (cloudResp?.error) cloudResp = [:]
     List cloudList = ((cloudResp?.backups as List) ?: [])
     Map latestLocal = localList ? (Map) localList[-1] : null
     List cloudThisHub = cloudList.findAll { Map b -> b.thisHub == true } as List
@@ -2178,9 +2203,9 @@ Map fetchBackups() {
 }
 
 List fetchHubMessages() {
-    Map resp = (Map) hubRequest(HUB_MESSAGES_PATH, "hub messages", "json", 5)
-    if (!resp || resp.error) return []
-    return ((resp.messages as List) ?: []).collect { Object m ->
+    Map wrap = hubMapRequest(HUB_MESSAGES_PATH, "hub messages", 5)
+    if (!wrap.ok) return []
+    return ((wrap.data.messages as List) ?: []).collect { Object m ->
         if (m instanceof Map) return m
         return [text: m?.toString()]
     }
@@ -2202,8 +2227,9 @@ Map fetchRadioHealth() {
 
 Map fetchZwaveJsState() {
     if (detectZwaveStack() != "js") return null
-    Map ctrl = (Map) hubRequest(ZWAVE_JS_CONTROLLER_PATH, "zwave JS controller", "json", 10)
-    if (!ctrl || ctrl.error) return null
+    Map wrap = hubMapRequest(ZWAVE_JS_CONTROLLER_PATH, "zwave JS controller", 10)
+    if (!wrap.ok) return null
+    Map ctrl = wrap.data
     Map stats = (ctrl.statistics as Map) ?: [:]
     return [
         firmwareVersion: ctrl.firmwareVersion, sdkVersion: ctrl.sdkVersion,
@@ -2241,8 +2267,9 @@ Map fetchFirmwareUpdate() {
         (nowMs - (state.fwUpdateCacheAt as Long)) < FW_UPDATE_CACHE_TTL_MS) {
         return (Map) state.fwUpdateCache
     }
-    Map resp = (Map) hubRequest(FIRMWARE_UPDATE_PATH, "firmware update check", "json", 15)
-    if (!resp || resp.error) return null
+    Map wrap = hubMapRequest(FIRMWARE_UPDATE_PATH, "firmware update check", 15)
+    if (!wrap.ok) return null
+    Map resp = wrap.data
     Map result = [
         currentVersion: getHubFirmwareVersion(),
         availableVersion: resp.version,
@@ -2262,9 +2289,9 @@ Map fetchFirmwareUpdate() {
  * Devices not assigned to any room are gathered under a synthetic "(Unassigned)" room with id=null.
  */
 List fetchRoomsForAudit() {
-    Map resp = (Map) hubRequest(ROOMS_LIST_PATH, "rooms list", "json", 10)
-    if (!resp || resp.error) return []
-    List nodes = (resp.roomNodes as List) ?: []
+    Map wrap = hubMapRequest(ROOMS_LIST_PATH, "rooms list", 10)
+    if (!wrap.ok) return []
+    List nodes = (wrap.data.roomNodes as List) ?: []
     List rooms = []
     nodes.each { Map rn ->
         Map data = (rn.data as Map) ?: [:]
@@ -2281,8 +2308,9 @@ List fetchRoomsForAudit() {
 Map fetchZwaveNodeState(Integer nodeId) {
     if (nodeId == null) return null
     if (detectZwaveStack() != "js") return null
-    Map resp = (Map) hubRequest(ZWAVE_JS_NODE_STATE_PREFIX + nodeId, "zwave node ${nodeId}", "json", 5)
-    if (!resp || resp.error) return null
+    Map wrap = hubMapRequest(ZWAVE_JS_NODE_STATE_PREFIX + nodeId, "zwave node ${nodeId}", 5)
+    if (!wrap.ok) return null
+    Map resp = wrap.data
     Map stats = (resp.statistics as Map) ?: [:]
     return [
         nodeState: resp.nodeState, status: resp.status,
@@ -2303,9 +2331,9 @@ Map fetchZwaveNodeState(Integer nodeId) {
 /** Per-Hub-Mesh-linked-device state. Returns null when device is not Hub-Mesh-linked or fetch fails. */
 Map fetchHubMeshDeviceState(Long deviceId) {
     if (deviceId == null) return null
-    Map resp = (Map) hubRequest(HUB_MESH_LINKED_DEVICE_PREFIX + deviceId, "hubmesh dev ${deviceId}", "json", 5)
-    if (!resp || resp.error) return null
-    return resp
+    Map wrap = hubMapRequest(HUB_MESH_LINKED_DEVICE_PREFIX + deviceId, "hubmesh dev ${deviceId}", 5)
+    if (!wrap.ok) return null
+    return wrap.data
 }
 
 List fetchUserAppTypes() {
@@ -2376,8 +2404,9 @@ Map fetchHubVariables() {
 }
 
 Map fetchMdns() {
-    Map resp = (Map) hubRequest(MDNS_PATH, "mDNS devices", "json", 15)
-    if (!resp || resp.error) return null
+    Map wrap = hubMapRequest(MDNS_PATH, "mDNS devices", 15)
+    if (!wrap.ok) return null
+    Map resp = wrap.data
     List endpoints = []
     ((resp.serviceTypes as List) ?: []).each { Map st ->
         String svc = (st.serviceType as String) ?: ""
@@ -2427,11 +2456,12 @@ Map fetchSecurityInfo(Map prefetchedHubData = null) {
     String laRaw = (String) hubRequest(LIMITED_ACCESS_PATH, "limited access addresses", "text", 5)
     String subnets = (String) hubRequest(ALLOW_SUBNETS_PATH, "allowed subnets", "text", 5)
     String dnsFb = (String) hubRequest(DNS_FALLBACK_PATH, "DNS fallback", "text", 5)
-    Map hubData = prefetchedHubData ?: (Map) hubRequest(HUB_DATA_PATH, "hub data (cloud controller flag)", "json", 10)
+    Map hubData = prefetchedHubData
+    if (!hubData) { Map r = hubMapRequest(HUB_DATA_PATH, "hub data (cloud controller flag)", 10); hubData = r.ok ? r.data : null }
     String laClean = laRaw ? laRaw.replaceAll(/<[^>]+>/, '').trim() : null
     boolean limitedSet = laClean && !laClean.equalsIgnoreCase("no limit set") && !laClean.isEmpty()
     List subnetList = subnets ? subnets.trim().split(',').findAll { it } as List : []
-    Boolean cloudDisabled = (hubData && !hubData.error) ? (hubData.disableCloudController == true) : null
+    Boolean cloudDisabled = hubData ? (hubData.disableCloudController == true) : null
     return [
         limitedAccess: [
             enabled: limitedSet,
@@ -2599,7 +2629,7 @@ String parseZWaveVersion(String raw) {
 }
 
 Map extractZwaveMeshQuality(Map zwaveData) {
-    if (!zwaveData || zwaveData.error || !zwaveData.nodes) return [:]
+    if (!zwaveData || !zwaveData.nodes) return [:]
 
     List nodes = []
     int totalPer = 0
@@ -2680,7 +2710,7 @@ Map extractZwaveMeshQuality(Map zwaveData) {
 }
 
 List extractZwaveMessageCounts(Map zwaveData) {
-    if (!zwaveData || zwaveData.error || !zwaveData.nodes) return []
+    if (!zwaveData || !zwaveData.nodes) return []
     return zwaveData.nodes.collect { Map node ->
         [id: node.nodeId, deviceId: node.deviceId, name: node.deviceName ?: "Node ${node.nodeId}",
          msgCount: (node.msgCount ?: 0) as int, routeChanges: node.routeChanges?.toString()?.isInteger() ? (node.routeChanges ?: 0) as int : -1]
@@ -2688,7 +2718,7 @@ List extractZwaveMessageCounts(Map zwaveData) {
 }
 
 List extractZigbeeMessageCounts(Map zigbeeData) {
-    if (!zigbeeData || zigbeeData.error || !zigbeeData.devices) return []
+    if (!zigbeeData || !zigbeeData.devices) return []
     return zigbeeData.devices.collect { Map device ->
         [id: device.id, name: device.name ?: "Device ${device.id}",
          msgCount: (device.messageCount ?: 0) as int]
@@ -2698,14 +2728,14 @@ List extractZigbeeMessageCounts(Map zigbeeData) {
 // ===== ANALYSIS MODULES =====
 
 Map analyzeDevices(boolean deep = true) {
-    Map response = (Map) hubRequest(DEVICES_LIST_PATH, "devices list")
+    Map respWrap = hubMapRequest(DEVICES_LIST_PATH, "devices list")
 
-    if (!response || response.error || !response.devices) {
+    if (!respWrap.ok || !respWrap.data.devices) {
         logWarn "Failed to fetch devices list"
         return getEmptyDeviceStats()
     }
 
-    List devicesList = flattenDeviceEntries(response.devices as List, deep)
+    List devicesList = flattenDeviceEntries(respWrap.data.devices as List, deep)
 
     Map stats = getEmptyDeviceStats()
 
@@ -2871,16 +2901,16 @@ Map analyzeDevices(boolean deep = true) {
 }
 
 Map analyzeApps(boolean deep = true) {
-    Map response = (Map) hubRequest(APPS_LIST_PATH, "apps list")
+    Map wrap = hubMapRequest(APPS_LIST_PATH, "apps list")
 
-    if (!response || response.error || !response.apps) {
+    if (!wrap.ok || !wrap.data.apps) {
         return deep ? getEmptyAppStats() : [totalApps: 0, userApps: 0, builtInApps: 0]
     }
 
     // Quick mode: just count apps
     if (!deep) {
         int totalApps = 0, userApps = 0, builtInApps = 0
-        visitAppEntries(response.apps as List) { Map appEntry, Map app, boolean isChildLevel, List parentHierarchyList ->
+        visitAppEntries(wrap.data.apps as List) { Map appEntry, Map app, boolean isChildLevel, List parentHierarchyList ->
             if (!app) return
             totalApps++
             if (app.user) userApps++
@@ -2889,7 +2919,7 @@ Map analyzeApps(boolean deep = true) {
         return [totalApps: totalApps, userApps: userApps, builtInApps: builtInApps]
     }
 
-    List appsList = response.apps
+    List appsList = wrap.data.apps
     Map stats = [
         totalApps: 0,
         userApps: 0,
@@ -2986,9 +3016,9 @@ Map analyzeApps(boolean deep = true) {
     // Identify platform-only apps by comparing runtime stats against appsList
     stats.platformApps = []
     try {
-        Map runtimeResponse = (Map) hubRequest(RUNTIME_STATS_PATH, "runtime stats")
-        if (runtimeResponse && !runtimeResponse.error) {
-            List runtimeAppStats = runtimeResponse.appStats ?: []
+        Map runtimeWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+        if (runtimeWrap.ok) {
+            List runtimeAppStats = runtimeWrap.data.appStats ?: []
             stats.runtimeTotalApps = runtimeAppStats.size()
 
             // Collect all IDs from appsList (including nested children)
@@ -3028,11 +3058,11 @@ Map analyzeApps(boolean deep = true) {
 
 Map analyzeNetwork() {
     return [
-        network: (Map) hubRequest(NETWORK_CONFIG_PATH, "network configuration", "json", 15),
-        zwave: (Map) hubRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", "json", 20),
-        zigbee: (Map) hubRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", "json", 20),
-        matter: (Map) hubRequest(MATTER_DETAILS_PATH, "Matter details", "json", 15),
-        hubMesh: (Map) hubRequest(HUB_MESH_PATH, "Hub Mesh", "json", 15)
+        network: hubMapRequest(NETWORK_CONFIG_PATH, "network configuration", 15).with { it.ok ? it.data : null },
+        zwave:   hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20).with { it.ok ? it.data : null },
+        zigbee:  hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20).with { it.ok ? it.data : null },
+        matter:  hubMapRequest(MATTER_DETAILS_PATH, "Matter details", 15).with { it.ok ? it.data : null },
+        hubMesh: hubMapRequest(HUB_MESH_PATH, "Hub Mesh", 15).with { it.ok ? it.data : null }
     ]
 }
 
@@ -3184,16 +3214,16 @@ List buildZwaveGhostNodes(Map zwaveDetails) {
 Map buildRadioProtocolMap() {
     Map protocols = [:]
     try {
-        Map zigbeeData = (Map) hubRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", "json", 20)
-        if (zigbeeData && !zigbeeData.error && zigbeeData.devices) {
+        Map zigbeeData = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20).with { it.ok ? it.data : null }
+        if (zigbeeData?.devices) {
             zigbeeData.devices.each { Map d -> if (d.id) protocols[d.id] = "zigbee" }
         }
-        Map zwaveData = (Map) hubRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", "json", 20)
-        if (zwaveData && !zwaveData.error && zwaveData.nodes) {
+        Map zwaveData = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20).with { it.ok ? it.data : null }
+        if (zwaveData?.nodes) {
             zwaveData.nodes.each { Map n -> if (n.deviceId) protocols[n.deviceId] = "zwave" }
         }
-        Map matterData = (Map) hubRequest(MATTER_DETAILS_PATH, "Matter details", "json", 15)
-        if (matterData && !matterData.error && matterData.devices) {
+        Map matterData = hubMapRequest(MATTER_DETAILS_PATH, "Matter details", 15).with { it.ok ? it.data : null }
+        if (matterData?.devices) {
             matterData.devices.each { Map d -> if (d.id) protocols[d.id] = "matter" }
         }
     } catch (Exception e) {
@@ -3203,13 +3233,13 @@ Map buildRadioProtocolMap() {
 }
 
 Map buildAppLookupMap() {
-    Map response = (Map) hubRequest(APPS_LIST_PATH, "apps list", "json", 20)
-    if (!response || response.error || !response.apps) {
+    Map wrap = hubMapRequest(APPS_LIST_PATH, "apps list", 20)
+    if (!wrap.ok || !wrap.data.apps) {
         return [:]
     }
 
     Map appLookup = [:]
-    visitAppEntries(response.apps as List) { Map appEntry, Map app, boolean isChildLevel, List parentHierarchyList ->
+    visitAppEntries(wrap.data.apps as List) { Map appEntry, Map app, boolean isChildLevel, List parentHierarchyList ->
         String appId = normalizeAppLookupId(appEntry?.key ?: app?.id)
         if (appId) {
             appLookup[appId] = [
@@ -3339,7 +3369,8 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
 
         if (!cachedEntry) {
             try {
-                Map full = (Map) hubRequest("${DEVICE_FULL_JSON_PATH}${idStr}", "device ${idStr} full", "json", 10)
+                Map fullWrap = hubMapRequest("${DEVICE_FULL_JSON_PATH}${idStr}", "device ${idStr} full", 10)
+                Map full = fullWrap.ok ? fullWrap.data : null
                 Map parentApp = full ? (Map) full.parentApp : null
                 if (parentApp) {
                     Map appTypeObj = parentApp.appType instanceof Map ? (Map) parentApp.appType : [:]
@@ -3420,17 +3451,18 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
 boolean createCheckpoint() {
     logInfo "Creating perf checkpoint..."
 
-    Map stats = (Map) hubRequest(RUNTIME_STATS_PATH, "runtime stats")
-    if (!stats) {
+    Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+    if (!statsWrap.ok) {
         logError "Failed to fetch current stats"
         return false
     }
+    Map stats = statsWrap.data
 
     Map resources = fetchSystemResources()
 
     // Capture radio message counts for Z-Wave and Zigbee
-    Map zwaveData = (Map) hubRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", "json", 20)
-    Map zigbeeData = (Map) hubRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", "json", 20)
+    Map zwaveData = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20).with { it.ok ? it.data : null }
+    Map zigbeeData = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20).with { it.ok ? it.data : null }
     List zwaveRadio = extractZwaveMessageCounts(zwaveData)
     List zigbeeRadio = extractZigbeeMessageCounts(zigbeeData)
 
@@ -3678,8 +3710,9 @@ Map getHubInfo(Map prefetchedHubData = null) {
         info.ip = hub.localIP ?: "Unknown"
     }
     // Fetch model from hubData for accurate hardware name (e.g. "C-7", "C-8 Pro")
-    Map hubData = prefetchedHubData ?: (Map) hubRequest(HUB_DATA_PATH, "hub data", "json", 10)
-    if (hubData && !hubData.error && hubData.model) {
+    Map hubData = prefetchedHubData
+    if (!hubData) { Map r = hubMapRequest(HUB_DATA_PATH, "hub data", 10); hubData = r.ok ? r.data : null }
+    if (hubData && hubData.model) {
         info.hardware = hubData.model
     }
     return info
@@ -4652,9 +4685,9 @@ private void finalizeAudit(String scanId) {
 
     // Z-Wave JS per-node enrichment (only when Z-Wave JS stack is active)
     if (detectZwaveStack() == "js") {
-        Map zwData = (Map) hubRequest(ZWAVE_DETAILS_PATH, "Z-Wave details (audit enrichment)", "json", 10)
+        Map zwData = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details (audit enrichment)", 10).with { it.ok ? it.data : null }
         Map zwNodeByDevId = [:]
-        if (zwData && !zwData.error) {
+        if (zwData) {
             ((zwData.zwDevices as Map) ?: [:]).each { Object _key, Object val ->
                 if (val instanceof Map) {
                     Long devId = (val as Map).deviceId as Long
@@ -4674,7 +4707,7 @@ private void finalizeAudit(String scanId) {
     }
 
     // Hub Mesh per-device enrichment
-    Map hubMeshData = (Map) hubRequest(HUB_MESH_PATH, "Hub Mesh (audit enrichment)", "json", 10)
+    Map hubMeshData = hubMapRequest(HUB_MESH_PATH, "Hub Mesh (audit enrichment)", 10).with { it.ok ? it.data : null }
     List linkedDevices = (hubMeshData?.linkedDevices as List) ?: []
     linkedDevices.each { Map ld ->
         Long devId = ld.id as Long
@@ -4768,11 +4801,11 @@ Map apiAuditStart() {
     }
 
     // Build pending queue from /hub2/devicesList
-    Map bulk = (Map) hubRequest(DEVICES_LIST_PATH, "devices list", "json", 30)
-    if (!bulk || bulk.error) {
-        return jsonResponse([error: "Failed to fetch device list", detail: bulk?.message])
+    Map bulkWrap = hubMapRequest(DEVICES_LIST_PATH, "devices list", 30)
+    if (!bulkWrap.ok) {
+        return jsonResponse([error: "Failed to fetch device list", detail: bulkWrap.error])
     }
-    List devs = flattenDeviceList((bulk.devices ?: []) as List)
+    List devs = flattenDeviceList((bulkWrap.data.devices ?: []) as List)
     List<Long> ids = devs.collect { ((it.data ?: it) as Map).id as Long }.findAll { it != null }
     if (ids.isEmpty()) {
         return jsonResponse([error: "No devices to audit"])
