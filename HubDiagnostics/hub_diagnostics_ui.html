@@ -85,6 +85,24 @@ select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-si
 .report-mode .actions,.report-mode .live-only{display:none}
 .report-banner{background:#fff3cd;color:#856404;padding:8px 20px;font-size:13px;text-align:center;border-bottom:1px solid #ffc107;position:sticky;top:0;z-index:101}
 .report-mode .hdr{top:33px}
+
+/* ===== AUDIT MODE — styles not already in the SPA ===== */
+/* Audit page uses body directly (no .hdr sticky chrome) */
+#audit-root body,.audit-body{padding:16px}
+.toc{background:var(--card);border-radius:0 0 8px 8px;padding:14px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.toc-l{color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:600;margin-bottom:6px}
+.toc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px;font-size:13px}
+.hdr-audit{background:var(--primary);color:#fff;padding:10px 20px;border-radius:8px 8px 0 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:0}
+.hdr-audit h1{font-size:17px;font-weight:600}.hdr-audit .meta{font-size:12px;opacity:.85;margin-left:auto}
+summary.card-h{cursor:pointer;user-select:none}
+summary.card-h::-webkit-details-marker{color:var(--muted)}
+summary.card-h::marker{color:var(--muted)}
+summary.card-h:hover{background:#f0f0f0}
+details:not([open])>summary.card-h{border-bottom:0}
+table[data-sortable] th{cursor:pointer}
+table[data-sortable] th:hover{background:#1565a7}
+table[data-sortable] th[data-dir] .arr{opacity:1}
+.muted{color:var(--muted)}.warn{color:var(--warn)}.crit{color:var(--crit)}
 </style>
 </head>
 <body>
@@ -114,7 +132,7 @@ select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-si
 </div>
 <script>
 // ===== VERSION =====
-const UI_VERSION = "5.24.0";
+const UI_VERSION = "5.27.0";
 
 // ===== CONFIG & MOCKS =====
 const WORKBENCH = false; // Set to true for local development without a hub
@@ -249,6 +267,296 @@ function mc(l,v,c){const s=c?' style="color:'+c+'"':'';return'<div class="m"><di
 function ni(l,v,c){const s=c?' style="color:'+c+';font-weight:600"':'';return'<div class="ni"><div class="nl">'+h(l)+'</div><div class="nv"'+s+'>'+h(String(v??'N/A'))+'</div></div>'}
 // Module-level thresholds with hardcoded defaults — updated when settings load
 let TH={warnMemMb:100,critMemMb:75,warnCpuLoad:4,critCpuLoad:8,warnTempC:50,critTempC:77,chattyDeviceThreshold:10};
+
+function buildForumMarkdown(d){
+  const lines=[];
+  const L=s=>lines.push(s);
+  const obfuscate=d.obfuscate||false;
+  const hubInfo=d.hubInfo||{};
+  const resources=d.resources||null;
+  const networkData=d.networkData||{};
+  const networkConfig=networkData.network||{};
+  const zwaveRaw=networkData.zwave||null;
+  const zigbeeRaw=networkData.zigbee||null;
+  const hubMeshRaw=networkData.hubMesh||null;
+  const matterRaw=networkData.matter||null;
+  const zwaveMesh=d.zwaveMesh||null;
+  const ghostNodes=d.ghostNodes||[];
+  const zigbeeMesh=d.zigbeeMesh||null;
+  const alerts=d.alerts||[];
+  const deviceStats=d.deviceStats||{};
+  const appStats=d.appStats||{};
+  const stats=d.stats||null;
+  const allRadioDevices=d.allRadioDevices||[];
+  const uptimeMin=d.uptimeMin!=null?d.uptimeMin:0;
+
+  // ── 1. System & Health ──
+  L('### System & Health');
+  L('| | |');
+  L('|---|---|');
+  L(`| Model | ${hubInfo.hardware||'N/A'} |`);
+  L(`| Firmware | ${hubInfo.firmware||'N/A'} |`);
+  L(`| Uptime | ${stats&&stats.uptime?stats.uptime:'N/A'} |`);
+  const bothActive=networkConfig.hasEthernet&&networkConfig.hasWiFi;
+  let connType=networkConfig.hasEthernet?'Ethernet':(networkConfig.hasWiFi?'WiFi':'Unknown');
+  if(bothActive)connType='Ethernet + WiFi active';
+  if(networkConfig.hasEthernet)connType+=(networkConfig.usingStaticIP?' (Static)':' (DHCP)');
+  L(`| Connection | ${connType} |`);
+  if(networkConfig.lanAddr)          L(`| IP Address | ${networkConfig.lanAddr} |`);
+  if(networkConfig.staticGateway)    L(`| Gateway    | ${networkConfig.staticGateway} |`);
+  if(networkConfig.staticSubnetMask) L(`| Subnet     | ${networkConfig.staticSubnetMask} |`);
+  const dnsList=networkConfig.dnsServers||[];
+  if(dnsList.length)                 L(`| DNS        | ${dnsList.join(', ')} |`);
+  if(networkConfig.hasWiFi&&networkConfig.wifiNetwork) L(`| WiFi SSID  | ${networkConfig.wifiNetwork} |`);
+  if(bothActive){L('');L('**Warning:** Both Ethernet and WiFi are active. This is known to cause connectivity issues. Disable WiFi when using Ethernet.');L('');}
+  L(`| CPU Load (5m) | ${resources?Number(resources.cpuAvg5min).toFixed(2):'N/A'} |`);
+  L(`| Free OS Memory | ${resources?fmem(resources.freeOSMemory):'N/A'} |`);
+  if(resources&&resources.freeJavaMemory)  L(`| Free Java Heap  | ${fmem(resources.freeJavaMemory)} |`);
+  if(resources&&resources.totalJavaMemory) L(`| Total Java Heap | ${fmem(resources.totalJavaMemory)} |`);
+  L(`| Temperature | ${d.temperature!=null?Number(d.temperature).toFixed(1)+'°C':'N/A'} |`);
+  L(`| Database | ${d.databaseSize!=null?d.databaseSize+' MB':'N/A'} |`);
+  L(`| State Compression | ${d.stateCompression&&d.stateCompression.enabled?'Enabled':'Disabled'} |`);
+  const esl=d.eventStateLimits||null;
+  if(esl){
+    if(esl.maxEvents)        L(`| Max Events/Device | ${esl.maxEvents} |`);
+    if(esl.maxEventAgeDays)  L(`| Max Event Age | ${esl.maxEventAgeDays} days |`);
+    if(esl.maxStateAgeDays)  L(`| Max State Age | ${esl.maxStateAgeDays} days |`);
+  }
+
+  // Alerts
+  if(alerts&&alerts.length){
+    L('');L('### Alerts');
+    alerts.forEach(a=>L(`- **${a.severity}**: ${a.name}`));
+  }else{
+    L('');L('No active alerts.');
+  }
+
+  // ── 2. Device Inventory ──
+  L('');L('### Devices');
+  L('| | |');
+  L('|---|---|');
+  L(`| Total | ${deviceStats.totalDevices||0} |`);
+  if(deviceStats.activeDevices)   L(`| Active | ${deviceStats.activeDevices} |`);
+  if(deviceStats.inactiveDevices) L(`| Inactive | ${deviceStats.inactiveDevices} |`);
+  if(deviceStats.disabledDevices) L(`| Disabled | ${deviceStats.disabledDevices} |`);
+  const byConn=deviceStats.byConnectionType||{};
+  Object.entries(byConn).forEach(([conn,count])=>{
+    if(count>0)L(`| ${CD[conn]||conn} | ${count} |`);
+  });
+  const byInteg=deviceStats.byIntegration||{};
+  if(Object.keys(byInteg).length){
+    L('');L('**By Integration:**');L('');L('| Integration | Count |');L('|---|---|');
+    Object.entries(byInteg).sort((a,b)=>b[1]-a[1]).forEach(([integ,count])=>{
+      if(count>0)L(`| ${integ} | ${count} |`);
+    });
+  }
+  const lowBattery=deviceStats.lowBatteryDevices||[];
+  if(lowBattery.length){
+    L('');L('**Low Battery:** '+lowBattery.map(it=>`${obfuscate?(it.type||'Device'):it.name} (${it.battery}%)`).join(', '));
+  }
+  const inactiveDevices=(deviceStats.allDevices||[]).filter(it=>it.status==='Inactive');
+  if(inactiveDevices.length){
+    let inactiveLine=`\n**Inactive Devices (${inactiveDevices.length}):** `;
+    inactiveLine+=inactiveDevices.slice(0,15).map(it=>obfuscate?(it.type||'Device'):it.name).join(', ');
+    if(inactiveDevices.length>15)inactiveLine+=` … (+${inactiveDevices.length-15} more)`;
+    L(inactiveLine);
+  }
+
+  // ── 3. App Inventory ──
+  L('');L('### Apps');
+  L(`- **Total:** ${appStats.totalApps||0} (Built-in: ${appStats.builtInApps||0}, User: ${appStats.userApps||0})`);
+  const userAppsList=appStats.userAppsList||[];
+  if(userAppsList.length){
+    const appCounts={};
+    userAppsList.forEach(a=>{const key=a.name||a.label||'Unknown';appCounts[key]=(appCounts[key]||0)+1;});
+    L('');L('**Installed User Apps:**');
+    Object.keys(appCounts).sort().forEach(name=>{
+      const count=appCounts[name];
+      L(`- ${obfuscate?'User App':name}${count>1?` (×${count})`:''}`);
+    });
+  }
+  const builtInInstances=appStats.builtInInstances||{};
+  if(Object.keys(builtInInstances).length){
+    L('');L('**Installed Built-in Apps:**');
+    Object.keys(builtInInstances).sort().forEach(name=>{
+      const count=builtInInstances[name];
+      L(`- ${name}${count>1?` (×${count})`:''}`);
+    });
+  }
+
+  // ── 4. Z-Wave Network ──
+  if(zwaveRaw){
+    L('');L('### Z-Wave');
+    L(`- **Enabled:** ${zwaveRaw.enabled?'Yes':'No'}, **Healthy:** ${zwaveRaw.healthy?'Yes':'No'}`);
+    L(`- **Version:** ${d.zwaveVersion||'N/A'}, **Region:** ${zwaveRaw.region||'N/A'}`);
+    if(zwaveRaw.zwaveJS!=null)L(`- **Z-Wave JS:** ${zwaveRaw.zwaveJS?'Yes':'No'}`);
+    L(`- **Nodes:** ${Object.keys(zwaveRaw.zwDevices||{}).length}`);
+    if(zwaveMesh){
+      let meshLine=`- **Avg PER:** ${Number(zwaveMesh.avgPer||0).toFixed(1)}%`;
+      if(zwaveMesh.avgRssi!=null)meshLine+=`, **Avg RSSI:** ${zwaveMesh.avgRssi} dBm`;
+      meshLine+=`, **Route Changes:** ${zwaveMesh.totalRouteChanges||0}`;
+      L(meshLine);
+    }
+    // Ghost nodes
+    if(ghostNodes.length){
+      L('');L(`**Ghost Nodes (${ghostNodes.length}):**`);
+      ghostNodes.forEach(g=>{
+        const gName=obfuscate?(g.type||'Z-Wave Node'):g.name;
+        const gSig=g.signals?` [${g.signals.join(', ')}]`:'';
+        L(`- Node ${g.id}: ${gName}${gSig}`);
+      });
+    }
+    // Problem nodes
+    const zwNodes=zwaveMesh&&zwaveMesh.nodes?zwaveMesh.nodes:[];
+    const problemNodes=zwNodes.filter(n=>n.state!=='OK'||(n.per||0)>1);
+    if(problemNodes.length){
+      L('');L(`**Problem Nodes (${problemNodes.length}):**`);
+      problemNodes.forEach(n=>{
+        const issues=[];
+        if(n.state!=='OK')issues.push(`State: ${n.state}`);
+        if((n.per||0)>1)issues.push(`PER: ${n.per}%`);
+        L(`- ${obfuscate?(n.zwaveType||'Z-Wave Node'):n.name} (Node ${n.nodeId}): ${issues.join(', ')}`);
+      });
+    }
+    // S0 flagged
+    const s0Flagged=zwNodes.filter(n=>n.s0Flag);
+    if(s0Flagged.length){
+      L('');L(`**S0 on non-security devices:** ${s0Flagged.map(n=>obfuscate?(n.zwaveType||'Z-Wave Node'):n.name).join(', ')}`);
+    }
+    // Isolated nodes (0 neighbors, non-failed)
+    const isolatedNodes=zwNodes.filter(n=>(n.neighbors||0)===0&&n.state!=='FAILED');
+    if(isolatedNodes.length){
+      L('');L(`**Isolated Nodes (0 neighbors, ${isolatedNodes.length}):**`);
+      isolatedNodes.forEach(n=>{
+        const label=obfuscate?(n.zwaveType||`Node ${n.nodeId}`):(n.name||`Node ${n.nodeId}`);
+        L(`- Node ${n.nodeId}: ${label}`);
+      });
+    }
+    // Full node table
+    if(zwNodes.length){
+      L('');L('| Node | Name | Security | RTT | PER | RSSI | Route | Msgs/min | Driver |');
+      L('|---:|---|---|---:|---:|---|---|---:|---|');
+      [...zwNodes].sort((a,b)=>a.nodeId-b.nodeId).forEach(n=>{
+        const rttStr=n.rtt!=null?`${n.rtt}ms`:'—';
+        const drvStr=n.driverType==='usr'?'User':n.driverType==='sys'?'Built-in':'—';
+        const rateStr=uptimeMin>0?Number(n.msgCount/uptimeMin).toFixed(1):'—';
+        const nodeName=obfuscate?(n.zwaveType||`Node ${n.nodeId}`):(n.name||`Node ${n.nodeId}`);
+        L(`| ${n.nodeId} | ${nodeName} | ${n.security||'None'} | ${rttStr} | ${n.per}% | ${n.rssiStr||'—'} | ${n.route||'—'} | ${rateStr} | ${drvStr} |`);
+      });
+    }
+  }
+
+  // ── 5. Zigbee Network ──
+  if(zigbeeRaw&&zigbeeRaw.enabled){
+    L('');L('### Zigbee');
+    let zbLine=`- **Healthy:** ${zigbeeRaw.healthy?'Yes':'No'}`;
+    if(zigbeeRaw.networkState)zbLine+=`, **State:** ${zigbeeRaw.networkState}`;
+    L(zbLine);
+    let chLine=`- **Channel:** ${zigbeeRaw.channel||'N/A'}`;
+    if(zigbeeRaw.channel&&![15,20,25].includes(zigbeeRaw.channel))chLine+=' (not on recommended 15/20/25)';
+    L(chLine);
+    if(zigbeeRaw.powerLevel!=null)L(`- **Power Level:** ${zigbeeRaw.powerLevel}`);
+    L(`- **Devices:** ${(zigbeeRaw.devices||[]).length}`);
+    if(zigbeeMesh){
+      const staleCount=(zigbeeMesh.staleNeighbors||[]).length;
+      const weakCount=(zigbeeMesh.weakNeighbors||[]).length;
+      let nbLine=`- **Neighbors:** ${zigbeeMesh.neighbors?zigbeeMesh.neighbors.length:0}`;
+      if(staleCount>0)nbLine+=` (${staleCount} stale)`;
+      L(nbLine);
+      if(zigbeeMesh.avgLqi!=null)L(`- **LQI:** avg ${zigbeeMesh.avgLqi}, min ${zigbeeMesh.minLqi}, max ${zigbeeMesh.maxLqi}`);
+      if(weakCount>0) L(`- **Weak Neighbors:** ${(zigbeeMesh.weakNeighbors||[]).map(it=>`${it.shortId} LQI:${it.lqi}`).join(', ')}`);
+      if(staleCount>0)L(`- **Stale Neighbors:** ${(zigbeeMesh.staleNeighbors||[]).map(it=>it.shortId).join(', ')}`);
+    }
+  }
+
+  // ── 5b. Matter ──
+  if(matterRaw&&matterRaw.enabled){
+    L('');L('### Matter');
+    L(`- **Enabled:** Yes, **Installed:** ${matterRaw.installed?'Yes':'No'}`);
+    const matterCount=(matterRaw.devices||[]).length;
+    if(matterCount>0)L(`- **Devices:** ${matterCount}`);
+    if(matterRaw.networkState)L(`- **Network State:** ${matterRaw.networkState}`);
+    if(matterRaw.fabricId)    L(`- **Fabric:** ${matterRaw.fabricId}`);
+  }
+
+  // ── 6. Hub Mesh ──
+  if(hubMeshRaw&&hubMeshRaw.hubList){
+    const peers=hubMeshRaw.hubList||[];
+    if(peers.length){
+      L('');L('### Hub Mesh');
+      L('| Hub | IP | Status | Devices | Vars |');
+      L('|---|---|---|---:|---:|');
+      peers.forEach(hub=>{
+        const status=hub.offline?'Offline':'Online';
+        L(`| ${hub.name} | ${hub.ipAddress} | ${status} | ${hub.deviceIds?hub.deviceIds.length:0} | ${hub.hubVarNames?hub.hubVarNames.length:0} |`);
+      });
+    }
+  }
+
+  // ── 7. Performance ──
+  L('');L('### Performance');
+  if(stats&&stats.totalDevicesRuntime){
+    let drtLine=`- **Device Runtime:** ${stats.totalDevicesRuntime}`;
+    if(stats.devicePct)drtLine+=` (${stats.devicePct} busy)`;
+    L(drtLine);
+  }
+  if(stats&&stats.totalAppsRuntime){
+    let artLine=`- **App Runtime:** ${stats.totalAppsRuntime}`;
+    if(stats.appPct)artLine+=` (${stats.appPct} busy)`;
+    L(artLine);
+  }
+  // Top 5 device types by CPU
+  const devRtStats=stats&&stats.deviceStats?stats.deviceStats:[];
+  if(devRtStats.length){
+    const topDevTypes=[...devRtStats].sort((a,b)=>Number(b.pctTotal||0)-Number(a.pctTotal||0)).slice(0,5);
+    if(topDevTypes.some(dt=>Number(dt.pctTotal||0)!==0)){
+      L('');L('**Top Device Types by CPU:**');
+      L('| Device | % Total | Exec Count | Avg (ms) |');
+      L('|---|---:|---:|---:|');
+      topDevTypes.forEach(dt=>{
+        const pct=Number(dt.pctTotal||0);
+        if(pct>0)L(`| ${dt.name} | ${pct.toFixed(3)}% | ${dt.count||0} | ${Number(dt.average||0).toFixed(1)} |`);
+      });
+    }
+  }
+  // Top 5 app types by CPU
+  const appRtStats=stats&&stats.appStats?stats.appStats:[];
+  if(appRtStats.length){
+    const topAppTypes=[...appRtStats].sort((a,b)=>Number(b.pctTotal||0)-Number(a.pctTotal||0)).slice(0,5);
+    if(topAppTypes.some(at=>Number(at.pctTotal||0)!==0)){
+      L('');L('**Top App Types by CPU:**');
+      L('| App | % Total | Exec Count | Avg (ms) |');
+      L('|---|---:|---:|---:|');
+      topAppTypes.forEach(at=>{
+        const pct=Number(at.pctTotal||0);
+        const aName=obfuscate?(at.type||at.name):at.name;
+        if(pct>0)L(`| ${aName} | ${pct.toFixed(3)}% | ${at.count||0} | ${Number(at.average||0).toFixed(1)} |`);
+      });
+    }
+  }
+  // Top talkers by message rate
+  if(allRadioDevices.length&&uptimeMin>0){
+    const topTalkers=[...allRadioDevices].sort((a,b)=>b.msgCount-a.msgCount).slice(0,5);
+    L('');L('**Top Talkers:**');
+    L('| Device | Integration | Msgs/min | Total Msgs |');
+    L('|---|---|---:|---:|');
+    topTalkers.forEach(t=>{
+      const rate=Number(t.msgCount/uptimeMin).toFixed(1);
+      const tName=obfuscate?(t.type||t.integration||'Device'):t.name;
+      L(`| ${tName} | ${t.integration} | ${rate} | ${t.msgCount} |`);
+    });
+    // Spammy alerts (>= chattyDeviceThreshold)
+    const chattyT=TH.chattyDeviceThreshold||10;
+    const spammy=allRadioDevices.filter(it=>it.msgCount/uptimeMin>=chattyT);
+    if(spammy.length){
+      L('');L(`**Elevated message rate (≥${chattyT}/min):** ${spammy.map(it=>`${obfuscate?(it.type||it.integration||'Device'):it.name} (${Number(it.msgCount/uptimeMin).toFixed(1)}/min)`).join(', ')}`);
+    }
+  }
+
+  L('');L(`---\n*Generated by Hub Diagnostics v${UI_VERSION}*`);
+
+  return lines.join('\n');
+}
 api('settings').then(s=>{if(s)Object.assign(TH,s);}).catch(()=>{});
 function rateColor(v){return v>=TH.chattyDeviceThreshold?'var(--crit)':v>=TH.chattyDeviceThreshold*0.6?'var(--warn)':v>=2?'var(--primary)':''}
 function rateCell(r){if(r.msgPerMin==null)return'';const c=rateColor(r.msgPerMin);const s=c?' style="color:'+c+';font-weight:600"':'';return'<span'+s+'>'+r.msgPerMin.toFixed(2)+'</span>'}
@@ -616,6 +924,12 @@ async function rDashboard(){const P='p-dashboard';loading(P);try{
   const d=await api('dashboard');
   document.getElementById('hubInfo').textContent=d.hub.name+' | '+d.hub.hardware+' | fw '+d.hub.firmware;
   let o='';
+  // Hub Information
+  if(d.hub){o+='<div class="card"><div class="card-h">Hub Information</div><div class="card-b"><div class="ng">';
+    o+=ni('Hub Name',d.hub.name);o+=ni('Hub ID',d.hub.hubId);o+=ni('Hardware',d.hub.hardware);
+    o+=ni('Firmware',d.hub.firmware);o+=ni('IP Address',d.hub.ip);o+=ni('Zigbee ID',d.hub.zigbeeId);
+    o+=ni('Location',d.hub.location);o+=ni('Mode',d.hub.mode);o+=ni('Time Zone',d.hub.timeZone);
+    o+='</div></div></div>'}
   // Overview
   const bc=d.devices.byConnectionType||{},ic=d.devices.idsByConnectionType||{},bi=d.devices.byIntegration||{},ii=d.devices.idsByIntegration||{},is=d.devices.idsByStatus||{};
   o+='<div class="card"><div class="card-h">Overview</div><div class="card-b">';
@@ -720,13 +1034,14 @@ async function rDashboard(){const P='p-dashboard';loading(P);try{
   const btnForum=document.getElementById('btnForum');
   if(btnForum)btnForum.onclick=async()=>{
     btnForum.disabled=true;btnForum.textContent='Generating...';
-    try{const res=await api('export/forum');
-      if(res.success&&res.markdown){
+    try{const res=await api('forum/data');
+      if(res.hubInfo){
+        const markdown=buildForumMarkdown(res);
         btnForum.disabled=false;btnForum.textContent='Copy for Forum';
         const overlay=document.createElement('div');overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:flex;align-items:center;justify-content:center';
         const box=document.createElement('div');box.style.cssText='background:#fff;border-radius:8px;padding:16px;width:90%;max-width:700px;max-height:80vh;display:flex;flex-direction:column';
         box.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><b>Forum Export</b><span>Select All + Copy, then close</span></div>';
-        const ta=document.createElement('textarea');ta.value=res.markdown;ta.readOnly=true;ta.style.cssText='width:100%;flex:1;min-height:300px;font-family:monospace;font-size:12px;padding:8px;border:1px solid #ddd;border-radius:4px;resize:vertical';
+        const ta=document.createElement('textarea');ta.value=markdown;ta.readOnly=true;ta.style.cssText='width:100%;flex:1;min-height:300px;font-family:monospace;font-size:12px;padding:8px;border:1px solid #ddd;border-radius:4px;resize:vertical';
         const closeBtn=document.createElement('button');closeBtn.textContent='Close';closeBtn.className='btn btn-p';closeBtn.style.marginTop='10px';closeBtn.style.alignSelf='flex-end';
         closeBtn.onclick=()=>document.body.removeChild(overlay);
         overlay.onclick=e=>{if(e.target===overlay)document.body.removeChild(overlay)};
@@ -774,8 +1089,7 @@ function auditPoll(scanId, total) {
             if (d.status === 'scanning') {
                 if (row) row.innerHTML = 'Audit in progress · scanning device <b>'+d.processed+'</b> / '+d.total+' …';
             } else if (d.status === 'done') {
-                stopPoll('✓ Audit complete · <a href="/local/'+encodeURIComponent(d.filename)+'" target="_blank">View report</a>');
-                drop('audit-list'); auditList();
+                stopPoll('✓ Audit complete · <a href="?access_token='+encodeURIComponent(T)+'&audit=1" target="_blank">View Report</a>');
             } else if (d.status === 'error') {
                 stopPoll('<span class="warn">⚠ Audit failed: '+h(d.error || 'see hub logs')+'</span>');
             } else {
@@ -789,49 +1103,6 @@ function auditPoll(scanId, total) {
     pollTimers[scanId] = setInterval(tick, 2000);
 }
 
-async function auditList() {
-    const wrap = document.getElementById('audit-list-wrap');
-    if (!wrap) return;
-    try {
-        const r = await fetch(B + '/api/audit/list?access_token=' + T);
-        const d = await r.json();
-        const reps = d.reports || [];
-        if (!reps.length) { wrap.innerHTML = '<div class="muted">No past audits yet.</div>'; return; }
-        let h2 = '<table style="width:100%;font-size:12px;border-collapse:collapse"><tr style="color:var(--muted);text-align:left"><th style="padding:4px">Generated</th><th>Devices</th><th>Unref</th><th>Orphans</th><th>Stuck</th><th>Crit</th><th></th></tr>';
-        reps.forEach(r => {
-            h2 += '<tr style="border-top:1px solid var(--border)">'
-               +  '<td style="padding:4px"><a href="/local/'+encodeURIComponent(r.filename)+'" target="_blank">'+h(r.generated)+'</a></td>'
-               +  '<td>'+(r.deviceCount||0)+'</td>'
-               +  '<td>'+(r.unreferencedCount||0)+'</td>'
-               +  '<td>'+(r.orphanCount||0)+'</td>'
-               +  '<td>'+(r.stuckJobCount||0)+'</td>'
-               +  '<td>'+(r.criticalCount||0)+'</td>'
-               +  '<td><a href="javascript:void(0)" class="audit-del" data-filename="'+h(r.filename)+'">delete</a></td>'
-               +  '</tr>';
-        });
-        h2 += '</table>';
-        wrap.innerHTML = h2;
-        wrap.querySelectorAll('a.audit-del').forEach(a => {
-            a.onclick = () => auditDelete(a.dataset.filename);
-        });
-    } catch (e) {
-        wrap.innerHTML = '<span class="muted">Failed to load past audits: '+h(String(e))+'</span>';
-    }
-}
-async function auditDelete(filename) {
-    if (!confirm('Delete '+filename+'?')) return;
-    try {
-        await fetch(B + '/api/audit/delete?access_token=' + T, {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({filename})
-        });
-    } catch (e) {
-        alert('Delete failed: ' + e);
-        return;
-    }
-    drop('audit-list'); auditList();
-}
 
 // ===== TAB: DEVICES =====
 async function rDevices(){const P='p-devices';loading(P);try{
@@ -850,7 +1121,6 @@ async function rDevices(){const P='p-devices';loading(P);try{
   o+='<div class="muted" style="margin-bottom:8px">Cross-references each device against the apps and dashboards that subscribe to it. Surfaces unreferenced devices, mesh orphans, stuck scheduled jobs and critical devices in a standalone HTML report.</div>';
   o+='<div class="actions" style="margin-bottom:10px"><button class="btn btn-p" id="btnAudit">Generate Device Audit</button></div>';
   o+='<div id="audit-row" style="margin-top:8px"></div>';
-  o+='<div id="audit-list-wrap" style="margin-top:10px"><div class="muted">Past audits…</div></div>';
   o+='</div></div>';
   // Connection type + integration distribution (side by side)
   o+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
@@ -898,7 +1168,6 @@ async function rDevices(){const P='p-devices';loading(P);try{
   ],d.deviceRows,{filter:true,sc:0,sd:'asc',collapse:10,collapseLabel:'All Devices'});
   const btnAudit=document.getElementById('btnAudit');
   if(btnAudit)btnAudit.onclick=()=>auditStart();
-  auditList();
 }catch(e){err(P,e,rDevices)}}
 
 // ===== TAB: APPS =====
@@ -1308,12 +1577,6 @@ async function rNetwork(){const P='p-network';loading(P);try{
 // ===== TAB: HEALTH =====
 async function rHealth(){const P='p-health';loading(P);try{
   const d=await api('health');let o='';
-  // Hub info
-  if(d.hub){o+='<div class="card"><div class="card-h">Hub Information</div><div class="card-b"><div class="ng">';
-    o+=ni('Hub Name',d.hub.name);o+=ni('Hub ID',d.hub.hubId);o+=ni('Hardware',d.hub.hardware);
-    o+=ni('Firmware',d.hub.firmware);o+=ni('IP Address',d.hub.ip);o+=ni('Zigbee ID',d.hub.zigbeeId);
-    o+=ni('Location',d.hub.location);o+=ni('Mode',d.hub.mode);o+=ni('Time Zone',d.hub.timeZone);
-    o+='</div></div></div>'}
   // Alerts
   const allAlerts=[];
   (d.alerts||[]).forEach(a=>{
@@ -1368,7 +1631,15 @@ async function rHealth(){const P='p-health';loading(P);try{
     }
     o+='</div></div>';
   }
+  // Hub Events placeholder (populated by tbl() after innerHTML is set)
+  o+='<div class="card"><div class="card-h">Hub Events</div><div class="card-b"><div id="evtTbl"></div></div></div>';
   document.getElementById(P).innerHTML=o;
+  const evBadge={systemStart:'b-ok',update:'b-builtin',manualReboot:'b-warn',deviceJoin:'b-community'};
+  tbl('evtTbl',[
+    {l:'Date',f:'ts',r:r=>h(r.ts?new Date(r.ts).toLocaleString():'')},
+    {l:'Event',f:'name',r:r=>'<span class="badge '+(evBadge[r.name]||'')+'">'+h(r.name)+'</span>'},
+    {l:'Description',f:'description'}
+  ],(d.events||[]).slice(0,25),{sc:0,sd:'desc',collapse:5,collapseLabel:'Hub Events'});
   // Fetch and render chart async
   api('health/history').then(h=>{renderChart(h.dataPoints,'memChart')}).catch(()=>{document.getElementById('memChart').innerHTML='<i style="color:var(--muted)">Unable to load history</i>'});
 }catch(e){err(P,e,rHealth)}}
@@ -1952,7 +2223,7 @@ async function rConfig(){const P='p-config';loading(P);try{
   };
 
   document.getElementById('cfg_debugLogging').onchange=async function(){await saveSetting({debugLogging:this.checked})};
-  document.getElementById('cfg_obfuscate').onchange=async function(){await saveSetting({obfuscateForumExport:this.checked});drop('export/forum')};
+  document.getElementById('cfg_obfuscate').onchange=async function(){await saveSetting({obfuscateForumExport:this.checked});drop('forum/data')};
 
   document.getElementById('cfg_saveLive').onclick=async()=>{
     const v=Math.max(10,Math.min(300,parseInt(document.getElementById('cfg_liveRefreshSec').value)||30));
@@ -1999,12 +2270,6 @@ async function refreshLive(){
     ['res-dash-ts','res-health-ts','res-perf-ts'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent='Updated '+ts});
   }catch(e){}
 }
-let liveTimer=setInterval(refreshLive,liveIntervalSec*1000);
-document.addEventListener('visibilitychange',()=>{
-  clearInterval(liveTimer);
-  if(!document.hidden)liveTimer=setInterval(refreshLive,liveIntervalSec*1000)
-});
-
 function refreshPage(){
   const keys={dashboard:['dashboard'],devices:['devices'],apps:['apps'],network:['network'],
     health:['health','health/history'],performance:['performance'],config:['settings'],snapshots:['snapshots']};
@@ -2012,7 +2277,384 @@ function refreshPage(){
   R[curTab]()
 }
 
-go(curTab);
+// ===== AUDIT MODE =====
+async function renderAuditPage() {
+  document.body.innerHTML = '<div id="audit-root" style="padding:20px"><div class="loading">Loading audit report…</div></div>';
+  try {
+    const data = await api('audit/data');
+    document.getElementById('audit-root').innerHTML = buildAuditHtml(data);
+    initAuditSort();
+  } catch(e) {
+    document.getElementById('audit-root').innerHTML = `<div class="err">Failed to load audit report: ${h(e.message || String(e))}</div>`;
+  }
+}
+
+function fmtDurSec(ms) {
+  if (ms == null) return '';
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m + 'm ' + s + 's';
+}
+
+function buildAuditHtml(data) {
+  const hubName = data.hubName || '';
+  const generatedAt = data.generatedAt || '';
+  const unreferenced = data.unreferenced || [];
+  const meshOrphans = data.meshOrphans || [];
+  const stuckJobs = data.stuckJobs || [];
+  const tunedDevices = data.tunedDevices || [];
+  const tunedDefaults = data.tunedDefaults || {};
+  const criticalTop20 = data.criticalTop20 || [];
+  const rooms = data.rooms || [];
+  const appsToDevices = data.appsToDevices || [];
+  const dashboardsToDevices = data.dashboardsToDevices || [];
+  const allDevices = data.allDevices || {};
+  const failed = data.failed || [];
+
+  const zwNodeRows = Object.values(allDevices).filter(d => d.zwaveNode != null);
+  const hmRows = Object.values(allDevices).filter(d => d.hubMeshState != null);
+
+  function sumcell(label, value, severity) {
+    const color = severity === 'warn' ? 'var(--warn)' : severity === 'crit' ? 'var(--crit)' : null;
+    const s = color ? ` style="color:${color}"` : '';
+    return `<div class="m"><div class="m-l">${h(label)}</div><div class="m-v"${s}>${h(String(value ?? ''))}</div></div>`;
+  }
+  function openCard(anchorId, headerHtml, openByDefault) {
+    const openAttr = openByDefault ? ' open' : '';
+    return `<div class="card" id="${anchorId}"><details${openAttr}><summary class="card-h">${headerHtml}</summary><div class="card-b">`;
+  }
+  function closeCard() { return '</div></details></div>'; }
+  function driverBadge(dt) {
+    return dt === 'usr'
+      ? '<span class="badge b-community">Community</span>'
+      : '<span class="badge b-builtin">Built-in</span>';
+  }
+
+  let o = '';
+
+  // Header
+  o += `<div class="hdr-audit"><h1>Device Usage Audit — ${h(hubName)}</h1>`;
+  o += `<div class="meta">Generated ${h(generatedAt)} · ${data.deviceCount} devices · scan ${fmtDurSec(data.scanDurationMs)}</div></div>`;
+
+  // TOC
+  o += '<div class="toc"><div class="toc-l">Contents</div><div class="toc-grid">';
+  o += '<div><a href="#summary">Summary</a></div>';
+  o += `<div><a href="#unref">Unreferenced devices (${unreferenced.length})</a></div>`;
+  o += `<div><a href="#orphans">Mesh orphans (${meshOrphans.length})</a></div>`;
+  o += `<div><a href="#stuck">Stuck scheduled jobs (${stuckJobs.length})</a></div>`;
+  o += `<div><a href="#tuned">Manually-tuned devices (${tunedDevices.length})</a></div>`;
+  o += '<div><a href="#critical">Critical devices (top 20)</a></div>';
+  o += `<div><a href="#rooms">Devices by room (${rooms.length})</a></div>`;
+  if (zwNodeRows.length > 0) o += `<div><a href="#zwjs">Z-Wave JS mesh health (${zwNodeRows.length})</a></div>`;
+  if (hmRows.length > 0) o += `<div><a href="#hubmesh">Hub Mesh linked devices (${hmRows.length})</a></div>`;
+  o += `<div><a href="#apps">Apps → devices (${appsToDevices.length})</a></div>`;
+  o += `<div><a href="#dashboards">Dashboards → devices (${dashboardsToDevices.length})</a></div>`;
+  o += '<div><a href="#all">Per-device detail table</a></div>';
+  if (failed.length > 0) o += `<div><a href="#failed" class="crit">Failed to fetch (${failed.length})</a></div>`;
+  o += '</div></div>';
+
+  // Summary
+  o += '<div class="card" id="summary"><div class="card-h">Summary</div><div class="card-b"><div class="metrics">';
+  o += sumcell('Devices', data.deviceCount, null);
+  o += sumcell('Unreferenced', unreferenced.length, 'warn');
+  o += sumcell('Mesh orphans', meshOrphans.length, 'crit');
+  o += sumcell('Stuck jobs', stuckJobs.length, 'warn');
+  o += sumcell(`Critical (≥${data.criticalThreshold} refs)`, data.criticalCount, null);
+  o += '</div></div></div>';
+
+  // Unreferenced
+  o += openCard('unref', `⚠ Unreferenced devices (${unreferenced.length})`, true);
+  if (!unreferenced.length) {
+    o += '<div class="muted">None — every device is used by at least one app, dashboard, or parent integration.</div>';
+  } else {
+    o += '<div class="muted" style="margin-bottom:6px">No apps, no dashboards, no parent app — default sort: oldest last activity first.</div>';
+    o += '<div class="tbl-wrap"><table data-sortable id="t_unref"><thead><tr><th>Device</th><th>Type</th><th data-sd="asc">Last activity</th><th>Source</th></tr></thead><tbody>';
+    unreferenced.forEach(u => {
+      o += `<tr><td>${dlink(u.id, u.name)}</td>`;
+      o += `<td>${h(u.type || '')}</td>`;
+      o += `<td>${h(u.lastActivityTime || '')}</td>`;
+      o += `<td>${driverBadge(u.driverType)}</td></tr>`;
+    });
+    o += '</tbody></table></div>';
+  }
+  o += closeCard();
+
+  // Mesh orphans
+  o += openCard('orphans', `⚠ Mesh orphans (${meshOrphans.length})`, true);
+  if (!meshOrphans.length) {
+    o += '<div class="muted">None — no devices report orphan radio state.</div>';
+  } else {
+    o += '<div class="muted" style="margin-bottom:6px">Hubitat reports <code>orphan: true</code> — physical radio relationship lost.</div>';
+    o += '<div>' + meshOrphans.map(d => dlink(d.id, d.name)).join(' · ') + '</div>';
+  }
+  o += closeCard();
+
+  // Stuck jobs
+  o += openCard('stuck', `⚠ Stuck scheduled jobs (${stuckJobs.length})`, true);
+  if (!stuckJobs.length) {
+    o += '<div class="muted">None — all scheduled jobs have a future or null nextRunTime.</div>';
+  } else {
+    o += '<div class="muted" style="margin-bottom:6px">A null <i>Last run</i> with a past <i>nextRunTime</i> = job was scheduled but never fired.</div>';
+    o += '<div class="tbl-wrap"><table data-sortable id="t_stuck"><thead><tr><th>Device</th><th>Handler</th><th data-t="n" data-sd="desc">Overdue</th><th>Last run</th><th>Status</th></tr></thead><tbody>';
+    stuckJobs.forEach(s => {
+      const prev = s.prevRunTime || '';
+      o += `<tr><td>${dlink(s.id, s.name)}</td>`;
+      o += `<td><code>${h(s.handler || '')}</code></td>`;
+      o += `<td data-sv="${s.overdueMs || 0}">${fmtDurSec(s.overdueMs)}</td>`;
+      o += `<td>${prev ? h(prev) : '<span class="muted">never</span>'}</td>`;
+      o += `<td>${h(s.status || '')}</td></tr>`;
+    });
+    o += '</tbody></table></div>';
+  }
+  o += closeCard();
+
+  // Manually-tuned devices
+  o += openCard('tuned', `🛠 Manually-tuned devices (${tunedDevices.length})`, true);
+  if (!tunedDevices.length) {
+    o += '<div class="muted">All devices share the same buffer/threshold values — none have been manually tuned.</div>';
+  } else {
+    o += `<div class="muted" style="margin-bottom:6px">Devices whose buffer/threshold values diverge from the fleet mode (default: spammyThreshold=${tunedDefaults.spammyThreshold || '?'}, maxStates=${tunedDefaults.maxStates || '?'}, maxEvents=${tunedDefaults.maxEvents || '?'}). Diverging values shown in <span class="warn">bold</span>.</div>`;
+    o += '<div class="tbl-wrap"><table data-sortable id="t_tuned"><thead><tr><th data-sd="asc">Device</th><th data-t="n">spammyThreshold</th><th data-t="n">maxStates</th><th data-t="n">maxEvents</th></tr></thead><tbody>';
+    tunedDevices.forEach(t => {
+      const stCell = t.spammyThreshold == null ? '<span class="muted">—</span>' : (t.spammyOff ? `<b style="color:var(--warn)">${t.spammyThreshold}</b>` : String(t.spammyThreshold));
+      const msCell = t.maxStates == null ? '<span class="muted">—</span>' : (t.maxStatesOff ? `<b style="color:var(--warn)">${t.maxStates}</b>` : String(t.maxStates));
+      const meCell = t.maxEvents == null ? '<span class="muted">—</span>' : (t.maxEventsOff ? `<b style="color:var(--warn)">${t.maxEvents}</b>` : String(t.maxEvents));
+      o += `<tr><td>${dlink(t.id, t.name)}</td>`;
+      o += `<td data-sv="${t.spammyThreshold ?? 0}">${stCell}</td>`;
+      o += `<td data-sv="${t.maxStates ?? 0}">${msCell}</td>`;
+      o += `<td data-sv="${t.maxEvents ?? 0}">${meCell}</td></tr>`;
+    });
+    o += '</tbody></table></div>';
+  }
+  o += closeCard();
+
+  // Critical devices
+  o += openCard('critical', '⭐ Critical devices (top 20 by reference count)', true);
+  if (!criticalTop20.length) {
+    o += '<div class="muted">No devices have any apps or dashboards.</div>';
+  } else {
+    o += '<div class="tbl-wrap"><table data-sortable id="t_crit"><thead><tr><th>Device</th><th data-t="n">Apps</th><th data-t="n">Dashboards</th><th data-t="n" data-sd="desc">Total</th></tr></thead><tbody>';
+    criticalTop20.forEach(c => {
+      o += `<tr><td>${dlink(c.id, c.name)}</td>`;
+      o += `<td>${c.appsCount}</td><td>${c.dashboardsCount}</td>`;
+      o += `<td><b>${c.total}</b></td></tr>`;
+    });
+    o += '</tbody></table></div>';
+  }
+  o += closeCard();
+
+  // Devices by room
+  o += openCard('rooms', `🏠 Devices by room (${rooms.length})`, true);
+  if (!rooms.length) {
+    o += '<div class="muted">No room data available.</div>';
+  } else {
+    o += '<div class="muted" style="margin-bottom:6px">Devices grouped by their assigned room. Empty rooms surface storage clutter; high-density rooms may warrant a split.</div>';
+    o += '<div class="tbl-wrap"><table data-sortable id="t_rooms"><thead><tr><th>Room</th><th data-t="n" data-sd="desc">Devices</th><th>Members</th></tr></thead><tbody>';
+    rooms.forEach(r => {
+      const dids = r.deviceIds || [];
+      const members = dids.map(did => {
+        const dev = allDevices[did];
+        const label = dev ? (dev.label || dev.name || ('Device ' + did)) : ('Device ' + did);
+        return dlink(did, label);
+      }).join(' · ');
+      o += `<tr><td><b>${h(r.name || '')}</b></td>`;
+      o += `<td data-sv="${dids.length}">${dids.length}</td>`;
+      o += `<td>${members || '<span class="muted">empty</span>'}</td></tr>`;
+    });
+    o += '</tbody></table></div>';
+  }
+  o += closeCard();
+
+  // Z-Wave JS mesh health
+  if (zwNodeRows.length > 0) {
+    o += openCard('zwjs', `📶 Z-Wave JS mesh health (${zwNodeRows.length})`, true);
+    o += '<div class="muted" style="margin-bottom:6px">Per-node controller statistics from Z-Wave JS. RSSI lower (more negative) is quieter; RTT lower is faster; PER (packet error rate) higher is worse.</div>';
+    o += '<div class="tbl-wrap"><table data-sortable id="t_zwjs"><thead><tr><th>Device</th><th data-t="n">Node</th><th>State</th><th>Status</th><th>Interview</th><th data-t="n">RTT</th><th>RSSI</th><th data-t="n" data-sd="desc">PER %</th><th data-t="n">TX</th><th data-t="n">RX</th><th>Last Seen</th></tr></thead><tbody>';
+    const sortedZw = zwNodeRows.slice().sort((a, b) => ((b.zwaveNode && b.zwaveNode.per) || 0) - ((a.zwaveNode && a.zwaveNode.per) || 0));
+    sortedZw.forEach(d => {
+      const z = d.zwaveNode || {};
+      const stats = z.statistics || {};
+      const stateColor = z.nodeState === 'OK' ? 'var(--ok)' : 'var(--crit)';
+      o += `<tr><td>${dlink(d.id, d.label || d.name)}</td>`;
+      o += `<td>${z.nodeId || ''}</td>`;
+      o += `<td><span style="color:${stateColor}">${h(z.nodeState || '')}</span></td>`;
+      o += `<td>${z.status || ''}</td>`;
+      o += `<td>${h(z.interviewStage || '')}</td>`;
+      o += `<td>${z.rtt || '<span class="muted">—</span>'}</td>`;
+      o += `<td>${z.rssi || '<span class="muted">—</span>'}</td>`;
+      o += `<td data-sv="${z.per || 0}">${z.per || 0}</td>`;
+      o += `<td>${stats.commandsTX || 0}</td>`;
+      o += `<td>${stats.commandsRX || 0}</td>`;
+      o += `<td>${h((z.lastSeenLocal || ''))}</td></tr>`;
+    });
+    o += '</tbody></table></div>';
+    o += closeCard();
+  }
+
+  // Hub Mesh linked devices
+  if (hmRows.length > 0) {
+    o += openCard('hubmesh', `🔗 Hub Mesh linked devices (${hmRows.length})`, true);
+    o += '<div class="muted" style="margin-bottom:6px">Devices physically owned by another hub on this account, exposed locally via Hub Mesh.</div>';
+    o += '<div class="tbl-wrap"><table data-sortable id="t_hubmesh"><thead><tr><th>Device</th><th>Source Hub</th><th>Source Device ID</th><th>Status</th><th>Raw</th></tr></thead><tbody>';
+    hmRows.forEach(d => {
+      const hm = d.hubMeshState || {};
+      const srcHub = hm.sourceHubName || hm.hostHubName || hm.hubName || '—';
+      const srcDevId = String(hm.sourceDeviceId || hm.hostDeviceId || hm.remoteDeviceId || '');
+      const status = String(hm.status || hm.linkStatus || hm.online || '');
+      o += `<tr><td>${dlink(d.id, d.label || d.name)}</td>`;
+      o += `<td>${h(srcHub)}</td>`;
+      o += `<td>${h(srcDevId)}</td>`;
+      o += `<td>${h(status)}</td>`;
+      o += `<td><code style="font-size:11px">${h(JSON.stringify(hm))}</code></td></tr>`;
+    });
+    o += '</tbody></table></div>';
+    o += closeCard();
+  }
+
+  // Apps -> devices
+  o += openCard('apps', `📱 Apps → devices (${appsToDevices.length})`, true);
+  if (!appsToDevices.length) {
+    o += '<div class="muted">No apps subscribe to any devices.</div>';
+  } else {
+    o += '<div class="filter"><input type="text" data-filter="t_apps" placeholder="Filter apps or devices…"></div>';
+    o += '<div class="tbl-wrap"><table data-sortable id="t_apps"><thead><tr><th data-sd="asc">App</th><th data-t="n"># Devices</th><th>Devices</th></tr></thead><tbody>';
+    appsToDevices.forEach(a => {
+      const n = (a.devices || []).length;
+      const devs = (a.devices || []).map(d => dlink(d.id, d.name)).join(', ');
+      const appCell = a.disabled
+        ? `<s class="muted" title="App is disabled — its subscriptions are inactive">${alink(a.id, a.label)}</s> <span class="badge b-warn">disabled</span>`
+        : alink(a.id, a.label);
+      o += `<tr><td data-sv="${h(a.label || '')}">${appCell}</td>`;
+      o += `<td>${n}</td>`;
+      o += `<td>${devs}</td></tr>`;
+    });
+    o += '</tbody></table></div>';
+  }
+  o += closeCard();
+
+  // Dashboards -> devices
+  o += openCard('dashboards', `📊 Dashboards → devices (${dashboardsToDevices.length})`, true);
+  if (!dashboardsToDevices.length) {
+    o += '<div class="muted">No dashboards reference any devices.</div>';
+  } else {
+    o += '<div class="filter"><input type="text" data-filter="t_dash" placeholder="Filter dashboards or devices…"></div>';
+    o += '<div class="tbl-wrap"><table data-sortable id="t_dash"><thead><tr><th data-sd="asc">Dashboard</th><th data-t="n"># Devices</th><th>Devices</th></tr></thead><tbody>';
+    dashboardsToDevices.forEach(d => {
+      const n = (d.devices || []).length;
+      const devs = (d.devices || []).map(dv => dlink(dv.id, dv.name)).join(', ');
+      o += `<tr><td><b>${h(d.name || '')}</b></td>`;
+      o += `<td>${n}</td>`;
+      o += `<td>${devs}</td></tr>`;
+    });
+    o += '</tbody></table></div>';
+  }
+  o += closeCard();
+
+  // Per-device detail table
+  o += openCard('all', `📋 Per-device detail table (${data.deviceCount})`, true);
+  o += '<div class="filter"><input type="text" data-filter="t_all" placeholder="Filter devices…"></div>';
+  o += '<div class="tbl-wrap"><table data-sortable id="t_all"><thead><tr><th data-sd="asc">Name</th><th>Type</th><th>Source</th><th data-t="n">Apps</th><th data-t="n">Dashboards</th><th>Parent app</th><th>Last activity</th></tr></thead><tbody>';
+  const sortedDevices = Object.values(allDevices).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  sortedDevices.forEach(d => {
+    const src = d.driverType === 'usr' ? '<span class="badge b-community">Community</span>' : '<span class="badge b-builtin">Built-in</span>';
+    const apps = d.appsUsing || [];
+    const dashs = d.dashboards || [];
+    let appsCell;
+    if (apps.length) {
+      appsCell = apps.slice(0, 4).map(a => {
+        const inner = alink(a.id, a.label || a.name);
+        return a.disabled ? `<s class="muted" title="App is disabled — subscription inactive">${inner}</s>` : inner;
+      }).join(', ') + (apps.length > 4 ? `, <span class="muted">+${apps.length - 4}</span>` : '');
+    } else {
+      appsCell = d.parentApp == null ? '<span class="warn">⚠ unreferenced</span>' : '<span class="muted">—</span>';
+    }
+    const dashsCell = dashs.length
+      ? dashs.slice(0, 4).map(dash => `<a href="/installedapp/configure/${dash.id}" target="_blank">${h(dash.name || '')}</a>`).join(', ')
+        + (dashs.length > 4 ? `, <span class="muted">+${dashs.length - 4}</span>` : '')
+      : '<span class="muted">—</span>';
+    const pa = d.parentApp;
+    const paCell = pa ? alink(pa.id, pa.label || pa.name) : '<span class="muted">—</span>';
+    const typeName = h(d.deviceTypeName || '');
+    const typeCell = (d.driverType === 'usr' && d.deviceTypeId)
+      ? `<a href="/driver/editor/${d.deviceTypeId}" target="_blank">${typeName}</a>`
+      : typeName;
+    o += `<tr><td>${dlink(d.id, d.label || d.name)}</td>`;
+    o += `<td>${typeCell}</td>`;
+    o += `<td>${src}</td>`;
+    o += `<td data-sv="${apps.length}">${appsCell}</td>`;
+    o += `<td data-sv="${dashs.length}">${dashsCell}</td>`;
+    o += `<td>${paCell}</td>`;
+    o += `<td>${h(d.lastActivityTime || '')}</td></tr>`;
+  });
+  o += '</tbody></table></div>';
+  o += closeCard();
+
+  // Failed footnote
+  if (failed.length > 0) {
+    o += `<div class="card" id="failed"><div class="card-h crit">Failed to fetch (${failed.length})</div><div class="card-b muted">`;
+    o += failed.map(f => `Device ${f.id}: ${h(f.reason || '')}`).join('<br>');
+    o += '</div></div>';
+  }
+
+  return o;
+}
+
+function initAuditSort() {
+  function cmp(a, b, n) {
+    if (n) { a = parseFloat(a) || 0; b = parseFloat(b) || 0; return a < b ? -1 : a > b ? 1 : 0; }
+    a = String(a).toLowerCase(); b = String(b).toLowerCase(); return a < b ? -1 : a > b ? 1 : 0;
+  }
+  function getSv(td) { return td.dataset.sv != null ? td.dataset.sv : td.textContent.trim(); }
+  function sortTable(tbl, col, dir) {
+    const th = tbl.tHead.rows[0].cells[col], n = th.dataset.t === 'n';
+    const tb = tbl.tBodies[0];
+    const rows = Array.from(tb.rows);
+    rows.sort((r1, r2) => cmp(getSv(r1.cells[col]), getSv(r2.cells[col]), n) * (dir === 'desc' ? -1 : 1));
+    rows.forEach(r => tb.appendChild(r));
+  }
+  function setArrows(ths, col, dir) {
+    Array.from(ths).forEach((t, i) => {
+      const a = t.querySelector('.arr');
+      if (i === col) { t.dataset.dir = dir; if (a) a.textContent = dir === 'asc' ? ' ▲' : ' ▼'; }
+      else { delete t.dataset.dir; if (a) a.textContent = ' ⇅'; }
+    });
+  }
+  document.querySelectorAll('table[data-sortable]').forEach(tbl => {
+    if (!tbl.tHead || !tbl.tBodies[0]) return;
+    const ths = tbl.tHead.rows[0].cells;
+    let defCol = -1, defDir = 'asc';
+    Array.from(ths).forEach((th, i) => {
+      const s = document.createElement('span'); s.className = 'arr'; s.textContent = ' ⇅'; th.appendChild(s);
+      th.addEventListener('click', () => {
+        const dir = th.dataset.dir === 'asc' ? 'desc' : (th.dataset.dir === 'desc' ? 'asc' : (th.dataset.t === 'n' ? 'desc' : 'asc'));
+        setArrows(ths, i, dir); sortTable(tbl, i, dir);
+      });
+      if (th.dataset.sd) { defCol = i; defDir = th.dataset.sd; }
+    });
+    if (defCol >= 0) { setArrows(ths, defCol, defDir); sortTable(tbl, defCol, defDir); }
+  });
+  document.querySelectorAll('input[data-filter]').forEach(inp => {
+    const tbl = document.getElementById(inp.dataset.filter); if (!tbl || !tbl.tBodies[0]) return;
+    inp.addEventListener('input', () => {
+      const q = inp.value.toLowerCase();
+      Array.from(tbl.tBodies[0].rows).forEach(r => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; });
+    });
+  });
+}
+
+// ===== STARTUP =====
+const _inAuditMode = new URLSearchParams(window.location.search).has('audit');
+if (_inAuditMode) {
+  renderAuditPage();
+} else {
+  let liveTimer=setInterval(refreshLive,liveIntervalSec*1000);
+  document.addEventListener('visibilitychange',()=>{
+    clearInterval(liveTimer);
+    if(!document.hidden)liveTimer=setInterval(refreshLive,liveIntervalSec*1000)
+  });
+  go(curTab);
+}
 </script>
 </body>
 </html>
