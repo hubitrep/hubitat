@@ -14,8 +14,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String APP_VERSION = "5.32.5"
-@Field static final String STORAGE_SCHEMA_VERSION = "4.0.0"
+@Field static final String APP_VERSION = "5.33.1"
+@Field static final String STORAGE_SCHEMA_VERSION = "5.0.0"
 
 // API endpoint paths (all relative to HUB_BASE)
 @Field static final String HUB_BASE = "http://127.0.0.1:8080"
@@ -155,7 +155,12 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static volatile Long    cachedDevicesListAt
 @Field static volatile Map     cachedSystemResources
 @Field static volatile Long    cachedSystemResourcesAt
-@Field static volatile List    cachedCheckpoints
+// v5.33.0: split-file storage replaces the single-blob cachedCheckpoints. Only the
+// slim index is cached in memory; per-checkpoint detail is read on demand.
+@Field static volatile List    cachedCheckpointIndex
+// Staging area for an in-progress async scheduled checkpoint. Safe as a single static
+// because atomicState.checkpointInFlight serializes chains.
+@Field static volatile Map     asyncCheckpointStaging
 @Field static final long       RADIO_CACHE_TTL_MS = 60_000L
 @Field static final long       HUB_LIST_CACHE_TTL_MS = 120_000L
 @Field static final long       SYSTEM_RESOURCES_CACHE_TTL_MS = 10_000L
@@ -229,7 +234,13 @@ import java.util.concurrent.atomic.AtomicInteger
 
 // File names for persistence
 @Field static final String SNAPSHOTS_FILE = "hub_diagnostics_snapshots.json"
+// v5.33.0 split-file checkpoint storage:
+//   index file: small list of slim records (one per checkpoint) + detailFile pointer
+//   detail files: one per checkpoint, named with timestampMs, holds full content
+// The legacy CHECKPOINTS_FILE name is kept only for one-shot migration detection.
 @Field static final String CHECKPOINTS_FILE = "hub_diagnostics_checkpoints.json"
+@Field static final String CHECKPOINT_INDEX_FILE = "hub_diagnostics_checkpoints_index.json"
+@Field static final String CHECKPOINT_DETAIL_PREFIX = "hub_diagnostics_checkpoint_"
 @Field static final String PERFORMANCE_COMPARISON_FILE = "hub_diagnostics_performance_comparison.json"
 
 @Field static final String IMPORT_URL_APP = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubDiagnostics/HubDiagnostics.groovy"
@@ -430,6 +441,8 @@ Map settingsPage() {
                     defaultValue: "60", required: true
             }
             input "maxCheckpoints", "number", title: "Maximum perf checkpoints to keep", defaultValue: 10, range: "1..50", required: true
+            paragraph "<i>After updating the App or UI code, click <b>Done</b> on this page to re-arm scheduled jobs. A code push alone does not re-run initialize().</i>"
+            paragraph "<i>v5.33.0 migrates checkpoint storage to per-file detail records. The first Performance tab visit after upgrading splits any legacy single-blob file into one index + one detail file per checkpoint.</i>"
         }
 
         section("Device Monitoring") {
@@ -714,7 +727,8 @@ Map apiPerformanceCompare() {
         return jsonResponse([success: false, error: "Missing baseline or checkpoint parameter"])
     }
 
-    List checkpoints = loadCheckpoints()
+    // v5.33.0: read from the slim index, then load only the detail file(s) we need.
+    List idx = loadCheckpointIndex()
     Map baselineStats
     String baselineLabel
     Map checkpointStats
@@ -727,8 +741,9 @@ Map apiPerformanceCompare() {
     } else {
         if (!baseline?.isInteger()) return jsonResponse([success: false, error: "Invalid baseline index"])
         int bIdx = baseline.toInteger()
-        if (bIdx < 0 || bIdx >= checkpoints.size()) return jsonResponse([success: false, error: "Invalid baseline index"])
-        Map bCp = checkpoints[bIdx]
+        if (bIdx < 0 || bIdx >= idx.size()) return jsonResponse([success: false, error: "Invalid baseline index"])
+        Map bCp = loadCheckpointDetail(idx[bIdx].detailFile as String)
+        if (!bCp) return jsonResponse([success: false, error: "Baseline detail file missing"])
         baselineStats = bCp.stats + [resources: bCp.resources, radioStats: bCp.radioStats, timestampMs: bCp.timestampMs, temperature: bCp.temperature, databaseSize: bCp.databaseSize]
         baselineLabel = bCp.timestamp
     }
@@ -740,10 +755,11 @@ Map apiPerformanceCompare() {
         checkpointStats = statsWrap.data
         Map currentResources = fetchSystemResources()
         checkpointStats.resources = currentResources
-        Map zwWrap = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20)
-        Map zwaveData = zwWrap.ok ? zwWrap.data : [:]
-        Map zbWrap = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20)
-        Map zigbeeData = zbWrap.ok ? zbWrap.data : [:]
+        // v5.32.6: cache-first radio fetch with bounded budget (8s, no retry) — same
+        // pattern as scheduled createCheckpoint. Keeps Compare → Now from pinning the
+        // app thread for tens of seconds on a stressed hub.
+        Map zwaveData = fetchZwaveDataForCheckpoint() ?: [:]
+        Map zigbeeData = fetchZigbeeDataForCheckpoint() ?: [:]
         checkpointStats.radioStats = [
             zwave: extractZwaveMessageCounts(zwaveData),
             zigbee: extractZigbeeMessageCounts(zigbeeData)
@@ -755,8 +771,9 @@ Map apiPerformanceCompare() {
     } else {
         if (!checkpoint?.isInteger()) return jsonResponse([success: false, error: "Invalid checkpoint index"])
         int cIdx = checkpoint.toInteger()
-        if (cIdx < 0 || cIdx >= checkpoints.size()) return jsonResponse([success: false, error: "Invalid checkpoint index"])
-        Map cCp = checkpoints[cIdx]
+        if (cIdx < 0 || cIdx >= idx.size()) return jsonResponse([success: false, error: "Invalid checkpoint index"])
+        Map cCp = loadCheckpointDetail(idx[cIdx].detailFile as String)
+        if (!cCp) return jsonResponse([success: false, error: "Checkpoint detail file missing"])
         checkpointStats = cCp.stats + [resources: cCp.resources, radioStats: cCp.radioStats, timestampMs: cCp.timestampMs, temperature: cCp.temperature, databaseSize: cCp.databaseSize]
         checkpointLabel = cCp.timestamp
     }
@@ -886,9 +903,8 @@ Map apiDeleteSnapshot() {
 }
 
 Map apiCreateCheckpoint() {
-    if (!createCheckpoint()) return jsonResponse([success: false, error: "Failed to capture runtime stats"])
-    List checkpoints = loadCheckpoints()
-    return jsonResponse([success: true, checkpointCount: checkpoints?.size() ?: 0])
+    if (!createCheckpoint()) return jsonResponse([success: false, error: "Checkpoint creation failed or already in progress"])
+    return jsonResponse([success: true, checkpointCount: getCheckpointIndex().size()])
 }
 
 Map apiDeleteCheckpoint() {
@@ -1238,16 +1254,32 @@ Map getHealthData(Map shared = [:]) {
 }
 
 Map getPerformanceData(Map shared = [:]) {
+    // v5.33.1: per-phase timing instrumentation to break down cold-load wall time.
+    // Each phase records (a) elapsed ms, (b) whether the fetch hit the @Field static
+    // cache or made a fresh httpGet. Summary logged at end as a single info line.
+    Map t = [:]
+    long t1
+    boolean zwaveCache = false, zigbeeCache = false, appsCache = false, devicesCache = false
+
+    t1 = now()
     Map stats
     if (shared.runtimeStats) { stats = (Map) shared.runtimeStats } else { Map r = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats"); stats = r.ok ? r.data : null }
+    t.runtime = now() - t1
+
+    t1 = now()
     Map resources  = (shared.resources as Map) ?: fetchSystemResources()
+    t.resources = now() - t1
+
+    t1 = now()
     Map zwaveData
     if (shared.network?.zwave) {
         zwaveData = (Map) shared.network.zwave
+        zwaveCache = true
     } else {
         long nowMs = now()
         if (cachedZwaveData && cachedZwaveAt && (nowMs - cachedZwaveAt) < RADIO_CACHE_TTL_MS) {
             zwaveData = cachedZwaveData
+            zwaveCache = true
             logDebug "Using cached Z-Wave data (age ${nowMs - cachedZwaveAt}ms)"
         } else {
             Map r = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20)
@@ -1255,13 +1287,18 @@ Map getPerformanceData(Map shared = [:]) {
             if (zwaveData) { cachedZwaveData = zwaveData; cachedZwaveAt = nowMs }
         }
     }
+    t.zwave = now() - t1
+
+    t1 = now()
     Map zigbeeData
     if (shared.network?.zigbee) {
         zigbeeData = (Map) shared.network.zigbee
+        zigbeeCache = true
     } else {
         long nowMs = now()
         if (cachedZigbeeData && cachedZigbeeAt && (nowMs - cachedZigbeeAt) < RADIO_CACHE_TTL_MS) {
             zigbeeData = cachedZigbeeData
+            zigbeeCache = true
             logDebug "Using cached Zigbee data (age ${nowMs - cachedZigbeeAt}ms)"
         } else {
             Map r = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20)
@@ -1269,6 +1306,9 @@ Map getPerformanceData(Map shared = [:]) {
             if (zigbeeData) { cachedZigbeeData = zigbeeData; cachedZigbeeAt = nowMs }
         }
     }
+    t.zigbee = now() - t1
+
+    t1 = now()
     List zwaveMsgCounts = extractZwaveMessageCounts(zwaveData)
     List zigbeeMsgCounts = extractZigbeeMessageCounts(zigbeeData)
     Map radioStats = [zwave: zwaveMsgCounts, zigbee: zigbeeMsgCounts]
@@ -1277,7 +1317,9 @@ Map getPerformanceData(Map shared = [:]) {
     List allRadioDevices = (zwaveMsgCounts.collect { [name: it.name, deviceId: it.deviceId, msgCount: it.msgCount, integration: "Z-Wave"] } +
                             zigbeeMsgCounts.collect { [name: it.name, deviceId: it.id, msgCount: it.msgCount, integration: "Zigbee"] })
     List topTalkers = allRadioDevices.sort { -it.msgCount }.take(3)
+    t.radioCalc = now() - t1
 
+    t1 = now()
     // Enrich appStats with source labels (community/builtin/platform)
     Map appSourceById = [:]
     long nowApps = now()
@@ -1285,17 +1327,23 @@ Map getPerformanceData(Map shared = [:]) {
     if (cachedAppsListData && cachedAppsListAt && (nowApps - cachedAppsListAt) < HUB_LIST_CACHE_TTL_MS) {
         logDebug "Using cached apps list (age ${nowApps - cachedAppsListAt}ms)"
         appsListResp = cachedAppsListData
+        appsCache = true
     } else {
         Map appsListWrap = hubMapRequest(APPS_LIST_PATH, "apps list")
         appsListResp = appsListWrap.ok ? appsListWrap.data : [:]
         if (appsListWrap.ok) { cachedAppsListData = appsListResp; cachedAppsListAt = nowApps }
     }
+    t.appsFetch = now() - t1
+
+    t1 = now()
     if (appsListResp.apps) {
         visitAppEntries(appsListResp.apps as List) { Map appEntry, Map app, boolean isChildLevel, List _ ->
             if (app?.id != null) appSourceById[app.id] = (app.user ? "community" : "builtin")
         }
     }
+    t.appsSourceWalk = now() - t1
 
+    t1 = now()
     if (stats) {
         stats.radioStats = radioStats
         stats.uptimeSeconds = parseUptime(stats.uptime as String)
@@ -1307,28 +1355,38 @@ Map getPerformanceData(Map shared = [:]) {
             }
         }
     }
+    t.statsEnrich = now() - t1
+
     // R-7 B2 (v5.20.0): build small id→label maps for the Performance tab's CPU charts so the
     // SPA doesn't cross-fetch /api/devices and /api/apps just to look up names. Tiny payload
     // (counts × ~20 bytes), saves 2 client round trips of much heavier endpoints.
     // Walk /hub2/devicesList directly to build id→type map. Skips analyzeDevices' enrichment overhead
     // (we only need the raw type/name from the bulk endpoint, not the cross-classification work).
+    t1 = now()
     Map deviceTypeById = [:]
     long nowDev = now()
     Map devListData
     if (cachedDevicesListData && cachedDevicesListAt && (nowDev - cachedDevicesListAt) < HUB_LIST_CACHE_TTL_MS) {
         logDebug "Using cached devices list (age ${nowDev - cachedDevicesListAt}ms)"
         devListData = cachedDevicesListData
+        devicesCache = true
     } else {
         Map devWrap = hubMapRequest(DEVICES_LIST_PATH, "devices list (B2 labels)", 15)
         devListData = devWrap.ok ? devWrap.data : [:]
         if (devWrap.ok) { cachedDevicesListData = devListData; cachedDevicesListAt = nowDev }
     }
+    t.devicesFetch = now() - t1
+
+    t1 = now()
     if (devListData.devices) {
         flattenDeviceEntries(devListData.devices as List).each { Map entry ->
             Map dev = entry?.data instanceof Map ? (Map) entry.data : null
             if (dev?.id != null) deviceTypeById[dev.id] = (dev.type ?: 'Unknown') as String
         }
     }
+    t.devicesWalk = now() - t1
+
+    t1 = now()
     // Walk /hub2/appsList directly for parent→child label association — reuse the response already
     // fetched above for appSourceById rather than making a second round trip.
     Map appParentTypeById = [:]
@@ -1347,21 +1405,30 @@ Map getPerformanceData(Map shared = [:]) {
         }
         walkApps(appsListResp.apps as List, null)
     }
+    t.appsParentWalk = now() - t1
 
-    List checkpoints = loadCheckpoints()
+    t1 = now()
+    // v5.33.0: read the slim checkpoint index. Backed by loadCheckpointIndex which
+    // reads a small per-app index file (or migrates the legacy single-blob file once).
+    // The Performance tab API never touches the full per-checkpoint detail files.
+    List indexEntries = getCheckpointIndex()
+    t.indexRead = now() - t1
+
+    long totalMs = (t.values().sum() ?: 0) as long
+    logDebug "getPerformanceData breakdown (sum ${totalMs}ms): " +
+        "runtime=${t.runtime}ms resources=${t.resources}ms " +
+        "zwave=${t.zwave}ms${zwaveCache ? '(cache)' : ''} zigbee=${t.zigbee}ms${zigbeeCache ? '(cache)' : ''} radioCalc=${t.radioCalc}ms " +
+        "appsFetch=${t.appsFetch}ms${appsCache ? '(cache)' : ''} appsSourceWalk=${t.appsSourceWalk}ms statsEnrich=${t.statsEnrich}ms " +
+        "devicesFetch=${t.devicesFetch}ms${devicesCache ? '(cache)' : ''} devicesWalk=${t.devicesWalk}ms appsParentWalk=${t.appsParentWalk}ms " +
+        "indexRead=${t.indexRead}ms"
     return [
         stats: stats, resources: resources,
         topTalkers: topTalkers,
         deviceTypeById: deviceTypeById,        // B2: id → driver type for CPU-by-device-type chart
         appParentTypeById: appParentTypeById,  // B2: id → parent label for CPU-by-app-type chart
-        checkpointCount: checkpoints?.size() ?: 0,
+        checkpointCount: indexEntries.size(),
         maxCheckpoints: (settings.maxCheckpoints ?: 10) as int,
-        checkpoints: (checkpoints ?: []).collect { Map cp ->
-            Map s = (Map) cp.stats
-            [timestamp: cp.timestamp, timestampMs: cp.timestampMs,
-             stats: s ? [uptime: s.uptime, totalDevicesRuntime: s.totalDevicesRuntime, totalAppsRuntime: s.totalAppsRuntime] : null,
-             resources: cp.resources, temperature: cp.temperature, databaseSize: cp.databaseSize]
-        },
+        checkpoints: indexEntries,
         savedComparison: loadPerformanceComparisonPayload()
     ]
 }
@@ -1486,8 +1553,8 @@ private Object hubRequest(String path, String name, String type = "json", int ti
     return hubRequestInternal(path, name, type, timeout, true)
 }
 
-private Map hubMapRequest(String path, String name, int timeout = 30) {
-    Object raw = hubRequestInternal(path, name, "json", timeout, true)
+private Map hubMapRequest(String path, String name, int timeout = 30, boolean allowRetry = true) {
+    Object raw = hubRequestInternal(path, name, "json", timeout, allowRetry)
     if (raw instanceof Map && ((Map) raw).error) {
         return [ok: false, data: [:], error: (String) ((Map) raw).message]
     }
@@ -2968,6 +3035,182 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
 // ===== PERFORMANCE CHECKPOINT SYSTEM =====
 
 boolean createCheckpoint() {
+    // v5.32.6: in-flight guard. Prevents a scheduled tick from racing a user-triggered
+    // Save Checkpoint, which would stack file I/O and HTTP fetches on the app thread.
+    // atomicState (not state) because state commits at method exit — too late for the race.
+    Long inFlight = atomicState.checkpointInFlight as Long
+    if (inFlight && (now() - inFlight) < 300_000L) {
+        logInfo "createCheckpoint skipped — already in flight since ${new Date(inFlight)}"
+        return false
+    }
+    atomicState.checkpointInFlight = now()
+    try {
+        return doCreateCheckpoint()
+    } finally {
+        atomicState.checkpointInFlight = null
+    }
+}
+
+// v5.33.0: scheduled-only async entry point. The Hubitat cron handler calls this and
+// returns immediately after firing the first asynchttpGet; the chain callbacks finalize
+// off the app thread. Keeps user-triggered apiCreateCheckpoint sync so the HTTP caller
+// gets a real success/fail response.
+void scheduledCheckpoint() {
+    Long inFlight = atomicState.checkpointInFlight as Long
+    if (inFlight && (now() - inFlight) < 300_000L) {
+        logInfo "scheduledCheckpoint skipped — already in flight since ${new Date(inFlight)}"
+        return
+    }
+    atomicState.checkpointInFlight = now()
+    fireAsyncCheckpointChain()
+}
+
+private void fireAsyncCheckpointChain() {
+    logInfo "Starting async scheduled checkpoint..."
+    asyncCheckpointStaging = [chainStartMs: now()]
+    Map params = [uri: HUB_BASE, path: RUNTIME_STATS_PATH, contentType: "application/json", timeout: 30]
+    try {
+        asynchttpGet("asyncOnRuntimeStats", params, null)
+    } catch (Exception e) {
+        logError "scheduledCheckpoint: failed to dispatch runtime stats fetch: ${e.message}"
+        abortAsyncChain()
+    }
+}
+
+void asyncOnRuntimeStats(resp, data) {
+    if (resp?.hasError()) {
+        logError "scheduledCheckpoint: runtime stats error: ${resp.getErrorMessage()}"
+        abortAsyncChain(); return
+    }
+    if (resp?.status != 200) {
+        logError "scheduledCheckpoint: runtime stats HTTP ${resp?.status}"
+        abortAsyncChain(); return
+    }
+    try {
+        asyncCheckpointStaging.stats = resp.json
+        asyncCheckpointStaging.resources = fetchSystemResources()
+        asyncCheckpointStaging.temperature = fetchTemperature()
+        asyncCheckpointStaging.databaseSize = fetchDatabaseSize()
+        asyncCheckpointStaging.timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
+        asyncCheckpointStaging.timestampMs = now()
+    } catch (Exception e) {
+        logError "scheduledCheckpoint: stage stats: ${e.message}"
+        abortAsyncChain(); return
+    }
+    chainNextRadio(true)
+}
+
+private void chainNextRadio(boolean zwave) {
+    long nowMs = now()
+    Map cached = zwave ? cachedZwaveData : cachedZigbeeData
+    Long cachedAt = zwave ? cachedZwaveAt  : cachedZigbeeAt
+    String path = zwave ? ZWAVE_DETAILS_PATH : ZIGBEE_DETAILS_PATH
+    String cbName = zwave ? "asyncOnZwave" : "asyncOnZigbee"
+    if (cached && cachedAt && (nowMs - cachedAt) < RADIO_CACHE_TTL_MS) {
+        // Cache hit — invoke callback synchronously with a cached carrier so the
+        // callback shape stays uniform across cache hit and async fetch.
+        this."${cbName}"(null, [cached: true, body: cached])
+        return
+    }
+    Map params = [uri: HUB_BASE, path: path, contentType: "application/json", timeout: 8]
+    try {
+        asynchttpGet(cbName, params, null)
+    } catch (Exception e) {
+        logError "scheduledCheckpoint: dispatch ${zwave ? 'Z-Wave' : 'Zigbee'}: ${e.message}"
+        // Continue chain with empty data rather than abort
+        this."${cbName}"(null, [cached: true, body: [:]])
+    }
+}
+
+void asyncOnZwave(resp, data) {
+    Map zw = extractAsyncBody(resp, data, "Z-Wave")
+    if (zw != null && !data?.cached) { cachedZwaveData = zw; cachedZwaveAt = now() }
+    asyncCheckpointStaging.zwaveRaw = zw ?: [:]
+    chainNextRadio(false)
+}
+
+void asyncOnZigbee(resp, data) {
+    Map zb = extractAsyncBody(resp, data, "Zigbee")
+    if (zb != null && !data?.cached) { cachedZigbeeData = zb; cachedZigbeeAt = now() }
+    asyncCheckpointStaging.zigbeeRaw = zb ?: [:]
+    finalizeAsyncCheckpoint()
+}
+
+private Map extractAsyncBody(resp, data, String name) {
+    if (data?.cached) return (Map) data.body
+    if (resp == null) return [:]
+    if (resp.hasError()) {
+        logDebug "scheduledCheckpoint: ${name} error: ${resp.getErrorMessage()}"
+        return [:]
+    }
+    if (resp.status != 200) {
+        logDebug "scheduledCheckpoint: ${name} HTTP ${resp.status}"
+        return [:]
+    }
+    try { return resp.json instanceof Map ? (Map) resp.json : [:] }
+    catch (Exception e) { logDebug "scheduledCheckpoint: ${name} parse: ${e.message}"; return [:] }
+}
+
+private void finalizeAsyncCheckpoint() {
+    try {
+        Map zwaveData = (Map) (asyncCheckpointStaging.zwaveRaw ?: [:])
+        Map zigbeeData = (Map) (asyncCheckpointStaging.zigbeeRaw ?: [:])
+        Map cp = [
+            timestamp: asyncCheckpointStaging.timestamp,
+            timestampMs: asyncCheckpointStaging.timestampMs,
+            stats: asyncCheckpointStaging.stats,
+            resources: asyncCheckpointStaging.resources,
+            temperature: asyncCheckpointStaging.temperature,
+            databaseSize: asyncCheckpointStaging.databaseSize,
+            radioStats: [
+                zwave: extractZwaveMessageCounts(zwaveData),
+                zigbee: extractZigbeeMessageCounts(zigbeeData)
+            ]
+        ]
+        persistCheckpoint(cp)
+        long elapsed = now() - (asyncCheckpointStaging.chainStartMs as Long)
+        logInfo "Scheduled checkpoint created (async chain, ${elapsed}ms wall)"
+    } catch (Exception e) {
+        logError "scheduledCheckpoint: finalize: ${e.message}"
+    } finally {
+        asyncCheckpointStaging = null
+        atomicState.checkpointInFlight = null
+    }
+}
+
+private void abortAsyncChain() {
+    asyncCheckpointStaging = null
+    atomicState.checkpointInFlight = null
+}
+
+// v5.32.6: radio fetch with cache-first + bounded budget. Used by checkpoint paths
+// (createCheckpoint, apiPerformanceCompare 'now') where blocking the app thread for
+// tens of seconds contributes to hub-wide overload. getPerformanceData has its own
+// cache check inline (it returns the data directly into the response) so it keeps
+// the longer 20s timeout — the user explicitly opened the tab and wants the data.
+private Map fetchZwaveDataForCheckpoint() {
+    long nowMs = now()
+    if (cachedZwaveData && cachedZwaveAt && (nowMs - cachedZwaveAt) < RADIO_CACHE_TTL_MS) {
+        logDebug "Using cached Z-Wave data for checkpoint (age ${nowMs - cachedZwaveAt}ms)"
+        return cachedZwaveData
+    }
+    Map r = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details (checkpoint)", 8, false)
+    if (r.ok) { cachedZwaveData = r.data; cachedZwaveAt = nowMs; return r.data }
+    return null
+}
+
+private Map fetchZigbeeDataForCheckpoint() {
+    long nowMs = now()
+    if (cachedZigbeeData && cachedZigbeeAt && (nowMs - cachedZigbeeAt) < RADIO_CACHE_TTL_MS) {
+        logDebug "Using cached Zigbee data for checkpoint (age ${nowMs - cachedZigbeeAt}ms)"
+        return cachedZigbeeData
+    }
+    Map r = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details (checkpoint)", 8, false)
+    if (r.ok) { cachedZigbeeData = r.data; cachedZigbeeAt = nowMs; return r.data }
+    return null
+}
+
+private boolean doCreateCheckpoint() {
     logInfo "Creating perf checkpoint..."
 
     Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
@@ -2981,9 +3224,12 @@ boolean createCheckpoint() {
     Float temperature = fetchTemperature()
     Integer databaseSize = fetchDatabaseSize()
 
-    // Capture radio message counts for Z-Wave and Zigbee
-    Map zwaveData = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20).with { it.ok ? it.data : null }
-    Map zigbeeData = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20).with { it.ok ? it.data : null }
+    // v5.32.6: capture radio message counts via the same 60s @Field static cache used by
+    // getPerformanceData. On a cold cache, bound the fetch to 8s with no retry — worst-case
+    // per-radio blocking drops from ~40s (20s × once-retry) to 8s, halving total checkpoint
+    // app-thread time. If the call still fails, store empty arrays rather than crashing.
+    Map zwaveData = fetchZwaveDataForCheckpoint()
+    Map zigbeeData = fetchZigbeeDataForCheckpoint()
     List zwaveRadio = extractZwaveMessageCounts(zwaveData)
     List zigbeeRadio = extractZigbeeMessageCounts(zigbeeData)
 
@@ -3000,15 +3246,7 @@ boolean createCheckpoint() {
         ]
     ]
 
-    List checkpoints = loadCheckpoints()
-    checkpoints.add(0, checkpoint)
-
-    int maxCp = (settings.maxCheckpoints ?: 10) as int
-    if (checkpoints.size() > maxCp) {
-        checkpoints = checkpoints.take(maxCp)
-    }
-
-    saveCheckpoints(checkpoints)
+    persistCheckpoint(checkpoint)
     logInfo "Perf checkpoint created successfully"
     return true
 }
@@ -3054,19 +3292,25 @@ Map buildZeroBaseline(Map stats, Map resources) {
 }
 
 void deleteCheckpoint(int index) {
-    List checkpoints = loadCheckpoints()
-    if (index >= 0 && index < checkpoints.size()) {
-        logInfo "Deleting checkpoint at index ${index}"
-        checkpoints.remove(index)
-        saveCheckpoints(checkpoints)
+    List idx = new ArrayList(loadCheckpointIndex())
+    if (index >= 0 && index < idx.size()) {
+        Map dropped = (Map) idx.remove(index)
+        logInfo "Deleting checkpoint at index ${index} (${dropped?.timestamp})"
+        deleteCheckpointDetail(dropped?.detailFile as String)
+        saveCheckpointIndex(idx)
     }
 }
 
 void clearAllCheckpoints() {
-    deleteFile(CHECKPOINTS_FILE)
+    // Drop any per-checkpoint detail files lingering in File Manager (includes orphans
+    // from interrupted writes — listHubFiles is the source of truth).
+    List detailFiles = listHubFiles(CHECKPOINT_DETAIL_PREFIX)
+    detailFiles.each { Map f -> deleteCheckpointDetail(f.name as String) }
+    deleteFile(CHECKPOINT_INDEX_FILE)
     deleteFile(PERFORMANCE_COMPARISON_FILE)
-    cachedCheckpoints = []
-    logInfo "All perf checkpoints cleared"
+    cachedCheckpointIndex = []
+    state.checkpointIndex = []
+    logInfo "All perf checkpoints cleared (${detailFiles.size()} detail file(s) removed)"
 }
 
 // ===== SNAPSHOT SYSTEM =====
@@ -3435,26 +3679,169 @@ private boolean autoEnableOAuth() {
 
 // ===== FILE I/O HELPERS =====
 
-List loadCheckpoints() {
-    if (cachedCheckpoints != null) return cachedCheckpoints
-    try {
-        def data = readFile(CHECKPOINTS_FILE)
-        cachedCheckpoints = data ? (List) data : []
-    } catch (Exception e) {
-        logDebug "No existing checkpoints: ${e.message}"
-        cachedCheckpoints = []
-    }
-    return cachedCheckpoints
+// ===== Checkpoint storage (v5.33.0 split-file) =====
+//
+// Layout in File Manager:
+//   hub_diagnostics_checkpoints_index.json   — slim list, one entry per checkpoint
+//   hub_diagnostics_checkpoint_{timestampMs}.json — full detail per checkpoint
+//
+// The hot Performance tab API reads only the index (small, fast). Compare reads
+// one or two detail files on user action. Trim/delete remove detail files alongside.
+// Legacy single-blob hub_diagnostics_checkpoints.json is migrated once on first read.
+
+private Map buildCheckpointIndexEntry(Map cp, String detailFile) {
+    Map s = (Map) cp?.stats
+    return [
+        timestamp: cp?.timestamp,
+        timestampMs: cp?.timestampMs,
+        stats: s ? [uptime: s.uptime, totalDevicesRuntime: s.totalDevicesRuntime, totalAppsRuntime: s.totalAppsRuntime] : null,
+        resources: cp?.resources,
+        temperature: cp?.temperature,
+        databaseSize: cp?.databaseSize,
+        detailFile: detailFile
+    ]
 }
 
-void saveCheckpoints(List checkpoints) {
+private String detailFilenameFor(Object timestampMs) {
+    return "${CHECKPOINT_DETAIL_PREFIX}${timestampMs}.json"
+}
+
+List loadCheckpointIndex() {
+    if (cachedCheckpointIndex != null) return cachedCheckpointIndex
     try {
-        String json = groovy.json.JsonOutput.toJson(checkpoints)
-        writeFile(CHECKPOINTS_FILE, json)
-        cachedCheckpoints = checkpoints
+        def data = readFile(CHECKPOINT_INDEX_FILE)
+        if (data != null) {
+            cachedCheckpointIndex = (List) data
+            state.checkpointIndex = cachedCheckpointIndex
+            return cachedCheckpointIndex
+        }
     } catch (Exception e) {
-        logError "Error saving checkpoints: ${e}"
+        logDebug "No existing checkpoint index: ${e.message}"
     }
+    // No new index file — check for a legacy blob and migrate if found.
+    List migrated = migrateLegacyCheckpointsIfPresent()
+    cachedCheckpointIndex = migrated
+    state.checkpointIndex = cachedCheckpointIndex
+    return cachedCheckpointIndex
+}
+
+void saveCheckpointIndex(List index) {
+    try {
+        String json = groovy.json.JsonOutput.toJson(index)
+        writeFile(CHECKPOINT_INDEX_FILE, json)
+        cachedCheckpointIndex = index
+        state.checkpointIndex = index
+    } catch (Exception e) {
+        logError "Error saving checkpoint index: ${e}"
+    }
+}
+
+Map loadCheckpointDetail(String filename) {
+    if (!filename) return null
+    try {
+        def data = readFile(filename)
+        return data instanceof Map ? (Map) data : null
+    } catch (Exception e) {
+        logError "Error reading checkpoint detail ${filename}: ${e.message}"
+        return null
+    }
+}
+
+String saveCheckpointDetail(Map cp) {
+    String filename = detailFilenameFor(cp.timestampMs)
+    try {
+        String json = groovy.json.JsonOutput.toJson(cp)
+        writeFile(filename, json)
+        return filename
+    } catch (Exception e) {
+        logError "Error writing checkpoint detail ${filename}: ${e.message}"
+        return null
+    }
+}
+
+void deleteCheckpointDetail(String filename) {
+    if (!filename) return
+    try {
+        deleteFile(filename)
+    } catch (Exception e) {
+        logDebug "Error deleting checkpoint detail ${filename}: ${e.message}"
+    }
+}
+
+// One-shot legacy migration. Reads the v5.32.x single-blob file, splits it into
+// per-checkpoint detail files + the new index, then deletes the legacy file.
+// Idempotent: returns [] if nothing legacy is present.
+private List migrateLegacyCheckpointsIfPresent() {
+    List legacy
+    try {
+        def data = readFile(CHECKPOINTS_FILE)
+        if (data == null) {
+            // No legacy file. First-time install — start with an empty index file
+            // so subsequent reads short-circuit without a migration probe.
+            saveCheckpointIndex([])
+            return []
+        }
+        legacy = (List) data
+    } catch (Exception e) {
+        logDebug "Legacy migration: no legacy file: ${e.message}"
+        saveCheckpointIndex([])
+        return []
+    }
+    if (!legacy) {
+        saveCheckpointIndex([])
+        deleteCheckpointDetail(CHECKPOINTS_FILE)
+        return []
+    }
+    logInfo "Migrating ${legacy.size()} checkpoint(s) to split-file storage..."
+    List newIndex = []
+    legacy.each { Map cp ->
+        String filename = saveCheckpointDetail(cp)
+        if (filename) {
+            newIndex << buildCheckpointIndexEntry(cp, filename)
+        } else {
+            logError "Migration: failed to write detail file for checkpoint ${cp.timestampMs}"
+        }
+    }
+    saveCheckpointIndex(newIndex)
+    deleteCheckpointDetail(CHECKPOINTS_FILE)
+    logInfo "Migration complete: ${newIndex.size()} checkpoint detail file(s) + index"
+    return newIndex
+}
+
+// v5.33.0: write a new checkpoint to disk. Used by both the sync (apiCreateCheckpoint)
+// and async (scheduledCheckpoint) paths. Persists detail file first, then updates the
+// index. Trims oldest entries beyond settings.maxCheckpoints, deleting their detail files.
+void persistCheckpoint(Map cp) {
+    String filename = saveCheckpointDetail(cp)
+    if (!filename) {
+        logError "persistCheckpoint: detail file write failed; index unchanged"
+        return
+    }
+    Map indexEntry = buildCheckpointIndexEntry(cp, filename)
+    List idx = new ArrayList(loadCheckpointIndex())
+    idx.add(0, indexEntry)
+    int cap = (settings.maxCheckpoints ?: 10) as int
+    if (idx.size() > cap) {
+        List dropped = idx.subList(cap, idx.size()) as List
+        dropped.each { Map d -> deleteCheckpointDetail(d.detailFile as String) }
+        idx = idx.take(cap)
+    }
+    saveCheckpointIndex(idx)
+}
+
+List getCheckpointIndex() {
+    List idx = state.checkpointIndex as List
+    // v5.33.0 upgrade-from-v5.32.6 detection: v5.32.6 populated state.checkpointIndex
+    // with entries that lack the detailFile pointer. Treat as cold start so
+    // loadCheckpointIndex runs migration of the legacy single-blob file.
+    if (idx != null && !idx.isEmpty() && idx[0]?.detailFile == null) {
+        logInfo "v5.33.0 upgrade detected: forcing migration of legacy checkpoint blob"
+        state.checkpointIndex = null
+        cachedCheckpointIndex = null
+        idx = null
+    }
+    if (idx != null) return idx
+    return loadCheckpointIndex()
 }
 
 List loadSnapshots() {
@@ -4189,7 +4576,9 @@ void initialize() {
             int hours = (interval / 60).toInteger()
             cron = hours >= 24 ? "0 0 0 * * ?" : "0 0 */${hours} * * ?"
         }
-        schedule(cron, "createCheckpoint")
+        // v5.33.0: scheduledCheckpoint fires the async chain and returns immediately,
+        // so the platform scheduler is never blocked on radio/file work.
+        schedule(cron, "scheduledCheckpoint")
         logInfo "Automatic perf checkpoints scheduled every ${interval} minute(s)"
     }
 
