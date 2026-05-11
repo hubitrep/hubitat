@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String APP_VERSION = "5.29.0"
+@Field static final String APP_VERSION = "5.32.5"
 @Field static final String STORAGE_SCHEMA_VERSION = "4.0.0"
 
 // API endpoint paths (all relative to HUB_BASE)
@@ -153,9 +153,12 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static volatile Long    cachedAppsListAt
 @Field static volatile Map     cachedDevicesListData
 @Field static volatile Long    cachedDevicesListAt
+@Field static volatile Map     cachedSystemResources
+@Field static volatile Long    cachedSystemResourcesAt
 @Field static volatile List    cachedCheckpoints
 @Field static final long       RADIO_CACHE_TTL_MS = 60_000L
 @Field static final long       HUB_LIST_CACHE_TTL_MS = 120_000L
+@Field static final long       SYSTEM_RESOURCES_CACHE_TTL_MS = 10_000L
 @Field static volatile boolean githubVersionRefreshPending = false
 @Field static final java.util.regex.Pattern HTML_TAG_RE = ~/<[^>]+>/
 
@@ -295,7 +298,6 @@ mappings {
     path('/api/performance')      { action: [GET: 'apiPerformance'] }
     path('/api/snapshots')        { action: [GET: 'apiSnapshots'] }
     path('/api/snapshot/view')    { action: [GET: 'apiSnapshotView'] }
-    path('/api/snapshot/diff')    { action: [GET: 'apiSnapshotDiff'] }
     path('/api/stats')            { action: [GET: 'apiStats'] }
     path('/api/version/check')    { action: [GET: 'apiVersionCheck'] }
     path('/api/reports')          { action: [GET: 'apiReports'] }
@@ -311,7 +313,8 @@ mappings {
     path('/api/checkpoints/clear')   { action: [POST: 'apiClearCheckpoints'] }
     path('/api/performance/compare') { action: [POST: 'apiPerformanceCompare'] }
     path('/api/ui/sync')             { action: [POST: 'apiSyncUI'] }
-    path('/api/report/generate')     { action: [POST: 'apiGenerateReport'] }
+    path('/api/report/save')         { action: [POST: 'apiSaveReport'] }
+    path('/api/report/template')     { action: [GET:  'apiReportTemplate'] }
     path('/api/settings')            { action: [GET: 'apiGetSettings', POST: 'apiUpdateSettings'] }
     path('/api/cache/clear')         { action: [POST: 'apiClearCache'] }
 
@@ -540,8 +543,8 @@ Map apiVersionCheck() {
 /**
  * Build a request-scoped shared cache so downstream getXxxData methods reuse common datasets
  * instead of re-fetching them. Pre-fix (v5.13.x), a single /api/dashboard call hit /hub2/hubData
- * twice (getHubInfo + fetchHubAlerts via getStructuredAlerts) and fetched system resources twice
- * (once directly, once via getStructuredAlerts fallback). With the shared cache populated, both
+ * twice (getHubInfo + fetchHubAlerts via getAlertSignals) and fetched system resources twice
+ * (once directly, once via getAlertSignals fallback). With the shared cache populated, both
  * are fetched once and reused.
  *
  * @param includeNetwork  set true when the caller will use network/runtimeStats (Network/Performance tabs);
@@ -867,247 +870,6 @@ Map apiSnapshotView() {
     ])
 }
 
-Map apiSnapshotDiff() {
-    String olderStr = params.older ?: "-1"
-    if (!olderStr.isInteger()) return jsonResponse([error: "Invalid older snapshot index"])
-    int olderIdx = olderStr.toInteger()
-    boolean newerIsNow = params.newer == "now"
-    String newerStr = params.newer ?: "-1"
-    if (!newerIsNow && !newerStr.isInteger()) return jsonResponse([error: "Invalid newer snapshot index"])
-    int newerIdx = newerIsNow ? -1 : newerStr.toInteger()
-
-    List snapshots = loadSnapshots()
-    if (olderIdx < 0 || olderIdx >= snapshots.size()) return jsonResponse([error: "Invalid older snapshot index"])
-
-    Map newer
-    if (newerIsNow) {
-        createSnapshot()
-        snapshots = loadSnapshots()
-        newer = snapshots[0]
-    } else {
-        if (newerIdx < 0 || newerIdx >= snapshots.size()) return jsonResponse([error: "Invalid newer snapshot index"])
-        newer = snapshots[newerIdx]
-    }
-    Map older = snapshots[olderIdx + (newerIsNow ? 1 : 0)]
-
-    // Migrate old-format snapshots
-    if (older.devices) older.devices = migrateSnapshotDevices(older.devices)
-    if (newer.devices) newer.devices = migrateSnapshotDevices(newer.devices)
-
-    // Ensure chronological order
-    if ((older.timestampMs ?: 0) > (newer.timestampMs ?: 0)) {
-        Map temp = older; older = newer; newer = temp
-    }
-
-    // Compute diff
-    List olderDevices = older.devices?.allDevices ?: []
-    List newerDevices = newer.devices?.allDevices ?: []
-    Set olderIds = olderDevices.collect { it.id }.toSet()
-    Set newerIds = newerDevices.collect { it.id }.toSet()
-
-    List added = newerDevices.findAll { !olderIds.contains(it.id) }.collect {
-        [id: it.id, name: it.name, connectionType: CONN_DISPLAY[it.connectionType] ?: it.connectionType, integration: it.integration]
-    }
-    List removed = olderDevices.findAll { !newerIds.contains(it.id) }.collect {
-        [id: it.id, name: it.name, connectionType: CONN_DISPLAY[it.connectionType] ?: it.connectionType, integration: it.integration]
-    }
-    Map olderById = olderDevices.collectEntries { [(it.id): it] }
-    List changed = newerDevices.findAll { olderIds.contains(it.id) }.findAll { Map dev ->
-        Map old = olderById[dev.id]
-        old && (old.status != dev.status || old.connectionType != dev.connectionType || old.integration != dev.integration)
-    }.collect { Map dev ->
-        Map old = olderById[dev.id]
-        Map change = [id: dev.id, name: dev.name, changes: []]
-        if (old.status != dev.status) change.changes << [field: "status", from: old.status, to: dev.status]
-        if (old.connectionType != dev.connectionType) change.changes << [field: "connectionType", from: CONN_DISPLAY[old.connectionType] ?: old.connectionType, to: CONN_DISPLAY[dev.connectionType] ?: dev.connectionType]
-        if (old.integration != dev.integration) change.changes << [field: "integration", from: old.integration, to: dev.integration]
-        return change
-    }
-
-    // Connection type distribution changes
-    Map olderConn = older.devices?.byConnectionType ?: [:]
-    Map newerConn = newer.devices?.byConnectionType ?: [:]
-    Set allConnKeys = (olderConn.keySet() + newerConn.keySet())
-    List connectionTypeChanges = allConnKeys.findAll { (olderConn[it] ?: 0) != (newerConn[it] ?: 0) }.collect { String key ->
-        [connectionType: CONN_DISPLAY[key] ?: key, from: olderConn[key] ?: 0, to: newerConn[key] ?: 0]
-    }
-
-    // Integration distribution changes
-    Map olderInteg = older.devices?.byIntegration ?: [:]
-    Map newerInteg = newer.devices?.byIntegration ?: [:]
-    Set allIntegKeys = (olderInteg.keySet() + newerInteg.keySet())
-    List integrationChanges = allIntegKeys.findAll { (olderInteg[it] ?: 0) != (newerInteg[it] ?: 0) }.collect { String key ->
-        [integration: key, from: olderInteg[key] ?: 0, to: newerInteg[key] ?: 0]
-    }
-
-    // App list diff
-    List olderUserApps = (List) (older.apps?.userAppsList ?: [])
-    List newerUserApps = (List) (newer.apps?.userAppsList ?: [])
-    Set olderAppIds = olderUserApps.collect { safeToString(((Map) it).id, "") } as Set
-    Set newerAppIds = newerUserApps.collect { safeToString(((Map) it).id, "") } as Set
-    List appsAdded   = newerUserApps.findAll { !olderAppIds.contains(safeToString(((Map) it).id, "")) }
-                                    .collect { Map a -> [id: a.id, name: a.name, label: a.label] }
-    List appsRemoved = olderUserApps.findAll { !newerAppIds.contains(safeToString(((Map) it).id, "")) }
-                                    .collect { Map a -> [id: a.id, name: a.name, label: a.label] }
-
-    // App disabled status changes (only for apps present in both snapshots)
-    Map olderAppsById = olderUserApps.collectEntries { Map a -> [(safeToString(a.id, "")): a] }
-    List appsChanged = newerUserApps.findAll { Map a ->
-        String aid = safeToString(a.id, "")
-        Map old = (Map) olderAppsById[aid]
-        old && ((old.disabled ?: false) != (a.disabled ?: false))
-    }.collect { Map a -> [id: a.id, name: a.name, label: a.label, disabled: a.disabled ?: false] }
-
-    // Network configuration diff
-    Map olderNet = older.network ?: [:]
-    Map newerNet = newer.network ?: [:]
-    Map networkChanges = [:]
-    def olderZbCh  = olderNet.zigbee?.channel
-    def newerZbCh  = newerNet.zigbee?.channel
-    if (olderZbCh != newerZbCh) networkChanges.zigbeeChannel = [from: olderZbCh, to: newerZbCh]
-    def olderZwReg = olderNet.zwave?.region
-    def newerZwReg = newerNet.zwave?.region
-    if (olderZwReg != newerZwReg) networkChanges.zwaveRegion = [from: olderZwReg, to: newerZwReg]
-    def olderMatter = olderNet.matter?.enabled
-    def newerMatter = newerNet.matter?.enabled
-    if (olderMatter != newerMatter) networkChanges.matterEnabled = [from: olderMatter, to: newerMatter]
-    List olderPeers = (olderNet.hubMesh?.hubList ?: []).collect { it.name ?: it.ipAddress }
-    List newerPeers = (newerNet.hubMesh?.hubList ?: []).collect { it.name ?: it.ipAddress }
-    Set  olderPeerSet = olderPeers.toSet()
-    Set  newerPeerSet = newerPeers.toSet()
-    List peersAdded   = newerPeers.findAll { !olderPeerSet.contains(it) }
-    List peersRemoved = olderPeers.findAll { !newerPeerSet.contains(it) }
-    if (peersAdded || peersRemoved) networkChanges.hubMeshPeers = [added: peersAdded, removed: peersRemoved]
-
-    // Storage diff
-    Map olderStorage = (Map) (older.storage ?: [:])
-    Map newerStorage = (Map) (newer.storage ?: [:])
-    Map storageChanges = [:]
-    if (olderStorage.fileCount != null && newerStorage.fileCount != null && olderStorage.fileCount != newerStorage.fileCount) {
-        storageChanges.fileCount = [from: olderStorage.fileCount, to: newerStorage.fileCount]
-    }
-    if (olderStorage.freeSpace != null && newerStorage.freeSpace != null && olderStorage.freeSpace != newerStorage.freeSpace) {
-        storageChanges.freeSpace = [from: olderStorage.freeSpace, to: newerStorage.freeSpace]
-    }
-
-    // Backups diff (v5.13.0) — only when both snapshots have backup data
-    Map backupsChanges = [:]
-    Map oBk = (Map) older.backups
-    Map nBk = (Map) newer.backups
-    if (oBk && nBk) {
-        Map oLo = (Map) (oBk.local ?: [:])
-        Map nLo = (Map) (nBk.local ?: [:])
-        if ((oLo.count ?: 0) != (nLo.count ?: 0)) backupsChanges.localCount = [from: oLo.count ?: 0, to: nLo.count ?: 0]
-        if (oLo.latestCreateTime != nLo.latestCreateTime && (oLo.latestCreateTime || nLo.latestCreateTime)) {
-            backupsChanges.latestLocal = [from: oLo.latestCreateTime, to: nLo.latestCreateTime]
-        }
-        Map oCl = (Map) (oBk.cloud ?: [:])
-        Map nCl = (Map) (nBk.cloud ?: [:])
-        if ((oCl.thisHubCount ?: 0) != (nCl.thisHubCount ?: 0)) backupsChanges.cloudThisHubCount = [from: oCl.thisHubCount ?: 0, to: nCl.thisHubCount ?: 0]
-        if ((oCl.hasCloudBackupEntitlements ?: false) != (nCl.hasCloudBackupEntitlements ?: false)) backupsChanges.cloudBackupEntitlement = [from: oCl.hasCloudBackupEntitlements ?: false, to: nCl.hasCloudBackupEntitlements ?: false]
-        if ((oCl.hasCloudRestoreEntitlements ?: false) != (nCl.hasCloudRestoreEntitlements ?: false)) backupsChanges.cloudRestoreEntitlement = [from: oCl.hasCloudRestoreEntitlements ?: false, to: nCl.hasCloudRestoreEntitlements ?: false]
-    }
-
-    // Security diff (v5.13.0)
-    Map securityChanges = [:]
-    Map oSec = (Map) older.security
-    Map nSec = (Map) newer.security
-    if (oSec && nSec) {
-        boolean oLim = (oSec.limitedAccess as Map)?.enabled == true
-        boolean nLim = (nSec.limitedAccess as Map)?.enabled == true
-        if (oLim != nLim) securityChanges.limitedAccess = [from: oLim, to: nLim]
-        List oAddrs = ((oSec.limitedAccess as Map)?.addresses as List) ?: []
-        List nAddrs = ((nSec.limitedAccess as Map)?.addresses as List) ?: []
-        if (oAddrs.toSet() != nAddrs.toSet()) securityChanges.limitedAddresses = [from: oAddrs, to: nAddrs]
-        List oSub = (oSec.allowedSubnets as List) ?: []
-        List nSub = (nSec.allowedSubnets as List) ?: []
-        if (oSub.toSet() != nSub.toSet()) securityChanges.allowedSubnets = [from: oSub, to: nSub]
-        if (oSec.dnsFallback != nSec.dnsFallback) securityChanges.dnsFallback = [from: oSec.dnsFallback, to: nSec.dnsFallback]
-        if (oSec.cloudController != nSec.cloudController && (oSec.cloudController != null || nSec.cloudController != null)) {
-            securityChanges.cloudController = [from: oSec.cloudController, to: nSec.cloudController]
-        }
-    }
-
-    // Network settings diff (v5.13.0) — only when both snapshots actually captured the field
-    // (older snapshots predating v5.13.0 don't have these keys at all; we don't want to surface
-    // "schema added the field" as a config change).
-    if (((Map) older).containsKey('ntpServer') && ((Map) newer).containsKey('ntpServer') && older.ntpServer != newer.ntpServer) {
-        if (networkChanges == null) networkChanges = [:]
-        networkChanges.ntpServer = [from: older.ntpServer, to: newer.ntpServer]
-    }
-    if (((Map) older).containsKey('loadThreshold') && ((Map) newer).containsKey('loadThreshold') && older.loadThreshold != newer.loadThreshold) {
-        if (networkChanges == null) networkChanges = [:]
-        networkChanges.loadThreshold = [from: older.loadThreshold, to: newer.loadThreshold]
-    }
-
-    // Code inventory diff (v5.13.0): bundles, libraries, hub variables — by id (or name for hub vars)
-    Map codeChanges = [:]
-    Map oCode = (Map) older.code
-    Map nCode = (Map) newer.code
-    if (oCode && nCode) {
-        // Bundles — keyed by id
-        List oBund = (oCode.bundles as List) ?: []
-        List nBund = (nCode.bundles as List) ?: []
-        Set oBundIds = oBund.collect { (it as Map).id } as Set
-        Set nBundIds = nBund.collect { (it as Map).id } as Set
-        List bundlesAdded   = nBund.findAll { !oBundIds.contains((it as Map).id) }
-        List bundlesRemoved = oBund.findAll { !nBundIds.contains((it as Map).id) }
-        if (bundlesAdded || bundlesRemoved) codeChanges.bundles = [added: bundlesAdded, removed: bundlesRemoved]
-
-        // Libraries — keyed by id; also detect version changes
-        List oLib = (oCode.libraries as List) ?: []
-        List nLib = (nCode.libraries as List) ?: []
-        Set oLibIds = oLib.collect { (it as Map).id } as Set
-        Set nLibIds = nLib.collect { (it as Map).id } as Set
-        Map oLibById = oLib.collectEntries { Map l -> [(l.id): l] }
-        List libsAdded   = nLib.findAll { !oLibIds.contains((it as Map).id) }
-        List libsRemoved = oLib.findAll { !nLibIds.contains((it as Map).id) }
-        List libsVersionChanged = nLib.findAll { Map l ->
-            Map o = (Map) oLibById[l.id]
-            o && o.version != l.version
-        }.collect { Map l -> [id: l.id, name: l.name, namespace: l.namespace, from: ((Map) oLibById[l.id]).version, to: l.version] }
-        if (libsAdded || libsRemoved || libsVersionChanged) codeChanges.libraries = [added: libsAdded, removed: libsRemoved, versionChanged: libsVersionChanged]
-
-        // Hub variables — keyed by name (no stable id); also detect type changes
-        List oHv = (oCode.hubVariables as List) ?: []
-        List nHv = (nCode.hubVariables as List) ?: []
-        Set oHvNames = oHv.collect { (it as Map).name } as Set
-        Set nHvNames = nHv.collect { (it as Map).name } as Set
-        Map oHvByName = oHv.collectEntries { Map v -> [(v.name): v] }
-        List hvAdded   = nHv.findAll { !oHvNames.contains((it as Map).name) }
-        List hvRemoved = oHv.findAll { !nHvNames.contains((it as Map).name) }
-        List hvTypeChanged = nHv.findAll { Map v ->
-            Map o = (Map) oHvByName[v.name]
-            o && o.type != v.type
-        }.collect { Map v -> [name: v.name, from: ((Map) oHvByName[v.name]).type, to: v.type] }
-        if (hvAdded || hvRemoved || hvTypeChanged) codeChanges.hubVariables = [added: hvAdded, removed: hvRemoved, typeChanged: hvTypeChanged]
-    }
-
-    return jsonResponse([
-        older: [timestamp: older.timestamp, firmware: older.hubInfo?.firmware, storage: older.storage],
-        newer: [timestamp: newer.timestamp, firmware: newer.hubInfo?.firmware, storage: newer.storage],
-        deviceChanges: [
-            olderTotal: older.devices?.totalDevices ?: 0,
-            newerTotal: newer.devices?.totalDevices ?: 0,
-            added: added, removed: removed, changed: changed
-        ],
-        connectionTypeChanges: connectionTypeChanges,
-        integrationChanges: integrationChanges,
-        appChanges: [
-            olderTotal: older.apps?.totalApps ?: 0,
-            newerTotal: newer.apps?.totalApps ?: 0,
-            added: appsAdded,
-            removed: appsRemoved,
-            changed: appsChanged
-        ],
-        networkChanges: networkChanges ?: null,
-        storageChanges: storageChanges ?: null,
-        backupsChanges: backupsChanges ?: null,
-        securityChanges: securityChanges ?: null,
-        codeChanges: codeChanges ?: null
-    ])
-}
-
 Map apiCreateSnapshot() {
     createSnapshot()
     List snapshots = loadSnapshots()
@@ -1159,46 +921,30 @@ Map apiReports() {
     ])
 }
 
-Map apiGenerateReport() {
-    logInfo "Generating report..."
-    String timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
-    List memHistory = fetchMemoryHistory()
-
-    Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
-    Map shared = [
-        network:      analyzeNetwork(),
-        runtimeStats: statsWrap.ok ? statsWrap.data : null,
-        resources:    fetchSystemResources(),
-        temperature:  fetchTemperature(),
-        hubAlerts:    fetchHubAlerts(),
-        databaseSize: fetchDatabaseSize()
-    ]
-
-    Map reportData = [
-        _generated: timestamp,
-        dashboard: getDashboardData(shared),
-        devices: getDevicesData(),
-        apps: getAppsData(),
-        network: getNetworkData(shared),
-        health: getHealthData(shared),
-        "health/history": [dataPoints: memHistory ?: []],
-        performance: getPerformanceData(shared),
-        snapshots: getSnapshotsData(),
-        reports: [lastReport: null, reports: []]
-    ]
-
+// Returns the raw SPA template (with placeholders intact). The SPA fetches this,
+// strips placeholders, injects window.REPORT_DATA, and POSTs the resulting HTML
+// to /api/report/save. Replaces the heavier server-side apiGenerateReport pipeline.
+Map apiReportTemplate() {
     String html = loadUITemplate()
-    if (!html) return jsonResponse([success: false, error: "SPA template not found in File Manager"])
+    if (!html) return render(status: 404, contentType: 'application/json', data: '{"error":"SPA template not found in File Manager"}')
+    return render(contentType: 'text/html', data: html)
+}
 
-    String dataJson = JsonOutput.toJson(reportData).replace("</script>", "<\\/script>")
-    html = html.replace("</head>", "<script type=\"application/json\" id=\"report-data\">${dataJson}</script>\n<script>window.REPORT_DATA=JSON.parse(document.getElementById('report-data').textContent)</script>\n</head>")
-    html = html.replace('${access_token}', '').replace('${api_base}', '').replace('${live_refresh_sec}', '0')
+// Thin file-write endpoint. Body is JSON: {filename, html}. The SPA assembles the
+// report client-side (parallel data fetches, template injection, placeholder strip)
+// and just hands the finished bytes here for FileManager persistence.
+Map apiSaveReport() {
+    Map body = (request?.JSON instanceof Map) ? (Map) request.JSON : null
+    if (!body) return jsonResponse([success: false, error: "Empty or invalid JSON body"])
+    String filename = (body.filename ?: "") as String
+    String html = (body.html ?: "") as String
+    if (!filename || !html) return jsonResponse([success: false, error: "filename and html are required"])
+    if (!filename.endsWith('.html')) return jsonResponse([success: false, error: "filename must end with .html"])
+    if (filename.contains('/') || filename.contains('..')) return jsonResponse([success: false, error: "invalid filename"])
 
-    String filename = "hub_diagnostics_report_${new Date().format('yyyyMMdd_HHmmss')}.html"
     writeFile(filename, html)
     state.lastReportFile = filename
-    logInfo "Report generated: ${filename} (${(dataJson.length() / 1024).intValue()} KB data)"
-
+    logInfo "Report saved: ${filename} (${(html.length() / 1024).intValue()} KB)"
     return jsonResponse([success: true, filename: filename])
 }
 
@@ -1210,7 +956,7 @@ Map apiForumData() {
     Integer databaseSize = fetchDatabaseSize()
     Map stateCompression = fetchStateCompression()
     Map eventStateLimits = fetchEventStateLimits()
-    List alerts = getStructuredAlerts()
+    Map alertSignals = getAlertSignals()
     Map deviceStats = analyzeDevices(true)
     Map appStats = analyzeApps(true)
     Map networkData = analyzeNetwork()
@@ -1229,7 +975,7 @@ Map apiForumData() {
     return jsonResponse([
         hubInfo: hubInfo, resources: resources, temperature: temperature,
         databaseSize: databaseSize, stateCompression: stateCompression,
-        eventStateLimits: eventStateLimits, alerts: alerts,
+        eventStateLimits: eventStateLimits, alertSignals: alertSignals,
         deviceStats: deviceStats, appStats: appStats, networkData: networkData,
         zwaveMesh: zwaveMesh, ghostNodes: ghostNodes, zigbeeMesh: zigbeeMesh,
         zwaveVersion: zwaveVersion, stats: stats, allRadioDevices: allRadioDevices,
@@ -1335,7 +1081,7 @@ Map getDashboardData(Map shared = [:]) {
         ],
         apps: [total: appStats.totalApps, builtIn: appStats.builtInApps, user: appStats.userApps],
         resources: resources, temperature: temperature, databaseSize: databaseSize,
-        alerts: getStructuredAlerts(shared), inactivityDays: settings.inactivityDays ?: 7,
+        alertSignals: getAlertSignals(shared), inactivityDays: settings.inactivityDays ?: 7,
         firmwareUpdate: fetchFirmwareUpdate()
     ]
 }
@@ -1482,7 +1228,7 @@ Map getHealthData(Map shared = [:]) {
         hub: buildHubMap(hubInfo, hub),
         resources: mem ?: null, temperature: systemHealth.temperature,
         databaseSize: systemHealth.databaseSize, stateCompression: systemHealth.stateCompression,
-        eventStateLimits: systemHealth.eventStateLimits, alerts: getStructuredAlerts(shared),
+        eventStateLimits: systemHealth.eventStateLimits, alertSignals: getAlertSignals(shared),
         storage: fetchFileManagerStats(),
         backups: fetchBackups(),
         loadThreshold: fetchExcessiveLoadThreshold(),
@@ -1635,68 +1381,36 @@ Map getSnapshotsData() {
     ]
 }
 
-List getStructuredAlerts(Map shared = [:]) {
-    List alerts = []
-    Map resources     = (shared.resources as Map)     ?: fetchSystemResources()
-    Float temperature = (shared.temperature as Float) ?: fetchTemperature()
-    Map hubAlerts     = (shared.hubAlerts as Map)     ?: fetchHubAlerts(shared.hubData as Map)
+// Raw signals for the SPA to compose alerts client-side. Threshold-based
+// alerts (memory/CPU/temperature) are derived in the SPA from `resources` +
+// `temperature` + the `TH` thresholds it already loads via /api/settings.
+// Hub-message HTML stripping also runs in the SPA \u2014 we ship raw text.
+Map getAlertSignals(Map shared = [:]) {
+    Map hubAlerts = (shared.hubAlerts as Map) ?: fetchHubAlerts(shared.hubData as Map)
 
-    // Calculated alerts
-    int    critMemKb   = ((settings.critMemMb   ?: DEFAULT_CRIT_MEM_MB)   as int) * 1024
-    int    warnMemKb   = ((settings.warnMemMb   ?: DEFAULT_WARN_MEM_MB)   as int) * 1024
-    double critCpuLoad = (settings.critCpuLoad  ?: DEFAULT_CRIT_CPU_LOAD) as double
-    double warnCpuLoad = (settings.warnCpuLoad  ?: DEFAULT_WARN_CPU_LOAD) as double
-    int    critTempC   = (settings.critTempC    ?: DEFAULT_CRIT_TEMP_C)   as int
-    int    warnTempC   = (settings.warnTempC    ?: DEFAULT_WARN_TEMP_C)   as int
-
-    if (resources && resources.freeOSMemory < critMemKb) {
-        alerts << [severity: "critical", name: "OS memory critically low (${formatMemory(resources.freeOSMemory)})"]
-    } else if (resources && resources.freeOSMemory < warnMemKb) {
-        alerts << [severity: "warning", name: "Low OS memory (${formatMemory(resources.freeOSMemory)})"]
-    }
-
-    if (resources && (resources.cpuAvg5min ?: 0) > critCpuLoad) {
-        alerts << [severity: "critical", name: "Very high CPU load (${String.format('%.2f', resources.cpuAvg5min as float)})"]
-    } else if (resources && (resources.cpuAvg5min ?: 0) > warnCpuLoad) {
-        alerts << [severity: "warning", name: "Elevated CPU load (${String.format('%.2f', resources.cpuAvg5min as float)})"]
-    }
-
-    if (temperature != null && temperature > critTempC) {
-        alerts << [severity: "critical", name: "Hub temperature very high (${String.format('%.1f', temperature)}\u00B0C)"]
-    } else if (temperature != null && temperature > warnTempC) {
-        alerts << [severity: "warning", name: "Hub temperature elevated (${String.format('%.1f', temperature)}\u00B0C)"]
-    }
-
-    // Platform alerts
+    List platformAlerts = []
     if (hubAlerts?.alerts) {
         ALERT_DISPLAY_NAMES.each { String key, String displayName ->
             if (hubAlerts.alerts[key] == true) {
                 String severity = (key in ["hubLoadSevere", "hubZwaveCrashed", "hubHugeDatabase", "zwaveOffline", "zigbeeOffline"]) ? "critical" : "warning"
-                alerts << [key: key, name: displayName, severity: severity]
+                platformAlerts << [key: key, name: displayName, severity: severity]
             }
         }
     }
-    if (hubAlerts?.spammyDevicesMessage) {
-        alerts << [key: "spammyDevices", name: "Spammy Devices", severity: "warning", message: hubAlerts.spammyDevicesMessage]
-    }
 
-    // Hub messages from /hub/messages — admin notifications surfaced in the platform UI.
-    // The hub embeds raw HTML in message text (e.g. <span> with dismiss links); strip it
-    // so the UI h() escape doesn't render visible tags.
-    fetchHubMessages().each { Map msg ->
-        String text = stripHtml(msg.text ?: msg.message ?: msg.toString())
-        if (text) alerts << [key: "hubMessage", name: text, severity: "info"]
-    }
+    List hubMessages = fetchHubMessages().collect { Map msg ->
+        (msg.text ?: msg.message ?: msg.toString()) as String
+    }.findAll { it } as List
 
-    // Network: Ethernet + WiFi both active
     Map networkConfig = (Map) shared.network?.network
-    if (!networkConfig) { Map r = hubMapRequest(NETWORK_CONFIG_PATH, "network configuration", 15); networkConfig = r.ok ? r.data : null }
-    if (networkConfig && networkConfig.hasEthernet && networkConfig.hasWiFi) {
-        alerts << [severity: "warning", name: "Ethernet and WiFi both active \u2014 disable WiFi when using Ethernet"]
+    if (!networkConfig) {
+        Map r = hubMapRequest(NETWORK_CONFIG_PATH, "network configuration", 15)
+        networkConfig = r.ok ? r.data : null
     }
+    boolean ethernetAndWifi = (networkConfig && networkConfig.hasEthernet && networkConfig.hasWiFi) as boolean
 
-    // Z-Wave ghost nodes \u2014 cached 60 s to avoid an 8-second fetch on every Dashboard/Health load
-    // when the shared cache was built without includeNetwork (the common lightweight path).
+    // Z-Wave ghost nodes \u2014 cached 60 s to avoid an 8-second fetch on every
+    // Dashboard/Health load when the shared cache was built without includeNetwork.
     Map zwRaw = (shared.network?.zwave as Map)
     if (!zwRaw) {
         long lastZwCheck = state.lastZwaveGhostCheckMs ?: 0
@@ -1709,12 +1423,15 @@ List getStructuredAlerts(Map shared = [:]) {
             }
         }
     }
-    int ghostCount = zwRaw ? buildZwaveGhostNodes(zwRaw).size() : (state.cachedZwaveGhostCount ?: 0) as int
-    if (ghostCount > 0) {
-        alerts << [severity: "critical", name: "${ghostCount} Z-Wave ghost node${ghostCount > 1 ? 's' : ''} detected \u2014 remove from mesh"]
-    }
+    int ghostNodeCount = zwRaw ? buildZwaveGhostNodes(zwRaw).size() : (state.cachedZwaveGhostCount ?: 0) as int
 
-    return alerts
+    return [
+        platformAlerts:       platformAlerts,
+        spammyDevicesMessage: hubAlerts?.spammyDevicesMessage,
+        hubMessages:          hubMessages,
+        ethernetAndWifi:      ethernetAndWifi,
+        ghostNodeCount:       ghostNodeCount
+    ]
 }
 
 // ===== BUTTON HANDLER =====
@@ -1858,6 +1575,10 @@ private String detectZwaveStack() {
 }
 
 Map fetchSystemResources() {
+    long nowMs = now()
+    if (cachedSystemResources && cachedSystemResourcesAt && (nowMs - cachedSystemResourcesAt) < SYSTEM_RESOURCES_CACHE_TTL_MS) {
+        return cachedSystemResources
+    }
     String text = (String) hubRequest(FREE_MEMORY_PATH, "system resources", "text", 15)
     if (!text) return null
     try {
@@ -1865,7 +1586,7 @@ Map fetchSystemResources() {
         if (lines.size() > 1) {
             String[] values = lines[1].split(',')
             if (values.size() >= 6) {
-                return [
+                Map data = [
                     timestamp: values[0].trim(),
                     freeOSMemory: values[1].trim().toInteger(),
                     cpuAvg5min: values[2].trim().toFloat(),
@@ -1873,6 +1594,9 @@ Map fetchSystemResources() {
                     freeJavaMemory: values[4].trim().toInteger(),
                     directJavaMemory: values[5].trim().toInteger()
                 ]
+                cachedSystemResources = data
+                cachedSystemResourcesAt = nowMs
+                return data
             }
         }
     } catch (Exception e) {
