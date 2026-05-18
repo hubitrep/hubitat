@@ -7,7 +7,9 @@ SPDX-License-Identifier: MIT
 
 A comprehensive diagnostic dashboard for Hubitat Elevation hubs. Provides real-time and historical visibility into devices, apps, network health, performance, and configuration — all in a single web UI served directly from your hub.
 
-**Current version:** 5.24.0
+<!-- AUTO:hubdiag-version -->
+**Current version:** 5.33.3
+<!-- /AUTO -->
 
 ---
 
@@ -36,10 +38,12 @@ A comprehensive diagnostic dashboard for Hubitat Elevation hubs. Provides real-t
 
 Hub Diagnostics consists of two files:
 
+<!-- AUTO:hubdiag-files -->
 | File | Purpose |
 |---|---|
 | `HubDiagnostics.groovy` | The Hubitat app (backend logic, API, data collection) |
 | `hub_diagnostics_ui.html` | The web dashboard UI (served from hub File Manager) |
+<!-- /AUTO -->
 
 ### Step 1 — Install the Groovy app
 
@@ -231,7 +235,7 @@ The canonical place for all user-installed source code on this hub. The Apps and
 
 ## Network Tab
 
-Detailed status for all network interfaces and radio protocols. Card order: **Radio Health Badges → Network Configuration → Zigbee → Z-Wave → Matter → Hub Mesh → mDNS Discovery → Network Tests**.
+Detailed status for all network interfaces and radio protocols. Card order: **Radio Health Badges → Network Configuration → Zigbee → Z-Wave → Matter → Hub Mesh → mDNS Discovery**.
 
 ### Radio Health Badges
 
@@ -313,16 +317,6 @@ Enabled status, shared/linked device and variable counts. Table of peer hubs wit
 ### mDNS Discovery
 
 Lists devices visible to the hub via mDNS / Bonjour / Avahi (`/hub/mdnsDevices/json`). Sortable + filterable table with Service (e.g. `airplay._tcp`, `hap._tcp`, `lutron._tcp`), Name, IP (clickable HTTP link), Port, MAC, Server, Model, Last Updated. Useful for confirming HomeKit/AirPlay/Lutron/Chromecast devices are reachable.
-
-### Network Tests
-
-User-triggered live network diagnostics from the hub:
-
-- **Ping gateway** — instant `/hub/networkTest/ping/gateway`
-- **Ping IP** — IP input field with client-side and server-side IPv4 validation, then `/hub/networkTest/ping/<ip>`
-- **Speedtest** — `/hub/networkTest/speedtest`. Takes ~30 s and briefly loads the hub. Confirm-prompt before firing.
-
-Results render in a monospace pane below the buttons.
 
 ---
 
@@ -439,11 +433,11 @@ Each `/device/fullJson/{id}` callback captures a `fetchedAtMs` timestamp at resp
 
 ## App Settings Tab
 
-Most settings are accessible from the Hubitat admin UI under **Apps → Hub Diagnostics → Preferences**. Two settings are available only through the dashboard's App Settings tab and are not shown in the Hubitat admin UI: **Obfuscate labels in forum export** (Export section) and **Clear Enrichment Cache** (Maintenance section).
+Most settings are accessible from the Hubitat admin UI under **Apps → Hub Diagnostics → Preferences**. Three settings are available only through the dashboard's App Settings tab and are not shown in the Hubitat admin UI: **Auto-refresh interval** (Live Data section), **Obfuscate labels in forum export** (Export section), and **Clear Enrichment Cache** (Maintenance section).
 
 ### Config Snapshot Scheduling
 - Enable automatic snapshots: on/off
-- Interval: 1 day / 2 days / 1 week / 2 weeks
+- Interval: 1–30 days (default 1)
 - Max snapshots to retain: 1–50 (default 10; oldest are pruned when the limit is reached)
 
 ### Perf Checkpoint Scheduling
@@ -649,5 +643,4 @@ Base URL: `http://{hub-ip}/apps/api/{app-id}/`
 | `api/cache/clear` | Clear the device enrichment cache |
 | `api/audit/start` | Trigger a new device usage audit scan |
 | `api/audit/delete` | Delete an audit report by filename |
-| `api/network/test` | Run a live network test — `type=ping-gateway\|ping-ip\|speedtest`, optional `ip=x.x.x.x` for ping-ip |
 | `api/network/zigbee/scan` | Trigger a fresh Zigbee channel scan (~15–30 s); result cached in app state and returned in subsequent `api/network` reads |

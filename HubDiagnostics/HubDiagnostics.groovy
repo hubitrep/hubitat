@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String APP_VERSION = "5.33.1"
+@Field static final String APP_VERSION = "5.33.3"
 @Field static final String STORAGE_SCHEMA_VERSION = "5.0.0"
 
 // API endpoint paths (all relative to HUB_BASE)
@@ -68,9 +68,6 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final String DNS_FALLBACK_PATH = "/hub/advanced/getDNSFallback"
 @Field static final String ZIGBEE_CHANNEL_SCAN_PATH = "/hub/zigbeeChannelScanJson"
 @Field static final String ZWAVE_TOPOLOGY_PATH = "/hub/zwaveTopology"
-@Field static final String NETWORK_TEST_PING_GATEWAY = "/hub/networkTest/ping/gateway"
-@Field static final String NETWORK_TEST_PING_PREFIX = "/hub/networkTest/ping/"
-@Field static final String NETWORK_TEST_SPEEDTEST = "/hub/networkTest/speedtest"
 @Field static final String HUB_EVENTS_PATH = "/hub/eventsJson"
 @Field static final String MIN_FW_RADIO_HEALTH = "2.4.1.154"
 @Field static final long   FW_UPDATE_CACHE_TTL_MS = 3600_000L
@@ -272,6 +269,7 @@ definition(
     namespace: "hubitrep",
     author: "hubitrep",
     description: "Comprehensive hub diagnostics: inventory, performance tracking, network analysis, and snapshot comparison",
+    menu: "Apps", // new in platform 2.5.0
     category: "Utility",
     singleInstance: true,
     importUrl: IMPORT_URL_APP,
@@ -339,7 +337,6 @@ mappings {
     path('/api/audit/data')    { action: [GET:  'apiAuditData'] }
 
     // ===== Side-effectful network actions =====
-    path('/api/network/test')        { action: [POST: 'apiNetworkTest'] }
     path('/api/network/zigbee/scan') { action: [POST: 'apiZigbeeScan'] }
 }
 
@@ -700,18 +697,6 @@ Map apiPerformance() {
     logDebug "apiPerformance completed in ${elapsed}ms"
     recordApiTiming("performance", elapsed)
     return jsonResponse(data)
-}
-
-Map apiNetworkTest() {
-    String type = params.type
-    String ip = params.ip
-    if (!type) return jsonResponse([success: false, error: "Missing 'type' parameter"])
-    long start = now()
-    String result = runNetworkTest(type, ip)
-    long elapsed = now() - start
-    boolean ok = result != null && !result.startsWith("Error:")
-    logDebug "apiNetworkTest(${type}${ip ? ', ' + ip : ''}) completed in ${elapsed}ms"
-    return jsonResponse([success: ok, type: type, ip: ip, output: result, elapsedMs: elapsed])
 }
 
 Map apiZigbeeScan() {
@@ -2100,30 +2085,6 @@ Map runZigbeeChannelScan() {
     Map cache = [at: now(), results: results, scanDurationMs: (now() - start)]
     state.zigbeeScanCache = cache
     return cache
-}
-
-String runNetworkTest(String type, String ip = null) {
-    String path
-    int timeout
-    switch (type) {
-        case "ping-gateway":
-            path = NETWORK_TEST_PING_GATEWAY
-            timeout = 30
-            break
-        case "ping-ip":
-            if (!ip || !(ip ==~ /^(\d{1,3}\.){3}\d{1,3}$/)) return "Error: invalid IP address"
-            path = NETWORK_TEST_PING_PREFIX + ip
-            timeout = 30
-            break
-        case "speedtest":
-            path = NETWORK_TEST_SPEEDTEST
-            timeout = 90
-            break
-        default:
-            return "Error: unknown test type"
-    }
-    String result = (String) hubRequest(path, "network test ${type}", "text", timeout)
-    return result ?: "(no output returned)"
 }
 
 Map fetchEventStateLimits() {
@@ -4572,17 +4533,26 @@ void initialize() {
 
     if (settings.autoCheckpoint) {
         int interval = (settings.checkpointInterval ?: "60").toInteger()
+        int offsetSec = (state.checkpointOffsetSeconds ?: -1) as int
+        if (offsetSec < 180 || offsetSec > 420) {
+            offsetSec = 180 + new Random().nextInt(241)
+            state.checkpointOffsetSeconds = offsetSec
+        }
+        int sec = offsetSec % 60
+        int min = offsetSec.intdiv(60)
         String cron
         if (interval < 60) {
-            cron = "0 */${interval} * * * ?"
+            cron = "${sec} ${min}/${interval} * * * ?"
         } else {
             int hours = (interval / 60).toInteger()
-            cron = hours >= 24 ? "0 0 0 * * ?" : "0 0 */${hours} * * ?"
+            cron = hours >= 24 ? "${sec} ${min} 0 * * ?" : "${sec} ${min} */${hours} * * ?"
         }
         // v5.33.0: scheduledCheckpoint fires the async chain and returns immediately,
         // so the platform scheduler is never blocked on radio/file work.
         schedule(cron, "scheduledCheckpoint")
-        logInfo "Automatic perf checkpoints scheduled every ${interval} minute(s)"
+        String mm = min.toString().padLeft(2, '0')
+        String ss = sec.toString().padLeft(2, '0')
+        logInfo "Automatic perf checkpoints scheduled every ${interval} minute(s) at :${mm}:${ss} past the hour"
     }
 
     // v5.15.0: daily UI sync moved out of serveUI hot path. 03:17 local time, off-peak.
