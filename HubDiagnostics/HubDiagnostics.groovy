@@ -10,6 +10,7 @@
  *
  */
 
+import com.hubitat.hub.domain.Hub
 import groovy.transform.Field
 import groovy.transform.CompileStatic
 import groovy.json.JsonOutput
@@ -17,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String APP_VERSION = "5.33.3"
+@Field static final String APP_VERSION = "5.35.0"
 @Field static final String STORAGE_SCHEMA_VERSION = "5.0.0"
 
 // API endpoint paths (all relative to HUB_BASE)
@@ -164,6 +165,20 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final long       RADIO_CACHE_TTL_MS = 60_000L
 @Field static final long       HUB_LIST_CACHE_TTL_MS = 120_000L
 @Field static final long       SYSTEM_RESOURCES_CACHE_TTL_MS = 10_000L
+// apiLive polls every 30s by default and fans out to 5 hub HTTP calls. The slow-changing ones
+// (temperature, databaseSize, cpuInfo, loadThreshold) carry longer TTLs to spare the hub.
+@Field static final long       TEMPERATURE_CACHE_TTL_MS   = 60_000L
+@Field static final long       DATABASE_SIZE_CACHE_TTL_MS = 60_000L
+@Field static final long       CPU_INFO_CACHE_TTL_MS      = 300_000L
+@Field static final long       LOAD_THRESHOLD_CACHE_TTL_MS = 300_000L
+@Field static volatile Float   cachedTemperature
+@Field static volatile Long    cachedTemperatureAt
+@Field static volatile Integer cachedDatabaseSize
+@Field static volatile Long    cachedDatabaseSizeAt
+@Field static volatile Map     cachedCpuInfo
+@Field static volatile Long    cachedCpuInfoAt
+@Field static volatile Integer cachedLoadThreshold
+@Field static volatile Long    cachedLoadThresholdAt
 @Field static volatile boolean githubVersionRefreshPending = false
 @Field static final java.util.regex.Pattern HTML_TAG_RE = ~/<[^>]+>/
 
@@ -524,7 +539,7 @@ void githubVersionCallback(resp, data) {
     }
     try {
         String text = resp.data ?: ""
-        def m = text =~ /APP_VERSION\s*=\s*"([^"]+)"/
+        java.util.regex.Matcher m = text =~ /APP_VERSION\s*=\s*"([^"]+)"/
         if (m.find()) {
             state.lastGithubVersion = m.group(1)
             state.lastGithubVersionCheck = now()
@@ -1056,7 +1071,7 @@ Map apiClearCache() {
     return jsonResponse([success: true, cleared: cleared])
 }
 
-private Map buildHubMap(Map hubInfo, def hub) {
+private Map buildHubMap(Map hubInfo, Hub hub) {
     return [name: hubInfo.name, hubId: hub?.id, hardware: hubInfo.hardware,
             firmware: hubInfo.firmware, ip: hubInfo.ip, zigbeeId: hub?.zigbeeId,
             location: location.name, mode: location.currentMode?.toString(),
@@ -1070,7 +1085,7 @@ Map getDashboardData(Map shared = [:]) {
     Map deviceStats = analyzeDevices(false)
     Map appStats = analyzeApps(false)
     Map hubInfo = getHubInfo(shared.hubData as Map)
-    def hub = (location.hubs && location.hubs.size() > 0) ? location.hubs[0] : null
+    Hub hub = (location.hubs && location.hubs.size() > 0) ? location.hubs[0] : null
     Map resources        = (shared.resources as Map)        ?: fetchSystemResources()
     Float temperature    = (shared.temperature as Float)    ?: fetchTemperature()
     Integer databaseSize = (shared.databaseSize as Integer) ?: fetchDatabaseSize()
@@ -1226,7 +1241,7 @@ Map getNetworkData(Map shared = [:]) {
 Map getHealthData(Map shared = [:]) {
     Map systemHealth = analyzeSystemHealth(shared)
     Map hubInfo = getHubInfo(shared.hubData as Map)
-    def hub = (location.hubs && location.hubs.size() > 0) ? location.hubs[0] : null
+    Hub hub = (location.hubs && location.hubs.size() > 0) ? location.hubs[0] : null
     Map mem = systemHealth.memory ?: [:]
     return [
         hub: buildHubMap(hubInfo, hub),
@@ -1629,6 +1644,39 @@ private String detectZwaveStack() {
     return stack
 }
 
+// Parse a Hubitat CSV response (header row + N data rows) into a header list and rows of
+// String values keyed by header name. Tolerant of column reordering — callers look up
+// fields by name (with aliases) instead of by positional index. Hubitat has historically
+// reordered columns in /hub/advanced/* endpoints without notice.
+Map parseHubCsv(String text) {
+    if (!text) return null
+    String[] lines = text.split('\n')
+    if (lines.size() < 2) return null
+    List<String> header = (lines[0].split(',').collect { ((String) it).trim() }) as List<String>
+    List<Map> rows = []
+    for (int li = 1; li < lines.size(); li++) {
+        String line = lines[li] == null ? null : ((String) lines[li]).trim()
+        if (!line) continue
+        String[] values = line.split(',')
+        Map<String, String> row = [:]
+        int cols = Math.min(header.size(), values.size())
+        for (int ci = 0; ci < cols; ci++) {
+            row[header[ci]] = ((String) values[ci]).trim()
+        }
+        rows << row
+    }
+    return [header: header, rows: rows]
+}
+
+// Resolve a CSV row field by trying each alias in order; returns null if no alias matches.
+String csvField(Map row, List<String> aliases) {
+    for (String a in aliases) {
+        Object v = row?.get(a)
+        if (v != null) return v.toString()
+    }
+    return null
+}
+
 Map fetchSystemResources() {
     long nowMs = now()
     if (cachedSystemResources && cachedSystemResourcesAt && (nowMs - cachedSystemResourcesAt) < SYSTEM_RESOURCES_CACHE_TTL_MS) {
@@ -1637,23 +1685,26 @@ Map fetchSystemResources() {
     String text = (String) hubRequest(FREE_MEMORY_PATH, "system resources", "text", 15)
     if (!text) return null
     try {
-        String[] lines = text.split('\n')
-        if (lines.size() > 1) {
-            String[] values = lines[1].split(',')
-            if (values.size() >= 6) {
-                Map data = [
-                    timestamp: values[0].trim(),
-                    freeOSMemory: values[1].trim().toInteger(),
-                    cpuAvg5min: values[2].trim().toFloat(),
-                    totalJavaMemory: values[3].trim().toInteger(),
-                    freeJavaMemory: values[4].trim().toInteger(),
-                    directJavaMemory: values[5].trim().toInteger()
-                ]
-                cachedSystemResources = data
-                cachedSystemResourcesAt = nowMs
-                return data
-            }
+        Map parsed = parseHubCsv(text)
+        if (!parsed || !parsed.rows) return null
+        Map row = (Map) ((List) parsed.rows)[0]
+        String memRaw = csvField(row, ["Free OS", "Free OS Memory"])
+        String cpuRaw = csvField(row, ["5m CPU avg", "CPU 5min", "5min CPU avg"])
+        if (memRaw == null || cpuRaw == null) {
+            logWarn "system resources CSV missing expected columns; header=${parsed.header}"
+            return null
         }
+        Map data = [
+            timestamp:        csvField(row, ["Date/time", "Timestamp"]),
+            freeOSMemory:     memRaw.toInteger(),
+            cpuAvg5min:       cpuRaw.toFloat(),
+            totalJavaMemory:  (csvField(row, ["Total Java", "Total Java Memory"])   ?: "0").toInteger(),
+            freeJavaMemory:   (csvField(row, ["Free Java", "Free Java Memory"])     ?: "0").toInteger(),
+            directJavaMemory: (csvField(row, ["Direct Java", "Direct Java Memory"]) ?: "0").toInteger()
+        ]
+        cachedSystemResources = data
+        cachedSystemResourcesAt = nowMs
+        return data
     } catch (Exception e) {
         logError "Error parsing system resources: ${e.message}"
     }
@@ -1665,20 +1716,27 @@ List fetchMemoryHistory() {
     if (!text) return []
     List dataPoints = []
     try {
-        String[] lines = text.split('\n')
-        for (int i = 1; i < lines.length; i++) {
-            String line = lines[i].trim()
-            if (!line) continue
-            String[] parts = line.split(',')
-            if (parts.length >= 6) {
-                dataPoints << [
-                    time: parts[0].trim(),
-                    freeOS: parts[1].trim().toInteger(),
-                    cpuLoad: parts[2].trim().toFloat(),
-                    freeJava: parts[4].trim().toInteger(),
-                    directJava: parts[5].trim().toInteger()
-                ]
+        Map parsed = parseHubCsv(text)
+        if (!parsed || !parsed.rows) return []
+        boolean headerWarned = false
+        ((List) parsed.rows).each { Object r ->
+            Map row = (Map) r
+            String memRaw = csvField(row, ["Free OS", "Free OS Memory"])
+            String cpuRaw = csvField(row, ["5m CPU avg", "CPU 5min", "5min CPU avg"])
+            if (memRaw == null || cpuRaw == null) {
+                if (!headerWarned) {
+                    logWarn "memory history CSV missing expected columns; header=${parsed.header}"
+                    headerWarned = true
+                }
+                return
             }
+            dataPoints << [
+                time:       csvField(row, ["Date/time", "Timestamp"]),
+                freeOS:     memRaw.toInteger(),
+                cpuLoad:    cpuRaw.toFloat(),
+                freeJava:   (csvField(row, ["Free Java", "Free Java Memory"])     ?: "0").toInteger(),
+                directJava: (csvField(row, ["Direct Java", "Direct Java Memory"]) ?: "0").toInteger()
+            ]
         }
     } catch (Exception e) {
         logError "Error parsing memory history: ${e.message}"
@@ -1693,8 +1751,19 @@ Map fetchStateCompression() {
 }
 
 Integer fetchDatabaseSize() {
+    long nowMs = now()
+    if (cachedDatabaseSizeAt != null && (nowMs - cachedDatabaseSizeAt) < DATABASE_SIZE_CACHE_TTL_MS) {
+        return cachedDatabaseSize
+    }
     String text = (String) hubRequest(DATABASE_SIZE_PATH, "database size", "text")
-    if (text) { try { return text.toInteger() } catch (Exception e) { /* ignore */ } }
+    if (text) {
+        try {
+            Integer v = text.toInteger()
+            cachedDatabaseSize = v
+            cachedDatabaseSizeAt = nowMs
+            return v
+        } catch (Exception e) { /* ignore */ }
+    }
     return null
 }
 
@@ -1708,8 +1777,19 @@ Map fetchFileManagerStats() {
 }
 
 Float fetchTemperature() {
+    long nowMs = now()
+    if (cachedTemperatureAt != null && (nowMs - cachedTemperatureAt) < TEMPERATURE_CACHE_TTL_MS) {
+        return cachedTemperature
+    }
     String text = (String) hubRequest(INTERNAL_TEMP_PATH, "internal temperature", "text")
-    if (text) { try { return text.toFloat() } catch (Exception e) { /* ignore */ } }
+    if (text) {
+        try {
+            Float v = text.toFloat()
+            cachedTemperature = v
+            cachedTemperatureAt = nowMs
+            return v
+        } catch (Exception e) { /* ignore */ }
+    }
     return null
 }
 
@@ -1822,9 +1902,18 @@ Map fetchZwaveJsState() {
 }
 
 Integer fetchExcessiveLoadThreshold() {
+    long nowMs = now()
+    if (cachedLoadThresholdAt != null && (nowMs - cachedLoadThresholdAt) < LOAD_THRESHOLD_CACHE_TTL_MS) {
+        return cachedLoadThreshold
+    }
     String txt = (String) hubRequest(LOAD_THRESHOLD_PATH, "excessive load threshold", "text", 5)
     if (!txt) return null
-    try { return txt.trim().toInteger() } catch (Exception e) { return null }
+    try {
+        Integer v = txt.trim().toInteger()
+        cachedLoadThreshold = v
+        cachedLoadThresholdAt = nowMs
+        return v
+    } catch (Exception e) { return null }
 }
 
 String fetchNtpServer() {
@@ -2004,6 +2093,10 @@ Map fetchMdns() {
 // ===== Phase 5 fetch methods (v5.11.1) =====
 
 Map fetchCpuInfo() {
+    long nowMs = now()
+    if (cachedCpuInfoAt != null && (nowMs - cachedCpuInfoAt) < CPU_INFO_CACHE_TTL_MS) {
+        return cachedCpuInfo
+    }
     String txt = (String) hubRequest(CPU_INFO_PATH, "CPU info", "text", 5)
     if (!txt) return null
     Map result = [:]
@@ -2016,7 +2109,10 @@ Map fetchCpuInfo() {
             try { result.loadAverage = trimmed.replaceAll(/[^\d.]/, '').toFloat() } catch (Exception e) { /* skip */ }
         }
     }
-    return result.isEmpty() ? null : result
+    if (result.isEmpty()) return null
+    cachedCpuInfo = result
+    cachedCpuInfoAt = nowMs
+    return result
 }
 
 String fetchZipgatewayVersion() {
@@ -2032,16 +2128,22 @@ Map fetchSecurityInfo(Map prefetchedHubData = null) {
     String dnsFb = (String) hubRequest(DNS_FALLBACK_PATH, "DNS fallback", "text", 5)
     Map hubData = prefetchedHubData
     if (!hubData) { Map r = hubMapRequest(HUB_DATA_PATH, "hub data (cloud controller flag)", 10); hubData = r.ok ? r.data : null }
-    String laClean = laRaw ? laRaw.replaceAll(/<[^>]+>/, '').trim() : null
-    boolean limitedSet = laClean && !laClean.equalsIgnoreCase("no limit set") && !laClean.isEmpty()
-    List subnetList = subnets ? subnets.trim().split(',').findAll { it } as List : []
-    Boolean cloudDisabled = hubData ? (hubData.disableCloudController == true) : null
-    return [
-        limitedAccess: [
+    // null laRaw/subnets means the fetch itself failed — distinguish from a successfully-fetched "no restriction"
+    // so the UI can render "Unknown" instead of a falsely reassuring "Off".
+    Map limitedAccess = null
+    if (laRaw != null) {
+        String laClean = laRaw.replaceAll(/<[^>]+>/, '').trim()
+        boolean limitedSet = laClean && !laClean.equalsIgnoreCase("no limit set") && !laClean.isEmpty()
+        limitedAccess = [
             enabled: limitedSet,
             addresses: limitedSet ? laClean.split(/[,\s]+/).findAll { it } as List : []
-        ],
-        allowedSubnets: subnetList,
+        ]
+    }
+    List allowedSubnets = subnets == null ? null : (subnets.trim().split(',').findAll { it } as List)
+    Boolean cloudDisabled = hubData ? (hubData.disableCloudController == true) : null
+    return [
+        limitedAccess: limitedAccess,
+        allowedSubnets: allowedSubnets,
         dnsFallback: dnsFb == null ? null : (dnsFb.toLowerCase().trim() == "true"),
         cloudController: cloudDisabled == null ? null : (cloudDisabled ? "disabled" : "enabled")
     ]
@@ -2057,7 +2159,11 @@ String fetchZwaveTopology() {
     String txt = (String) hubRequest(ZWAVE_TOPOLOGY_PATH, "Z-Wave topology", "text", 10)
     if (!txt) return null
     String t = txt.trim()
-    return t ?: null
+    if (!t) return null
+    // Hub omits closing </table> on the no-nodes self-only matrix; append defensively so embedded
+    // HTML can't swallow the DOM of following cards if the bug recurs with real nodes.
+    if (t.toLowerCase().contains("<table") && !t.toLowerCase().contains("</table>")) t += "</table>"
+    return t
 }
 
 // ===== Zigbee Channel Scan (Phase 6 sub-1, v5.12.0) =====
@@ -2167,8 +2273,8 @@ String parseZWaveVersion(String raw) {
     if (!raw || raw == "N/A" || !raw.contains("VersionReport")) return raw
     // Extract SDK version if present in targetVersions or protocol version
     // Example: VersionReport(..., zWaveProtocolVersion:7, zWaveProtocolSubVersion:23, ..., targetVersions:[[target:1, version:7, subVersion:18]])
-    def mProtocol = raw =~ /zWaveProtocolVersion:(\d+), zWaveProtocolSubVersion:(\d+)/
-    def mTarget = raw =~ /targetVersions:\[\[target:1, version:(\d+), subVersion:(\d+)\]\]/
+    java.util.regex.Matcher mProtocol = raw =~ /zWaveProtocolVersion:(\d+), zWaveProtocolSubVersion:(\d+)/
+    java.util.regex.Matcher mTarget = raw =~ /targetVersions:\[\[target:1, version:(\d+), subVersion:(\d+)\]\]/
     
     String protocolVer = mProtocol ? "${mProtocol[0][1]}.${mProtocol[0][2]}" : ""
     String sdkVer = mTarget ? "${mTarget[0][1]}.${mTarget[0][2]}" : ""
@@ -2359,14 +2465,19 @@ Map analyzeDevices(boolean deep = true) {
                 List currentStates = device.currentStates ?: []
                 Map batteryState = currentStates.find { it.key == "battery" }
                 if (batteryState?.value != null) {
-                    try {
-                        batteryLevel = batteryState.value.toString().toFloat().toInteger()
-                        stats.batteryDevices++
-                        stats.batteryIds << device.id
-                        if (batteryLevel <= (settings.lowBatteryThreshold ?: 20)) {
-                            stats.lowBatteryDevices << [id: device.id, name: device.name ?: "Unknown", battery: batteryLevel]
-                        }
-                    } catch (Exception e) { /* non-numeric battery value */ }
+                    // Some community drivers report battery as a string ("100%", "high", "75 %") — strip
+                    // anything that isn't a digit or decimal point so we don't silently lose the value.
+                    String batteryRaw = batteryState.value.toString().replaceAll(/[^0-9.]/, '').trim()
+                    if (batteryRaw) {
+                        try {
+                            batteryLevel = batteryRaw.toFloat().toInteger()
+                            stats.batteryDevices++
+                            stats.batteryIds << device.id
+                            if (batteryLevel <= (settings.lowBatteryThreshold ?: 20)) {
+                                stats.lowBatteryDevices << [id: device.id, name: device.name ?: "Unknown", battery: batteryLevel]
+                            }
+                        } catch (Exception e) { /* defensive guard for unexpected parse errors */ }
+                    }
                 }
 
                 Object parentAppId = extractParentAppId(device)
@@ -2647,10 +2758,17 @@ Map analyzeSystemHealth(Map shared = [:]) {
     } else if (memory && memory.freeOSMemory < warnMemKb) {
         health.alerts << [severity: "warning", name: "Low OS memory (${formatMemory(memory.freeOSMemory)})"]
     }
-    if (memory && memory.cpuAvg5min > critCpuLoad) {
-        health.alerts << [severity: "critical", name: "Very high CPU load (${String.format('%.2f', memory.cpuAvg5min as float)} — 4 cores)"]
-    } else if (memory && memory.cpuAvg5min > warnCpuLoad) {
-        health.alerts << [severity: "warning", name: "Elevated CPU load (${String.format('%.2f', memory.cpuAvg5min as float)} — 4 cores fully saturated)"]
+    if (memory && (memory.cpuAvg5min > warnCpuLoad || memory.cpuAvg5min > critCpuLoad)) {
+        Map cpuInfo = fetchCpuInfo()
+        // Default 4 matches current C-7/C-8/C-8 Pro models when /hub/cpuInfo is unavailable
+        // (sandbox blocks java.lang.Runtime so we can't query availableProcessors() at runtime).
+        int cores = (cpuInfo?.processors as Integer) ?: 4
+        String coreLabel = "${cores} core${cores == 1 ? '' : 's'}"
+        if (memory.cpuAvg5min > critCpuLoad) {
+            health.alerts << [severity: "critical", name: "Very high CPU load (${String.format('%.2f', memory.cpuAvg5min as float)} — ${coreLabel})"]
+        } else {
+            health.alerts << [severity: "warning", name: "Elevated CPU load (${String.format('%.2f', memory.cpuAvg5min as float)} — ${coreLabel})"]
+        }
     }
     if (temperature != null && temperature > critTempC) {
         health.alerts << [severity: "critical", name: "Hub temperature very high (${String.format('%.1f', temperature)}\u00B0C)"]
@@ -2748,9 +2866,12 @@ List buildZwaveGhostNodes(Map zwaveDetails) {
             if (isFailed)   signals << "FAILED"
             if (noRoute)    signals << "no route"
             if (noName)     signals << "unknown name"
+            // kind=ghost  -> truly orphaned (no Hubitat device), safe to force-remove from radio
+            // kind=failed -> has a Hubitat device but radio reports it down; try battery/range first
             ghostNodes << [
                 id: nodeId,
                 deviceId: deviceId,
+                kind: noDeviceId ? "ghost" : "failed",
                 name: nodeData.name ?: "Unknown",
                 status: nodeData.status ?: "No route",
                 type: zwType,
@@ -2875,10 +2996,12 @@ Map classifyDevice(Map device, Map appLookup, Set communityDrivers) {
         if (appInfo) {
             String appType  = (appInfo.type  ?: "").toString().toLowerCase()
             String appLabel = (appInfo.label ?: "").toString().toLowerCase()
-            Map match = lookupIntegration(appType) ?: lookupIntegration(appLabel)
-            if (match) return [connectionType: match.conn, integration: match.name, builtin: true]
-            String intName = (appInfo.type ?: appInfo.label) ?: "Unknown"
             boolean isBuiltin = !(appInfo.user == true)
+            // INTEGRATION_TABLE entries (Hue, Shelly, WLED, Kasa, ...) match parent app type/label, but
+            // can equally come from built-in Hubitat integrations or community ports — defer to appInfo.user.
+            Map match = lookupIntegration(appType) ?: lookupIntegration(appLabel)
+            if (match) return [connectionType: match.conn, integration: match.name, builtin: isBuiltin]
+            String intName = (appInfo.type ?: appInfo.label) ?: "Unknown"
             return [connectionType: CONN_OTHER, integration: intName, builtin: isBuiltin]
         }
     }
@@ -2969,7 +3092,8 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
         if (parentAppTypeName) {
             Map match = lookupIntegration(parentAppTypeName)
             if (match) {
-                result[idStr] = [connectionType: match.conn, integration: match.name, builtin: true]
+                // INTEGRATION_TABLE keywords match both built-in and community apps — defer to appType.user.
+                result[idStr] = [connectionType: match.conn, integration: match.name, builtin: isBuiltin]
                 return
             }
             // Known parent app but not in table — use app type name, preserve user/builtin from appType.user
@@ -3439,7 +3563,7 @@ private void logError(String message) {
 Map getHubInfo(Map prefetchedHubData = null) {
     Map info = [name: location.name ?: "Unknown", firmware: "Unknown", hardware: "Unknown", ip: "Unknown"]
     if (location.hubs && location.hubs.size() > 0) {
-        def hub = location.hubs[0]
+        Hub hub = location.hubs[0]
         info.firmware = hub.firmwareVersionString ?: "Unknown"
         info.hardware = hub.type ?: "Unknown"
         info.ip = hub.localIP ?: "Unknown"
@@ -3673,9 +3797,9 @@ private String detailFilenameFor(Object timestampMs) {
 List loadCheckpointIndex() {
     if (cachedCheckpointIndex != null) return cachedCheckpointIndex
     try {
-        def data = readFile(CHECKPOINT_INDEX_FILE)
+        List data = (List) readFile(CHECKPOINT_INDEX_FILE)
         if (data != null) {
-            cachedCheckpointIndex = (List) data
+            cachedCheckpointIndex = data
             state.checkpointIndex = cachedCheckpointIndex
             return cachedCheckpointIndex
         }
@@ -3738,14 +3862,14 @@ void deleteCheckpointDetail(String filename) {
 private List migrateLegacyCheckpointsIfPresent() {
     List legacy
     try {
-        def data = readFile(CHECKPOINTS_FILE)
+        List data = (List) readFile(CHECKPOINTS_FILE)
         if (data == null) {
             // No legacy file. First-time install — start with an empty index file
             // so subsequent reads short-circuit without a migration probe.
             saveCheckpointIndex([])
             return []
         }
-        legacy = (List) data
+        legacy = data
     } catch (Exception e) {
         logDebug "Legacy migration: no legacy file: ${e.message}"
         saveCheckpointIndex([])
@@ -3810,7 +3934,7 @@ List getCheckpointIndex() {
 
 List loadSnapshots() {
     try {
-        def data = readFile(SNAPSHOTS_FILE)
+        List data = (List) readFile(SNAPSHOTS_FILE)
         if (data) return data
     } catch (Exception e) {
         logDebug "No existing snapshots: ${e.message}"
