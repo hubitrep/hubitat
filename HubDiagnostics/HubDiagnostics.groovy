@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String APP_VERSION = "5.38.0"
+@Field static final String APP_VERSION = "5.41.0"
 @Field static final String STORAGE_SCHEMA_VERSION = "5.0.0"
 
 // API endpoint paths (all relative to HUB_BASE)
@@ -89,9 +89,6 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final ConcurrentHashMap<String, ConcurrentHashMap> AUDIT_SCANS = new ConcurrentHashMap<>()
 @Field static volatile Map lastAuditResult = null
 
-// Zigbee channels recommended to avoid WiFi interference
-@Field static final List RECOMMENDED_ZIGBEE_CHANNELS = [15, 20, 25]
-
 // Hub alert flag display names
 @Field static final Map ALERT_DISPLAY_NAMES = [
     hubLoadElevated: "Hub Load Elevated",
@@ -126,7 +123,6 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final int API_TIMING_WINDOW = 20
 
 // Protocol-level constants — hardcoded, not user-configurable (industry-standard values)
-@Field static final int    ZIGBEE_LQI_WARN = 200
 @Field static final int    ZIGBEE_LQI_CRIT = 150
 @Field static final double ZWAVE_PER_CRIT  = 1.0
 
@@ -261,8 +257,6 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final String IMPORT_URL_APP = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubDiagnostics/HubDiagnostics.groovy"
 @Field static final String IMPORT_URL_WEB = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubDiagnostics/hub_diagnostics_ui.html"
 
-
-@Field static final String DEVICE_FULL_JSON_PATH = "/device/fullJson/"
 
 // Maps controllerType values (from device/fullJson top-level field) to connection type constants.
 // Actual observed values: ZGB=Zigbee, MAT=Matter, LNK=HubMesh, HKC=HomeKit, BLE=Bluetooth.
@@ -594,15 +588,18 @@ private Map buildSharedCache(boolean includeNetwork = false) {
     return shared
 }
 
-// Aggregator: shared cache over multiple hub resources with fail-soft fallbacks.
-Map apiDashboard() {
+// Wrap an API aggregator: time it, log "apiX completed in Nms", record the timing, and JSON-wrap the result.
+private Map timed(String name, Closure<Map> body) {
     long start = now()
-    Map data = getDashboardData(buildSharedCache(false))
+    Map data = body.call()
     long elapsed = now() - start
-    logDebug "apiDashboard completed in ${elapsed}ms"
-    recordApiTiming("dashboard", elapsed)
+    logDebug "api${name.capitalize()} completed in ${elapsed}ms"
+    recordApiTiming(name, elapsed)
     return jsonResponse(data)
 }
+
+// Aggregator: shared cache over multiple hub resources with fail-soft fallbacks.
+Map apiDashboard() { return timed("dashboard") { getDashboardData(buildSharedCache(false)) } }
 
 String getUIVersion() {
     if (uiVersionCache) return uiVersionCache
@@ -624,63 +621,36 @@ String getUIVersion() {
 }
 
 // Aggregator: device classification and fullJson enrichment join.
-Map apiDevices() {
-    long start = now()
-    Map data = getDevicesData()
-    long elapsed = now() - start
-    logDebug "apiDevices completed in ${elapsed}ms"
-    recordApiTiming("devices", elapsed)
-    return jsonResponse(data)
-}
+Map apiDevices() { return timed("devices") { getDevicesData() } }
 
 // Aggregator: joins apps list with runtime stats; surfaces parent/child structure.
-Map apiApps() {
-    long start = now()
-    Map data = getAppsData()
-    long elapsed = now() - start
-    logDebug "apiApps completed in ${elapsed}ms"
-    recordApiTiming("apps", elapsed)
-    return jsonResponse(data)
-}
+Map apiApps() { return timed("apps") { getAppsData() } }
 
 Map apiCode() {
-    long start = now()
-    Map data = [
-        appTypes: fetchUserAppTypes(),
-        driverTypes: fetchUserDriverTypes(),
-        bundles: fetchUserBundles(),
-        libraries: fetchUserLibraries(),
-        hubVariables: fetchHubVariables()
-    ]
-    long elapsed = now() - start
-    logDebug "apiCode completed in ${elapsed}ms"
-    recordApiTiming("code", elapsed)
-    return jsonResponse(data)
+    return timed("code") {
+        [
+            appTypes: fetchUserAppTypes(),
+            driverTypes: fetchUserDriverTypes(),
+            bundles: fetchUserBundles(),
+            libraries: fetchUserLibraries(),
+            hubVariables: fetchHubVariables()
+        ]
+    }
 }
 
 // Aggregator: normalizes multiple hub resources; adds mesh and health derivations.
 Map apiNetwork() {
-    long start = now()
-    // Network tab needs hubData (for fetchSecurityInfo's cloudController flag); rest is fetched by analyzeNetwork
-    Map shared = [:]
-    Map hubDataWrap = hubMapRequest(HUB_DATA_PATH, "hub data (shared)", 10)
-    shared.hubData = hubDataWrap.ok ? hubDataWrap.data : null
-    Map data = getNetworkData(shared)
-    long elapsed = now() - start
-    logDebug "apiNetwork completed in ${elapsed}ms"
-    recordApiTiming("network", elapsed)
-    return jsonResponse(data)
+    return timed("network") {
+        // Network tab needs hubData (for fetchSecurityInfo's cloudController flag); rest is fetched by analyzeNetwork
+        Map shared = [:]
+        Map hubDataWrap = hubMapRequest(HUB_DATA_PATH, "hub data (shared)", 10)
+        shared.hubData = hubDataWrap.ok ? hubDataWrap.data : null
+        getNetworkData(shared)
+    }
 }
 
 // Aggregator: cross-resource health summary with alert shaping.
-Map apiHealth() {
-    long start = now()
-    Map data = getHealthData(buildSharedCache(false))
-    long elapsed = now() - start
-    logDebug "apiHealth completed in ${elapsed}ms"
-    recordApiTiming("health", elapsed)
-    return jsonResponse(data)
-}
+Map apiHealth() { return timed("health") { getHealthData(buildSharedCache(false)) } }
 
 // Aggregator: parses a hub text endpoint into a stable structured payload.
 Map apiHealthHistory() {
@@ -705,14 +675,7 @@ Map apiLive() {
     ])
 }
 
-Map apiPerformance() {
-    long start = now()
-    Map data = getPerformanceData()
-    long elapsed = now() - start
-    logDebug "apiPerformance completed in ${elapsed}ms"
-    recordApiTiming("performance", elapsed)
-    return jsonResponse(data)
-}
+Map apiPerformance() { return timed("performance") { getPerformanceData() } }
 
 Map apiZigbeeScan() {
     long start = now()
@@ -892,9 +855,19 @@ Map apiSnapshotView() {
 }
 
 Map apiCreateSnapshot() {
+    // C1: createSnapshot() is void and swallows save failures (writeFile catches internally), so a
+    // failed live snapshot would otherwise return success and the SPA would diff against a stale
+    // snapshot with no error. Detect real success by checking the newest snapshot's timestampMs
+    // actually changed — robust even at the retention cap, where the total count stays flat.
+    def prevNewestMs = loadSnapshots()?.getAt(0)?.timestampMs
     createSnapshot()
     List snapshots = loadSnapshots()
-    return jsonResponse([success: true, snapshotCount: snapshots?.size() ?: 0])
+    def newestMs = snapshots?.getAt(0)?.timestampMs
+    if (newestMs == null || newestMs == prevNewestMs) {
+        logWarn "apiCreateSnapshot: live snapshot did not persist (newest timestampMs unchanged) — creation failed"
+        return jsonResponse([success: false, error: "Failed to create live snapshot — check hub logs", snapshotCount: snapshots?.size() ?: 0])
+    }
+    return jsonResponse([success: true, snapshotCount: snapshots.size()])
 }
 
 Map apiDeleteSnapshot() {
@@ -989,8 +962,7 @@ Map apiForumData() {
     Integer uptimeSeconds = stats ? parseUptime(stats.uptime as String) : null
     List zwaveMsgCounts = extractZwaveMessageCounts(networkData.zwave ?: [:])
     List zigbeeMsgCounts = extractZigbeeMessageCounts(networkData.zigbee ?: [:])
-    List allRadioDevices = (zwaveMsgCounts.collect { [name: it.name, deviceId: it.deviceId, msgCount: it.msgCount, integration: "Z-Wave"] } +
-                            zigbeeMsgCounts.collect { [name: it.name, deviceId: it.id, msgCount: it.msgCount, integration: "Zigbee"] })
+    List allRadioDevices = buildRadioDeviceList(zwaveMsgCounts, zigbeeMsgCounts)
     recordApiTiming("forum/data", now() - start)
     return jsonResponse([
         hubInfo: hubInfo, resources: resources, temperature: temperature,
@@ -1175,10 +1147,10 @@ Map getNetworkData(Map shared = [:]) {
     String zwaveVersion = fetchZwaveVersion()
     Map zwaveMesh = extractZwaveMeshQuality(networkData.zwave ?: [:])
     List ghostNodes = buildZwaveGhostNodes(networkData.zwave ?: [:])
-    List problemNodes = (zwaveMesh?.nodes ?: []).findAll { Map n -> n.state != "OK" || (n.per ?: 0) > 1 }.collect { Map n ->
+    List problemNodes = (zwaveMesh?.nodes ?: []).findAll { Map n -> isZwaveProblemNode(n) }.collect { Map n ->
         List issues = []
         if (n.state != "OK") issues << "State: ${n.state}"
-        if ((n.per ?: 0) > 1) issues << "PER: ${n.per}%"
+        if ((n.per ?: 0) > ZWAVE_PER_CRIT) issues << "PER: ${n.per}%"
         [name: n.name, deviceId: n.deviceId, nodeId: n.nodeId, issues: issues.join(", ")]
     }
     Map zigbeeRaw = networkData.zigbee ?: [:]
@@ -1319,8 +1291,7 @@ Map getPerformanceData(Map shared = [:]) {
     Map radioStats = [zwave: zwaveMsgCounts, zigbee: zigbeeMsgCounts]
 
     // Top talkers: top 3 devices by message count across both radios
-    List allRadioDevices = (zwaveMsgCounts.collect { [name: it.name, deviceId: it.deviceId, msgCount: it.msgCount, integration: "Z-Wave"] } +
-                            zigbeeMsgCounts.collect { [name: it.name, deviceId: it.id, msgCount: it.msgCount, integration: "Zigbee"] })
+    List allRadioDevices = buildRadioDeviceList(zwaveMsgCounts, zigbeeMsgCounts)
     List topTalkers = allRadioDevices.sort { -it.msgCount }.take(3)
     t.radioCalc = now() - t1
 
@@ -1703,6 +1674,23 @@ String csvField(Map row, List<String> aliases) {
     return null
 }
 
+// Extract the resource columns shared by the /freeOSMemory and memory-history CSV rows.
+// Returns null when the two required columns (OS memory, 5m CPU) are absent — callers
+// decide whether that fails the whole request or just skips the row.
+private Map parseResourceRow(Map row) {
+    String memRaw = csvField(row, ["Free OS", "Free OS Memory"])
+    String cpuRaw = csvField(row, ["5m CPU avg", "CPU 5min", "5min CPU avg"])
+    if (memRaw == null || cpuRaw == null) return null
+    return [
+        timestamp:  csvField(row, ["Date/time", "Timestamp"]),
+        freeOS:     memRaw.toInteger(),
+        cpu:        cpuRaw.toFloat(),
+        totalJava:  (csvField(row, ["Total Java", "Total Java Memory"])   ?: "0").toInteger(),
+        freeJava:   (csvField(row, ["Free Java", "Free Java Memory"])     ?: "0").toInteger(),
+        directJava: (csvField(row, ["Direct Java", "Direct Java Memory"]) ?: "0").toInteger()
+    ]
+}
+
 Map fetchSystemResources() {
     long nowMs = now()
     if (cachedSystemResources && cachedSystemResourcesAt && (nowMs - cachedSystemResourcesAt) < SYSTEM_RESOURCES_CACHE_TTL_MS) {
@@ -1714,19 +1702,18 @@ Map fetchSystemResources() {
         Map parsed = parseHubCsv(text)
         if (!parsed || !parsed.rows) return null
         Map row = (Map) ((List) parsed.rows)[0]
-        String memRaw = csvField(row, ["Free OS", "Free OS Memory"])
-        String cpuRaw = csvField(row, ["5m CPU avg", "CPU 5min", "5min CPU avg"])
-        if (memRaw == null || cpuRaw == null) {
+        Map p = parseResourceRow(row)
+        if (p == null) {
             logWarn "system resources CSV missing expected columns; header=${parsed.header}"
             return null
         }
         Map data = [
-            timestamp:        csvField(row, ["Date/time", "Timestamp"]),
-            freeOSMemory:     memRaw.toInteger(),
-            cpuAvg5min:       cpuRaw.toFloat(),
-            totalJavaMemory:  (csvField(row, ["Total Java", "Total Java Memory"])   ?: "0").toInteger(),
-            freeJavaMemory:   (csvField(row, ["Free Java", "Free Java Memory"])     ?: "0").toInteger(),
-            directJavaMemory: (csvField(row, ["Direct Java", "Direct Java Memory"]) ?: "0").toInteger()
+            timestamp:        p.timestamp,
+            freeOSMemory:     p.freeOS,
+            cpuAvg5min:       p.cpu,
+            totalJavaMemory:  p.totalJava,
+            freeJavaMemory:   p.freeJava,
+            directJavaMemory: p.directJava
         ]
         cachedSystemResources = data
         cachedSystemResourcesAt = nowMs
@@ -1747,9 +1734,8 @@ List fetchMemoryHistory() {
         boolean headerWarned = false
         ((List) parsed.rows).each { Object r ->
             Map row = (Map) r
-            String memRaw = csvField(row, ["Free OS", "Free OS Memory"])
-            String cpuRaw = csvField(row, ["5m CPU avg", "CPU 5min", "5min CPU avg"])
-            if (memRaw == null || cpuRaw == null) {
+            Map p = parseResourceRow(row)
+            if (p == null) {
                 if (!headerWarned) {
                     logWarn "memory history CSV missing expected columns; header=${parsed.header}"
                     headerWarned = true
@@ -1757,11 +1743,11 @@ List fetchMemoryHistory() {
                 return
             }
             dataPoints << [
-                time:       csvField(row, ["Date/time", "Timestamp"]),
-                freeOS:     memRaw.toInteger(),
-                cpuLoad:    cpuRaw.toFloat(),
-                freeJava:   (csvField(row, ["Free Java", "Free Java Memory"])     ?: "0").toInteger(),
-                directJava: (csvField(row, ["Direct Java", "Direct Java Memory"]) ?: "0").toInteger()
+                time:       p.timestamp,
+                freeOS:     p.freeOS,
+                cpuLoad:    p.cpu,
+                freeJava:   p.freeJava,
+                directJava: p.directJava
             ]
         }
     } catch (Exception e) {
@@ -2743,13 +2729,30 @@ Map analyzeApps(boolean deep = true) {
     return stats
 }
 
+// Data-or-null convenience over hubMapRequest (collapses the repeated `.with { it.ok ? it.data : null }`).
+private Object reqData(String path, String name, int timeout = 10) {
+    Map r = hubMapRequest(path, name, timeout)
+    return r.ok ? r.data : null
+}
+
+// Join Z-Wave + Zigbee per-device message counts into one list for top-talker ranking.
+private List buildRadioDeviceList(List zwaveMsgCounts, List zigbeeMsgCounts) {
+    return (zwaveMsgCounts.collect { [name: it.name, deviceId: it.deviceId, msgCount: it.msgCount, integration: "Z-Wave"] } +
+            zigbeeMsgCounts.collect { [name: it.name, deviceId: it.id, msgCount: it.msgCount, integration: "Zigbee"] })
+}
+
+// A Z-Wave mesh node is a "problem" if it is not OK or its packet-error-rate exceeds ZWAVE_PER_CRIT.
+private boolean isZwaveProblemNode(Map n) {
+    return n.state != "OK" || (n.per ?: 0) > ZWAVE_PER_CRIT
+}
+
 Map analyzeNetwork() {
     return [
-        network: hubMapRequest(NETWORK_CONFIG_PATH, "network configuration", 15).with { it.ok ? it.data : null },
-        zwave:   hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20).with { it.ok ? it.data : null },
-        zigbee:  hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20).with { it.ok ? it.data : null },
-        matter:  hubMapRequest(MATTER_DETAILS_PATH, "Matter details", 15).with { it.ok ? it.data : null },
-        hubMesh: hubMapRequest(HUB_MESH_PATH, "Hub Mesh", 15).with { it.ok ? it.data : null }
+        network: reqData(NETWORK_CONFIG_PATH, "network configuration", 15),
+        zwave:   reqData(ZWAVE_DETAILS_PATH, "Z-Wave details", 20),
+        zigbee:  reqData(ZIGBEE_DETAILS_PATH, "Zigbee details", 20),
+        matter:  reqData(MATTER_DETAILS_PATH, "Matter details", 15),
+        hubMesh: reqData(HUB_MESH_PATH, "Hub Mesh", 15)
     ]
 }
 
@@ -2864,27 +2867,6 @@ List buildZwaveGhostNodes(Map zwaveDetails) {
         }
     }
     return ghostNodes
-}
-
-Map buildRadioProtocolMap() {
-    Map protocols = [:]
-    try {
-        Map zigbeeData = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20).with { it.ok ? it.data : null }
-        if (zigbeeData?.devices) {
-            zigbeeData.devices.each { Map d -> if (d.id) protocols[d.id] = "zigbee" }
-        }
-        Map zwaveData = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20).with { it.ok ? it.data : null }
-        if (zwaveData?.nodes) {
-            zwaveData.nodes.each { Map n -> if (n.deviceId) protocols[n.deviceId] = "zwave" }
-        }
-        Map matterData = hubMapRequest(MATTER_DETAILS_PATH, "Matter details", 15).with { it.ok ? it.data : null }
-        if (matterData?.devices) {
-            matterData.devices.each { Map d -> if (d.id) protocols[d.id] = "matter" }
-        }
-    } catch (Exception e) {
-        logDebug "Error building radio protocol map: ${e.message}"
-    }
-    return protocols
 }
 
 Map buildAppLookupMap() {
@@ -3026,7 +3008,7 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
 
         if (!cachedEntry) {
             try {
-                Map fullWrap = hubMapRequest("${DEVICE_FULL_JSON_PATH}${idStr}", "device ${idStr} full", 10)
+                Map fullWrap = hubMapRequest("${FULL_JSON_PATH_PREFIX}${idStr}", "device ${idStr} full", 10)
                 Map full = fullWrap.ok ? fullWrap.data : null
                 Map parentApp = full ? (Map) full.parentApp : null
                 if (parentApp) {
@@ -3486,12 +3468,6 @@ List<Map> listHubFiles(String nameContains = null) {
     }
 }
 
-List<Map> listHubFilesByNames(List<String> names) {
-    Set<String> wanted = (names ?: []).findAll { it } as Set<String>
-    if (!wanted) return []
-    return listHubFiles().findAll { Map rec -> wanted.contains(rec.name) }
-}
-
 // ===== FORMATTING HELPERS =====
 
 String generateQuickSummary() {
@@ -3575,7 +3551,6 @@ Map getEmptyDeviceStats() {
         byIntegration: [:],
         idsByIntegration: [:],
         integrationSources: [:],
-        byStatus: [active: 0, inactive: 0, disabled: 0],
         idsByStatus: [active: [], inactive: [], disabled: []],
         parentIds: [],
         childIds: [],
@@ -3642,16 +3617,6 @@ int parseUptime(String uptime) {
     }
 
     return seconds
-}
-
-String formatDuration(int seconds) {
-    int hours = (seconds / 3600).toInteger()
-    int minutes = ((seconds % 3600) / 60).toInteger()
-    int secs = (seconds % 60).toInteger()
-
-    if (hours > 0) return "${hours}h ${minutes}m ${secs}s"
-    if (minutes > 0) return "${minutes}m ${secs}s"
-    return "${secs}s"
 }
 
 String formatMemory(int kb) {
@@ -3779,13 +3744,15 @@ private String detailFilenameFor(Object timestampMs) {
 }
 
 List loadCheckpointIndex() {
-    if (cachedCheckpointIndex != null) return cachedCheckpointIndex
+    // N4: return a defensive copy so a caller doing `loadCheckpointIndex() << x` can't mutate the
+    // shared cache (which would also bypass the FileManager write in saveCheckpointIndex).
+    if (cachedCheckpointIndex != null) return new ArrayList(cachedCheckpointIndex)
     try {
         List data = (List) readFile(CHECKPOINT_INDEX_FILE)
         if (data != null) {
             cachedCheckpointIndex = data
             state.checkpointIndex = cachedCheckpointIndex
-            return cachedCheckpointIndex
+            return new ArrayList(cachedCheckpointIndex)
         }
     } catch (Exception e) {
         logDebug "No existing checkpoint index: ${e.message}"
@@ -3794,15 +3761,16 @@ List loadCheckpointIndex() {
     List migrated = migrateLegacyCheckpointsIfPresent()
     cachedCheckpointIndex = migrated
     state.checkpointIndex = cachedCheckpointIndex
-    return cachedCheckpointIndex
+    return cachedCheckpointIndex == null ? null : new ArrayList(cachedCheckpointIndex)
 }
 
 void saveCheckpointIndex(List index) {
     try {
         String json = groovy.json.JsonOutput.toJson(index)
         writeFile(CHECKPOINT_INDEX_FILE, json)
-        cachedCheckpointIndex = index
-        state.checkpointIndex = index
+        // N4: store our own copy so the caller's ongoing reference can't later mutate the cache.
+        cachedCheckpointIndex = (index == null ? null : new ArrayList(index))
+        state.checkpointIndex = cachedCheckpointIndex
     } catch (Exception e) {
         logError "Error saving checkpoint index: ${e}"
     }
@@ -3970,15 +3938,6 @@ def readFile(String fileName) {
     return null
 }
 
-boolean fileExists(String fileName) {
-    try {
-        return downloadHubFile(fileName) != null
-    } catch (Exception e) {
-        logDebug "File not found or error checking ${fileName}: ${e.message}"
-        return false
-    }
-}
-
 // ===== DEVICE USAGE AUDIT =====
 
 /**
@@ -4096,6 +4055,8 @@ private String firstDataValue(Map dv, List<String> keys) {
 /**
  * Map a Hubitat controllerType code to a human-readable protocol name for the inventory.
  * Unknown codes pass through verbatim; blank (virtual/cloud) yields null.
+ * Keyed on the same controllerType codes as CONTROLLER_TYPE_CONN, which maps them to
+ * connection-type constants instead (distinct key sets, so they are not merged).
  */
 private String controllerTypeLabel(String ct) {
     if (!ct) return null
@@ -4256,14 +4217,6 @@ private Long parseHubitatTimestamp(String s) {
     }
 }
 
-private String formatDurationSec(Long ms) {
-    if (ms == null) return ""
-    long sec = (ms as long) / 1000
-    if (sec < 60) return "${sec}s"
-    long m = sec / 60; long s = sec % 60
-    return "${m}m ${s}s"
-}
-
 /**
  * CAS-bounded dispatch: reserves a slot in the in-flight pool (≤ AUDIT_MAX_INFLIGHT),
  * pops the next pending device id atomically, and issues an async fullJson fetch.
@@ -4371,7 +4324,7 @@ private void finalizeAudit(String scanId) {
 
     // Z-Wave JS per-node enrichment (only when Z-Wave JS stack is active)
     if (detectZwaveStack() == "js") {
-        Map zwData = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details (audit enrichment)", 10).with { it.ok ? it.data : null }
+        Map zwData = reqData(ZWAVE_DETAILS_PATH, "Z-Wave details (audit enrichment)", 10)
         Map zwNodeByDevId = [:]
         if (zwData) {
             ((zwData.zwDevices as Map) ?: [:]).each { Object _key, Object val ->
@@ -4393,7 +4346,7 @@ private void finalizeAudit(String scanId) {
     }
 
     // Hub Mesh per-device enrichment
-    Map hubMeshData = hubMapRequest(HUB_MESH_PATH, "Hub Mesh (audit enrichment)", 10).with { it.ok ? it.data : null }
+    Map hubMeshData = reqData(HUB_MESH_PATH, "Hub Mesh (audit enrichment)", 10)
     List linkedDevices = (hubMeshData?.linkedDevices as List) ?: []
     linkedDevices.each { Map ld ->
         Long devId = ld.id as Long
@@ -4606,8 +4559,27 @@ void updated() {
     fwUpdateCacheAt  = null
     state.remove('controllerTypeCache') // evict per-device classification cache; rebuilds on next analysis pass
     apiTimings.clear()                  // drop stats for renamed/removed endpoints; fresh measurements from now
+    // N1: clear the TTL'd radio/list/resource caches too, so a settings change isn't masked by
+    // stale data for up to the cache TTL. Matches the A3/A7/B5 invalidation discipline.
+    cachedZwaveData = null;        cachedZwaveAt = null
+    cachedZigbeeData = null;       cachedZigbeeAt = null
+    cachedAppsListData = null;     cachedAppsListAt = null
+    cachedDevicesListData = null;  cachedDevicesListAt = null
+    cachedSystemResources = null;  cachedSystemResourcesAt = null
+    cachedTemperature = null;      cachedTemperatureAt = null
+    cachedDatabaseSize = null;     cachedDatabaseSizeAt = null
+    cachedCpuInfo = null;          cachedCpuInfoAt = null
+    cachedLoadThreshold = null;    cachedLoadThresholdAt = null
+    cachedCheckpointIndex = null   // re-read the checkpoint index from FileManager on next access
+    // C2: auto-disable debug logging after 30 min so it can't be left on indefinitely
+    if (settings.debugLogging) runIn(1800, 'logsOff')
     runIn(1, 'syncUIForced')
     initialize()
+}
+
+void logsOff() {
+    app.updateSetting("debugLogging", [type: "bool", value: false])
+    logInfo "Debug logging auto-disabled after 30 minutes"
 }
 
 void uninstalled() {

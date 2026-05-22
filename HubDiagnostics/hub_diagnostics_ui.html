@@ -86,7 +86,7 @@ details{margin:8px 0} summary{cursor:pointer;font-weight:600;font-size:13px;padd
 
 select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;margin-right:8px}
 
-.diff-add{color:var(--ok)} .diff-rem{color:var(--crit)} .diff-chg{color:var(--warn)}
+.diff-add{color:var(--ok)} .diff-rem{color:var(--crit)} .diff-chg{color:var(--warn)} .diff-item{margin:2px 0 2px 16px}
 .pill-menu{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500}
 .pill-auto{background:#dbeafe;color:#1e40af} .pill-integ{background:#d1fae5;color:#065f46} .pill-apps{background:#ede9fe;color:#5b21b6}
 
@@ -96,11 +96,6 @@ select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-si
 .report-mode .hdr{top:33px}
 
 /* ===== AUDIT MODE — styles not already in the SPA ===== */
-/* Audit page uses body directly (no .hdr sticky chrome) */
-#audit-root body,.audit-body{padding:16px}
-.toc{background:var(--card);border-radius:0 0 8px 8px;padding:14px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-.toc-l{color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:600;margin-bottom:6px}
-.toc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px;font-size:13px}
 .hdr-audit{background:var(--primary);color:#fff;padding:10px 20px;border-radius:8px 8px 0 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:0}
 .hdr-audit h1{font-size:17px;font-weight:600}.hdr-audit .meta{font-size:12px;opacity:.85;margin-left:auto}
 summary.card-h{cursor:pointer;user-select:none}
@@ -143,7 +138,7 @@ table[data-sortable] th[data-dir] .arr{opacity:1}
 </div>
 <script>
 // ===== VERSION =====
-const UI_VERSION = "5.38.0";
+const UI_VERSION = "5.41.0";
 
 // ===== CONFIG & MOCKS =====
 const WORKBENCH = false; // Set to true for local development without a hub
@@ -278,7 +273,11 @@ function alink(id,n){return'<a href="/installedapp/configure/'+id+'" target="_bl
 function dlistlink(count,ids){if(ids===true)return'<a href="/device/list" target="_blank">'+(count??0)+'</a>';if(!ids||!ids.length)return String(count??0);return'<a href="/device/list?ids='+ids.join(',')+'" target="_blank">'+count+'</a>'}
 function alistlink(count){return'<a href="/installedapp/list" target="_blank">'+(count??0)+'</a>'}
 const CD={paired:'Paired',lan_direct:'LAN (Direct)',lan_bridge:'LAN (Bridge)',cloud:'Cloud',virtual:'Virtual',hubmesh:'Hub Mesh',other:'Other'};
-const PD={zigbee:'Zigbee',zwave:'Z-Wave',matter:'Matter',lan:'LAN/IP',virtual:'Virtual',cloud:'Cloud',maker:'Maker API',hubmesh:'Hub Mesh',other:'Other'};
+const BADGE={builtin:'<span class="badge b-builtin">Built-in</span>',community:'<span class="badge b-community">Community</span>',platform:'<span class="badge b-platform">Platform</span>'};
+// Source classification → badge markup. emptyAsBuiltin=true renders Built-in for a missing source (apps); false renders nothing (perf rows).
+function srcBadge(source,emptyAsBuiltin){if(source==='platform')return BADGE.platform;if(source==='community')return BADGE.community;if(!source&&!emptyAsBuiltin)return'';return BADGE.builtin;}
+// Split Z-Wave nodes into ghosts/failed. Legacy backend (no `kind` field): treat no-deviceId as ghost, anything else as failed.
+function splitGhostNodes(nodes){return{ghosts:nodes.filter(g=>(g.kind?g.kind==='ghost':!g.deviceId)),failed:nodes.filter(g=>(g.kind?g.kind==='failed':!!g.deviceId))};}
 
 // ===== RADIO CAPTURE CONSTANTS =====
 // Subset of the Zigbee Cluster Library. Keys are 4-char hex (uppercase). Friendly labels for live tail and filter chips.
@@ -305,6 +304,224 @@ const ZB_MFR={
 
 function clusterLabel(id){if(!id)return'';const k=String(id).toUpperCase().padStart(4,'0');return ZB_CLUSTERS[k]?ZB_CLUSTERS[k]+' (0x'+k+')':'0x'+k}
 function mfrLabel(code){if(!code)return'';const k=String(code).toUpperCase().padStart(4,'0');return ZB_MFR[k]?ZB_MFR[k]+' ('+k+')':k}
+
+// ===== ZCL DECODE (BEGIN) =====
+// Pure ZCL frame decoders for the Zigbee live tail. No DOM deps except rcZbDecodeHtml (uses h()/mfrLabel).
+// Tested standalone in Node by extracting this BEGIN..END block; keep it self-contained.
+
+// ZCL general (profile-wide / "global") command frames. Hex id -> friendly name.
+const ZB_GLOBAL_CMDS={
+  '00':'Read Attributes','01':'Read Attributes Response','02':'Write Attributes',
+  '03':'Write Attributes Undivided','04':'Write Attributes Response','05':'Write Attributes No Response',
+  '06':'Configure Reporting','07':'Configure Reporting Response','08':'Read Reporting Config',
+  '09':'Read Reporting Config Response','0A':'Report Attributes','0B':'Default Response',
+  '0C':'Discover Attributes','0D':'Discover Attributes Response','0E':'Read Attributes Structured',
+  '0F':'Write Attributes Structured','10':'Write Attributes Structured Response',
+  '11':'Discover Commands Received','12':'Discover Commands Received Response',
+  '13':'Discover Commands Generated','14':'Discover Commands Generated Response',
+  '15':'Discover Attributes Extended','16':'Discover Attributes Extended Response'
+};
+
+// Cluster-specific commands, keyed by 4-hex cluster then direction: c2s = client->server (hub->device),
+// s2c = server->client (device->hub). Covers the clusters seen on this mesh; extend over time.
+const ZB_CLUSTER_CMDS={
+  '0003':{c2s:{'00':'Identify','01':'Identify Query','40':'Trigger Effect'},s2c:{'00':'Identify Query Response'}},
+  '0004':{c2s:{'00':'Add Group','01':'View Group','02':'Get Group Membership','03':'Remove Group','04':'Remove All Groups','05':'Add Group If Identifying'},
+          s2c:{'00':'Add Group Response','01':'View Group Response','02':'Get Group Membership Response','03':'Remove Group Response'}},
+  '0005':{c2s:{'00':'Add Scene','01':'View Scene','02':'Remove Scene','03':'Remove All Scenes','04':'Store Scene','05':'Recall Scene','06':'Get Scene Membership'},
+          s2c:{'00':'Add Scene Response','01':'View Scene Response','02':'Remove Scene Response','03':'Remove All Scenes Response','04':'Store Scene Response','06':'Get Scene Membership Response'}},
+  '0006':{c2s:{'00':'Off','01':'On','02':'Toggle','40':'Off With Effect','41':'On With Recall Global Scene','42':'On With Timed Off'}},
+  '0008':{c2s:{'00':'Move To Level','01':'Move','02':'Step','03':'Stop','04':'Move To Level (w/ On/Off)','05':'Move (w/ On/Off)','06':'Step (w/ On/Off)','07':'Stop (w/ On/Off)'}},
+  '0019':{c2s:{'01':'Query Next Image Req','03':'Image Block Req','04':'Image Page Req','06':'Upgrade End Req','08':'Query Specific File Req'},
+          s2c:{'00':'Image Notify','02':'Query Next Image Resp','05':'Image Block Resp','07':'Upgrade End Resp','09':'Query Specific File Resp'}},
+  '0020':{c2s:{'00':'Check-in Response','01':'Fast Poll Stop','02':'Set Long Poll Interval','03':'Set Short Poll Interval'},s2c:{'00':'Check-in'}},
+  '0101':{c2s:{'00':'Lock Door','01':'Unlock Door','02':'Toggle','03':'Unlock With Timeout'},
+          s2c:{'00':'Lock Door Response','01':'Unlock Door Response','02':'Toggle Response','03':'Unlock With Timeout Response','20':'Operating Event Notification'}},
+  '0201':{c2s:{'00':'Setpoint Raise/Lower','01':'Set Weekly Schedule','02':'Get Weekly Schedule','03':'Clear Weekly Schedule'},s2c:{'00':'Get Weekly Schedule Response'}},
+  '0300':{c2s:{'00':'Move To Hue','01':'Move Hue','02':'Step Hue','03':'Move To Saturation','04':'Move Saturation','05':'Step Saturation','06':'Move To Hue & Saturation','07':'Move To Color','08':'Move Color','09':'Step Color','0A':'Move To Color Temperature','4B':'Move Color Temperature','4C':'Step Color Temperature'}},
+  '0500':{c2s:{'00':'Zone Enroll Response','01':'Initiate Normal Operation Mode','02':'Initiate Test Mode'},s2c:{'00':'Zone Status Change Notification','01':'Zone Enroll Request'}},
+  '0501':{c2s:{'00':'Arm','01':'Bypass','02':'Emergency','03':'Fire','04':'Panic','05':'Get Zone ID Map','06':'Get Zone Information'},
+          s2c:{'00':'Arm Response','01':'Get Zone ID Map Response','02':'Get Zone Information Response','03':'Zone Status Changed','04':'Panel Status Changed'}}
+};
+
+// ZCL data types: hex type id -> {len in bytes (-1 = length-prefixed), kind for value formatting, name shown as [type]}.
+const ZB_DTYPE={
+  '00':{len:0,kind:'none',name:'nodata'},
+  '08':{len:1,kind:'hex',name:'data8'},'09':{len:2,kind:'hex',name:'data16'},'0A':{len:3,kind:'hex',name:'data24'},'0B':{len:4,kind:'hex',name:'data32'},
+  '10':{len:1,kind:'bool',name:'bool'},
+  '18':{len:1,kind:'map',name:'map8'},'19':{len:2,kind:'map',name:'map16'},'1A':{len:3,kind:'map',name:'map24'},'1B':{len:4,kind:'map',name:'map32'},
+  '20':{len:1,kind:'uint',name:'uint8'},'21':{len:2,kind:'uint',name:'uint16'},'22':{len:3,kind:'uint',name:'uint24'},'23':{len:4,kind:'uint',name:'uint32'},'24':{len:5,kind:'uint',name:'uint40'},'25':{len:6,kind:'uint',name:'uint48'},'27':{len:8,kind:'uint',name:'uint64'},
+  '28':{len:1,kind:'int',name:'int8'},'29':{len:2,kind:'int',name:'int16'},'2A':{len:3,kind:'int',name:'int24'},'2B':{len:4,kind:'int',name:'int32'},'2D':{len:6,kind:'int',name:'int48'},'2F':{len:8,kind:'int',name:'int64'},
+  '30':{len:1,kind:'enum',name:'enum8'},'31':{len:2,kind:'enum',name:'enum16'},
+  '39':{len:4,kind:'float',name:'single'},'3A':{len:8,kind:'float',name:'double'},
+  '41':{len:-1,kind:'octstr',name:'octstr'},'42':{len:-1,kind:'string',name:'string'},
+  'E8':{len:2,kind:'hex',name:'clusterId'},'E9':{len:2,kind:'hex',name:'attribId'},'F0':{len:8,kind:'hex',name:'EUI64'}
+};
+
+// Headline attributes per cluster (4-hex cluster -> 4-hex attr -> name). Extend over time; unmapped renders as 0xNNNN.
+const ZB_ATTRS={
+  '0000':{'0000':'ZCLVersion','0001':'AppVersion','0004':'ManufacturerName','0005':'ModelIdentifier','0007':'PowerSource'},
+  '0001':{'0020':'BatteryVoltage','0021':'BatteryPercentage'},
+  '0006':{'0000':'OnOff','4001':'OnTime','4002':'OffWaitTime'},
+  '0008':{'0000':'CurrentLevel'},
+  '0201':{'0000':'LocalTemperature','0011':'OccupiedCoolingSetpoint','0012':'OccupiedHeatingSetpoint','001C':'SystemMode'},
+  '0300':{'0000':'CurrentHue','0001':'CurrentSaturation','0003':'CurrentX','0004':'CurrentY','0007':'ColorTempMireds','4000':'EnhancedCurrentHue'},
+  '0400':{'0000':'MeasuredValue'},'0402':{'0000':'MeasuredValue'},'0403':{'0000':'MeasuredValue'},'0405':{'0000':'MeasuredValue'},
+  '0406':{'0000':'Occupancy'},
+  '0500':{'0000':'ZoneState','0001':'ZoneType','0002':'ZoneStatus'},
+  '0702':{'0000':'CurrentSummationDelivered','0400':'InstantaneousDemand'},
+  '0B04':{'0505':'RMSVoltage','0508':'RMSCurrent','050B':'ActivePower'}
+};
+
+// ZCL status codes (Default Response etc.). Standard names.
+const ZB_STATUS={
+  '00':'SUCCESS','01':'FAILURE','7E':'NOT_AUTHORIZED','7F':'RESERVED_FIELD_NOT_ZERO',
+  '80':'MALFORMED_COMMAND','81':'UNSUP_CLUSTER_COMMAND','82':'UNSUP_GENERAL_COMMAND',
+  '83':'UNSUP_MANUF_CLUSTER_COMMAND','84':'UNSUP_MANUF_GENERAL_COMMAND','85':'INVALID_FIELD',
+  '86':'UNSUPPORTED_ATTRIBUTE','87':'INVALID_VALUE','88':'READ_ONLY','89':'INSUFFICIENT_SPACE',
+  '8A':'DUPLICATE_EXISTS','8B':'NOT_FOUND','8C':'UNREPORTABLE_ATTRIBUTE','8D':'INVALID_DATA_TYPE',
+  '8E':'INVALID_SELECTOR','94':'TIMEOUT','C3':'UNSUPPORTED_CLUSTER'
+};
+
+// Normalize one payload byte (string like "0a"/"0x0A" or a number) to 2-char uppercase hex.
+function zbHx2(x){
+  if(x==null)return'';
+  if(typeof x==='number')return(x&0xFF).toString(16).toUpperCase().padStart(2,'0');
+  return String(x).trim().replace(/^0x/i,'').toUpperCase().padStart(2,'0');
+}
+function zb4(id){return String(id||'').toUpperCase().replace(/^0X/,'').padStart(4,'0')}
+
+// Parse a ZCL frame (payload = array of hex-string bytes). Returns a decoded header or null.
+// Handles the manufacturer-specific offset (2-byte mfr code between frame control and TSN).
+function rcZbParseZcl(payload,clusterId){
+  if(!Array.isArray(payload)||!payload.length)return null;
+  const b=payload.map(zbHx2);
+  const fc=parseInt(b[0],16);
+  if(isNaN(fc))return null;
+  const global=(fc&0x03)===0;
+  const mfrSpecific=!!(fc&0x04);
+  const dir=(fc&0x08)?1:0;                 // 1 = server->client, 0 = client->server
+  const disableDefault=!!(fc&0x10);
+  const cluster=zb4(clusterId);
+  let i=1,mfrCode=null;
+  if(mfrSpecific){
+    if(b.length<3)return{fc,global,mfrSpecific,dir,disableDefault,mfrCode:null,tsn:null,cmd:null,cluster,body:[],raw:b,truncated:true};
+    mfrCode=(b[2]+b[1]).toUpperCase();     // little-endian -> big-endian
+    i=3;
+  }
+  const tsn=b.length>i?b[i++]:null;
+  const cmd=b.length>i?b[i++]:null;
+  const body=b.slice(i);
+  return{fc,global,mfrSpecific,dir,disableDefault,mfrCode,tsn,cmd,cluster,body,raw:b,truncated:(tsn==null||cmd==null)};
+}
+
+// Friendly cluster-command name (tries the frame's direction first, then the other). Null if unknown.
+function zbClusterCmdName(cluster,code,dir){
+  const cl=ZB_CLUSTER_CMDS[zb4(cluster)];if(!cl)return null;
+  const pri=dir?'s2c':'c2s',alt=dir?'c2s':'s2c';
+  return(cl[pri]&&cl[pri][code])||(cl[alt]&&cl[alt][code])||null;
+}
+// "Report Attributes (0x0A)" / "On (0x01)" / "0x42" (unknown).
+function resolveCmd(zcl){
+  if(!zcl||zcl.cmd==null)return'';
+  const c=zcl.cmd;
+  const name=zcl.global?ZB_GLOBAL_CMDS[c]:zbClusterCmdName(zcl.cluster,c,zcl.dir);
+  return name?name+' (0x'+c+')':'0x'+c;
+}
+
+// Direction arrow for the Command column. Device is the cluster server by default; for OTA (0019) the device is the client.
+function rcZbDirArrow(zcl){
+  if(!zcl)return'';
+  const deviceIsClient=(zcl.cluster==='0019');
+  const fromDevice=deviceIsClient?(zcl.dir===0):(zcl.dir===1);
+  return fromDevice?'←hub':'→dev';   // <-hub = device->hub ; ->dev = hub->device
+}
+
+// Attribute friendly name (with/without the hex suffix).
+function zbAttrName(cluster,attr){const cl=ZB_ATTRS[zb4(cluster)];const k=zb4(attr);return(cl&&cl[k])||('0x'+k)}
+function zbAttrLabel(cluster,attr){const cl=ZB_ATTRS[zb4(cluster)];const k=zb4(attr);const n=cl&&cl[k];return n?n+' (0x'+k+')':'0x'+k}
+
+// Format a typed value. valBytes are little-endian hex-string bytes (length prefix already stripped for strings).
+function rcZbFormatValue(kind,valBytes){
+  if(!valBytes.length)return'';
+  let be='';for(let i=valBytes.length-1;i>=0;i--)be+=valBytes[i];   // LE -> BE hex
+  switch(kind){
+    case'bool':{const v=parseInt(valBytes[0],16);return v===0?'false':v===1?'true':'0x'+valBytes[0]}
+    case'uint':return BigInt('0x'+be).toString();
+    case'int':{const bits=valBytes.length*8;let v=BigInt('0x'+be);const half=1n<<BigInt(bits-1);if(v>=half)v-=(1n<<BigInt(bits));return v.toString()}
+    case'enum':case'map':case'hex':return'0x'+be;
+    case'float':{const buf=new ArrayBuffer(valBytes.length),dv=new DataView(buf);for(let i=0;i<valBytes.length;i++)dv.setUint8(i,parseInt(valBytes[i],16));return String(valBytes.length===4?dv.getFloat32(0,true):dv.getFloat64(0,true))}
+    case'string':{let s='';for(const x of valBytes){const c=parseInt(x,16);s+=(c>=32&&c<127)?String.fromCharCode(c):'.'}return JSON.stringify(s)}
+    case'octstr':return'0x'+valBytes.join('');
+    default:return'0x'+be;
+  }
+}
+
+// Walk an attribute-record list. isReadResp => Read Attributes Response layout (has a status byte).
+// Returns [{attr, type, typeName, value, status?, unknownType?}]. Stops cleanly on truncation/unknown type.
+function rcZbDecodeAttrs(body,isReadResp){
+  const out=[];let i=0;
+  while(i+2<=body.length){
+    const attr=(body[i+1]+body[i]).toUpperCase();i+=2;
+    if(isReadResp){
+      if(i>=body.length)break;
+      const status=body[i++];
+      if(status!=='00'){out.push({attr,status,value:null,type:null});continue}
+    }
+    if(i>=body.length)break;
+    const type=body[i++].toUpperCase();
+    const dt=ZB_DTYPE[type];
+    if(!dt){out.push({attr,type,value:null,unknownType:true});break}   // unknown length: cannot realign
+    let valBytes;
+    if(dt.len===-1){if(i>=body.length)break;const len=parseInt(body[i++],16);valBytes=body.slice(i,i+len);i+=len}
+    else{valBytes=body.slice(i,i+dt.len);i+=dt.len}
+    out.push({attr,type,typeName:dt.name,value:rcZbFormatValue(dt.kind,valBytes)});
+  }
+  return out;
+}
+
+// Compact + full decoded-payload strings for the Decoded column (short = cell text, full = title/expand).
+function rcZbDecodedSummary(zcl){
+  if(!zcl||zcl.cmd==null||zcl.truncated)return{short:'',full:''};
+  const c=zcl.cmd;
+  if(zcl.global&&(c==='0A'||c==='02'||c==='01')){
+    const attrs=rcZbDecodeAttrs(zcl.body,c==='01');
+    if(!attrs.length)return{short:'',full:''};
+    const shortP=[],fullP=[];
+    for(const a of attrs){
+      const nm=zbAttrName(zcl.cluster,a.attr);
+      if(a.status&&a.status!=='00'){const st=ZB_STATUS[a.status]||('0x'+a.status);shortP.push(nm+':'+st);fullP.push(zbAttrLabel(zcl.cluster,a.attr)+' → '+st+' (0x'+a.status+')')}
+      else if(a.unknownType){shortP.push(nm+'=? [0x'+a.type+']');fullP.push(zbAttrLabel(zcl.cluster,a.attr)+' = ? [unknown type 0x'+a.type+']')}
+      else{shortP.push(nm+'='+a.value);fullP.push(zbAttrLabel(zcl.cluster,a.attr)+' = '+a.value+' ['+a.typeName+']')}
+    }
+    return{short:shortP.join('; '),full:fullP.join('; ')};
+  }
+  if(zcl.global&&c==='0B'){
+    if(zcl.body.length<2)return{short:'',full:''};
+    const rc=zcl.body[0].toUpperCase(),st=zcl.body[1].toUpperCase();
+    const rcName=zbClusterCmdName(zcl.cluster,rc,0),stName=ZB_STATUS[st]||('0x'+st);
+    return{short:(rcName||'0x'+rc)+'→'+stName,
+           full:'Default response: for cmd '+(rcName?rcName+' (0x'+rc+')':'0x'+rc)+' — '+stName+' (0x'+st+')'};
+  }
+  return{short:'',full:''};
+}
+
+// Expanded-row "Decoded" breakdown (frame-control flags + command + payload summary). Browser-only (uses h()/mfrLabel).
+function rcZbDecodeHtml(rawText){
+  let f;try{f=JSON.parse(rawText)}catch(e){return''}
+  const zcl=rcZbParseZcl(f.payload,f.clusterId);if(!zcl)return'';
+  const fcHex='0x'+zcl.fc.toString(16).toUpperCase().padStart(2,'0');
+  const parts=[zcl.global?'Global':'Cluster-specific',zcl.dir?'server→client':'client→server'];
+  if(zcl.mfrSpecific)parts.push('Mfr-specific '+mfrLabel(zcl.mfrCode));
+  if(zcl.disableDefault)parts.push('Default-resp disabled');
+  const lines=['<b>Frame control:</b> '+h(fcHex)+' — '+h(parts.join(', ')),
+               '<b>Command:</b> '+h(rcZbDirArrow(zcl)+' '+(resolveCmd(zcl)||'—'))];
+  if(zcl.truncated)lines.push('<span style="color:var(--warn,#e0a800)">Frame truncated</span>');
+  const sum=rcZbDecodedSummary(zcl);
+  if(sum.full)lines.push('<b>'+((zcl.global&&zcl.cmd==='0B')?'Default response':'Attributes')+':</b> '+h(sum.full));
+  return'<div style="margin-bottom:8px;padding:8px 10px;background:rgba(33,150,243,0.06);border-radius:4px;font-size:11px;line-height:1.6;color:#cfe0f5">'+lines.join('<br>')+'</div>';
+}
+// ===== ZCL DECODE (END) =====
 
 // ===== RADIO CAPTURE: RING BUFFER =====
 // Stores raw frame lines (JSON strings). Bounded by maxBytes. Oldest-out on overflow.
@@ -551,8 +768,7 @@ function buildForumMarkdown(d){
     }
     // Ghost / Failed nodes — split by kind so readers can see how many are truly orphaned
     // vs how many are recoverable (battery/range issues).
-    const ghosts=ghostNodes.filter(g=>(g.kind?g.kind==='ghost':!g.deviceId));
-    const failed=ghostNodes.filter(g=>(g.kind?g.kind==='failed':!!g.deviceId));
+    const {ghosts,failed}=splitGhostNodes(ghostNodes);
     const renderNode=g=>{
       const gName=obfuscate?(g.type||'Z-Wave Node'):g.name;
       const gSig=g.signals?` [${g.signals.join(', ')}]`:'';
@@ -821,13 +1037,6 @@ function renderZigbeeWifiChart(zbCh,containerId,scan){
 }
 
 // ===== HORIZONTAL BAR CHART =====
-// Build id→parentType map from parentChildHierarchy
-function buildParentTypeMap(pch){
-  const m={};
-  if(!pch)return m;
-  pch.forEach(p=>{const t=p.label||p.type||'Unknown';m[p.id]=t;(p.children||[]).forEach(c=>{m[c.id]=t})});
-  return m}
-
 // Aggregate values by type using parent-type map, return sorted top-10 + Other
 function aggregateByType(items,typeMap,idKey,valKey){
   const byType={};
@@ -1050,16 +1259,18 @@ function renderChart(pts,cid,range){
 }
 
 // ===== LIVE RESOURCE CARD RENDERERS =====
+// Free OS Memory metric card — identical across the dash/health/perf resource renderers.
+function resMemCard(r){return mc('Free OS Memory',fmem(r.freeOSMemory),sev(r.freeOSMemory,TH.warnMemMb*1024,TH.critMemMb*1024,true))}
 function renderDashRes(r,d){
   let o='';
-  o+=mc('Free OS Memory',fmem(r.freeOSMemory),sev(r.freeOSMemory,TH.warnMemMb*1024,TH.critMemMb*1024,true));
+  o+=resMemCard(r);
   o+=mc('CPU Load (5m)',r.cpuAvg5min?.toFixed(2)??'N/A',sev(r.cpuAvg5min,TH.warnCpuLoad,TH.critCpuLoad,false));
   if(d.temperature!=null)o+=mc('Temperature',d.temperature.toFixed(1)+'°C',sev(d.temperature,TH.warnTempC,TH.critTempC,false));
   if(d.databaseSize!=null)o+=mc('Database',d.databaseSize+' MB');
   return o}
 function renderHealthRes(r,d){
   let o='';
-  o+=mc('Free OS Memory',fmem(r.freeOSMemory),sev(r.freeOSMemory,TH.warnMemMb*1024,TH.critMemMb*1024,true));
+  o+=resMemCard(r);
   o+=mc('CPU Load (5m)',r.cpuAvg5min?.toFixed(2),sev(r.cpuAvg5min,TH.warnCpuLoad,TH.critCpuLoad,false));
   if(d.cpuInfo){const ci=d.cpuInfo;
     if(ci.processors!=null)o+=mc('Processors',ci.processors);
@@ -1073,7 +1284,7 @@ function renderHealthRes(r,d){
   return o}
 function renderPerfRes(r){
   let o='';
-  o+=mc('Free OS Memory',fmem(r.freeOSMemory),sev(r.freeOSMemory,TH.warnMemMb*1024,TH.critMemMb*1024,true));
+  o+=resMemCard(r);
   o+=mc('CPU Load (5m)',r.cpuAvg5min?.toFixed(2),sev(r.cpuAvg5min,TH.warnCpuLoad,TH.critCpuLoad,false));
   if(r.temperature!=null)o+=mc('Temperature',r.temperature.toFixed(1)+'°C',sev(r.temperature,TH.warnTempC,TH.critTempC,false));
   if(r.databaseSize!=null)o+=mc('Database',r.databaseSize+' MB');
@@ -1313,7 +1524,6 @@ function auditPoll(scanId, total) {
 // ===== TAB: DEVICES =====
 async function rDevices(){const P='p-devices';loading(P);try{
   const d=await api('devices'),s=d.summary,bc=d.byConnectionType||{},ic=d.idsByConnectionType||{},bi=d.byIntegration||{},ii=d.idsByIntegration||{},is=d.idsByStatus||{},src=d.integrationSources||{};
-  const srcBadge=k=>{const s=src[k];return s==='builtin'?'<span class="badge b-builtin">Built-in</span>':s==='community'?'<span class="badge b-community">Community</span>':''};
   let o='';
   o+='<div class="card"><div class="card-h">Device Summary</div><div class="card-b"><div class="metrics">';
   o+=mc('Total',dlistlink(s.totalDevices,true));o+=mc('Active',dlistlink(s.activeDevices,is.active)+' ('+d.inactivityDays+'d)','var(--ok)');
@@ -1324,7 +1534,7 @@ async function rDevices(){const P='p-devices';loading(P);try{
   o+='</div></div></div>';
   // Device Audit
   o+='<div class="card"><div class="card-h">Device Audit</div><div class="card-b">';
-  o+='<div class="muted" style="margin-bottom:8px">Cross-references each device against the apps and dashboards that subscribe to it. Surfaces unreferenced devices, mesh orphans, stuck scheduled jobs and critical devices in a standalone HTML report.</div>';
+  o+='<div class="muted" style="margin-bottom:8px">Cross-references each device against the apps and dashboards that subscribe to it. Surfaces unreferenced devices, mesh orphans and critical devices in a standalone HTML report.</div>';
   o+='<div class="actions" style="margin-bottom:10px"><button class="btn btn-p" id="btnAudit">Generate Device Audit</button></div>';
   o+='<div id="audit-row" style="margin-top:8px"></div>';
   o+='</div></div>';
@@ -1334,7 +1544,7 @@ async function rDevices(){const P='p-devices';loading(P);try{
   Object.entries(bc).forEach(([k,v])=>{if(v>0)o+='<tr><td>'+(CD[k]||k)+'</td><td>'+dlistlink(v,ic[k])+'</td></tr>'});
   o+='</tbody></table></div></div></div>';
   o+='<div class="card"><div class="card-h">Integrations</div><div class="card-b"><div class="tbl-wrap"><table><thead><tr><th>Integration</th><th>Source</th><th>Count</th></tr></thead><tbody>';
-  Object.entries(bi).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{if(v>0)o+='<tr><td>'+h(k)+'</td><td>'+srcBadge(k)+'</td><td>'+dlistlink(v,ii[k])+'</td></tr>'});
+  Object.entries(bi).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{if(v>0)o+='<tr><td>'+h(k)+'</td><td>'+srcBadge(src[k],false)+'</td><td>'+dlistlink(v,ii[k])+'</td></tr>'});
   o+='</tbody></table></div></div></div></div>';
   // R-6 B3 (v5.19.0): compute dt + stale once; reused for both the markup-build phase below and the post-render tbl() init.
   const bt=d.byType||{},it=d.idsByType||{};
@@ -1392,11 +1602,6 @@ async function rApps(){const P='p-apps';loading(P);try{
   document.getElementById(P).innerHTML=o;
   // Installed Apps table
   if(d.allApps&&d.allApps.length){
-    const srcBadge=s=>{
-      if(s==='platform') return'<span class="badge b-platform">Platform</span>';
-      if(s==='community')return'<span class="badge b-community">Community</span>';
-      return'<span class="badge b-builtin">Built-in</span>';
-    };
     const appLink=r=>r.source==='platform'
       ?'<a href="/installedapp/status/'+r.id+'" target="_blank">'+h(r.name)+'</a>'
       :alink(r.id,r.name);
@@ -1415,7 +1620,7 @@ async function rApps(){const P='p-apps';loading(P);try{
     tbl('appsTbl',[
       {l:'App',   f:'name',  r:r=>appLink(r)},
       {l:'Type',  f:'type'},
-      {l:'Source',f:'source',r:r=>srcBadge(r.source)},
+      {l:'Source',f:'source',r:r=>srcBadge(r.source,true)},
       ...menuCol,
       {l:'Role',  f:'level', r:r=>roleStr(r)},
       {l:'Status',f:'disabled',r:r=>r.disabled?'<span class="badge b-crit">Disabled</span>':''}
@@ -1607,9 +1812,7 @@ async function rNetwork(){const P='p-network';loading(P);try{
     // kind=failed -> has device, radio reports failure; try battery/range before excluding
     if(z.ghostNodes&&z.ghostNodes.length){
       const renderRow=g=>{const sig=g.signals&&g.signals.length?'<span style="color:var(--muted);font-size:12px"> ['+g.signals.map(s=>h(s)).join(', ')+']</span>':'';return '<div style="margin:4px 0;color:var(--crit)">'+(g.deviceId?dlink(g.deviceId,'Node '+g.id):h('Node '+g.id))+' &mdash; '+h(g.name||'Unknown')+sig+'</div>'};
-      // Legacy backend without kind field: treat noDeviceId as ghost, anything else as failed.
-      const ghosts=z.ghostNodes.filter(g=>(g.kind?g.kind==='ghost':!g.deviceId));
-      const failed=z.ghostNodes.filter(g=>(g.kind?g.kind==='failed':!!g.deviceId));
+      const {ghosts,failed}=splitGhostNodes(z.ghostNodes);
       if(ghosts.length){
         o+='<div style="margin-top:10px"><div class="alert a-crit">\u26D4 Ghost Nodes: '+ghosts.length+' \u2014 no Hubitat device, safe to force-remove from radio</div>';
         ghosts.forEach(g=>{o+=renderRow(g)});
@@ -1993,14 +2196,9 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
   }
   // App Runtime table
   if(s&&s.appStats){
-    const perfSrcBadge=r=>{
-      if(r.source==='platform') return'<span class="badge b-platform">Platform</span>';
-      if(r.source==='community')return'<span class="badge b-community">Community</span>';
-      return r.source?'<span class="badge b-builtin">Built-in</span>':'';
-    };
     tbl('appStatsTbl',[
       {l:'Name',  f:'name',  r:r=>r.id?'<a href="/installedapp/status/'+r.id+'" target="_blank">'+h(r.name)+'</a>':h(r.name)},
-      {l:'Source',f:'source',r:perfSrcBadge},
+      {l:'Source',f:'source',r:r=>srcBadge(r.source,false)},
       {l:'Total (ms)',f:'total',t:'n'},
       {l:'% Busy',f:'pct',t:'n',r:r=>r.pct!=null?r.pct.toFixed(1)+'%':''},
       {l:'% Total',f:'pctTotal',t:'n',r:r=>r.pctTotal!=null?r.pctTotal.toFixed(3)+'%':''},
@@ -2080,6 +2278,15 @@ function renderComparison(data,elId){
 }
 
 // ===== TAB: SNAPSHOTS =====
+function renderSnapTable(snaps){
+  const rows=snaps.map((s,i)=>({idx:i+1,timestamp:s.timestamp,firmware:s.hubInfo?.firmware||'N/A',
+    devices:s.devices.totalDevices,apps:s.apps.totalApps,memory:s.memory!=null?fmem(s.memory):'N/A',_idx:i}));
+  tbl('snapTbl',[
+    {l:'#',f:'idx',t:'n'},{l:'Timestamp',f:'timestamp'},{l:'Firmware',f:'firmware'},
+    {l:'Devices',f:'devices',t:'n'},{l:'Apps',f:'apps',t:'n'},{l:'Memory',f:'memory'},
+    {l:'',f:'_idx',r:r=>'<button class="btn btn-d" onclick="delSnap('+r._idx+')">\u{1F5D1}</button>'}
+  ],rows,{sc:0,sd:'desc'});
+}
 async function rSnap(){const P='p-snapshots';loading(P);try{
   const d=await api('snapshots');let o='';
   o+='<div class="actions">';
@@ -2107,14 +2314,7 @@ async function rSnap(){const P='p-snapshots';loading(P);try{
     o+='<div id="diffResult" style="margin-top:10px"></div></div></div></div>'}
   document.getElementById(P).innerHTML=o;
   // Render table
-  if(d.snapshots&&d.snapshots.length){
-    const rows=d.snapshots.map((s,i)=>({idx:i+1,timestamp:s.timestamp,firmware:s.hubInfo?.firmware||'N/A',
-      devices:s.devices.totalDevices,apps:s.apps.totalApps,memory:s.memory!=null?fmem(s.memory):'N/A',_idx:i}));
-    tbl('snapTbl',[
-      {l:'#',f:'idx',t:'n'},{l:'Timestamp',f:'timestamp'},{l:'Firmware',f:'firmware'},
-      {l:'Devices',f:'devices',t:'n'},{l:'Apps',f:'apps',t:'n'},{l:'Memory',f:'memory'},
-      {l:'',f:'_idx',r:r=>'<button class="btn btn-d" onclick="delSnap('+r._idx+')">\u{1F5D1}</button>'}
-    ],rows,{sc:0,sd:'desc'})}
+  if(d.snapshots&&d.snapshots.length){renderSnapTable(d.snapshots)}
   // View snapshot handler
   const selView=document.getElementById('selView');
   if(selView)selView.onchange=async()=>{
@@ -2138,7 +2338,7 @@ async function rSnap(){const P='p-snapshots';loading(P);try{
     // Fetch older first (its index is stable; if "now" is selected, creating a new snapshot would shift the older index by 1).
     const olderSnap=await api('snapshot/view?index='+o);
     let newerSnap;
-    if(n==='now'){await post('snapshot/create');drop('snapshots');newerSnap=await api('snapshot/view?index=0')}
+    if(n==='now'){const cr=await post('snapshot/create');if(cr&&cr.success===false)throw new Error(cr.error||'Failed to create live snapshot');drop('snapshots');newerSnap=await api('snapshot/view?index=0')}
     else{newerSnap=await api('snapshot/view?index='+n)}
     if(olderSnap.error||newerSnap.error)throw new Error(olderSnap.error||newerSnap.error);
     const r=computeSnapshotDiff(olderSnap,newerSnap);
@@ -2153,13 +2353,7 @@ async function rSnap(){const P='p-snapshots';loading(P);try{
         if(so)so.innerHTML='<option value="">Select...</option>'+mkOpts(fresh.snapshots);
         const sn=document.getElementById('selNewer');
         if(sn)sn.innerHTML='<option value="">Select...</option><option value="now">Now (create new)</option>'+mkOpts(fresh.snapshots);
-        if(fresh.snapshots&&fresh.snapshots.length&&document.getElementById('snapTbl')){
-          const rows=fresh.snapshots.map((s,i)=>({idx:i+1,timestamp:s.timestamp,firmware:s.hubInfo?.firmware||'N/A',
-            devices:s.devices.totalDevices,apps:s.apps.totalApps,memory:s.memory!=null?fmem(s.memory):'N/A',_idx:i}));
-          tbl('snapTbl',[{l:'#',f:'idx',t:'n'},{l:'Timestamp',f:'timestamp'},{l:'Firmware',f:'firmware'},
-            {l:'Devices',f:'devices',t:'n'},{l:'Apps',f:'apps',t:'n'},{l:'Memory',f:'memory'},
-            {l:'',f:'_idx',r:r=>'<button class="btn btn-d" onclick="delSnap('+r._idx+')">\u{1F5D1}</button>'}
-          ],rows,{sc:0,sd:'desc'})}
+        if(fresh.snapshots&&fresh.snapshots.length&&document.getElementById('snapTbl')){renderSnapTable(fresh.snapshots)}
       }).catch(()=>{})}}
     catch(e){document.getElementById('diffResult').innerHTML='<div class="alert a-crit">Failed to compare: '+h(e.message)+'</div>'}
     btnDiff.disabled=false;btnDiff.textContent='Compare'};
@@ -2375,56 +2569,56 @@ function renderDiff(d,elId){
   const dc=d.deviceChanges;const dd=dc.newerTotal-dc.olderTotal;
   o+='<div style="margin:8px 0"><b>Devices:</b> '+dc.olderTotal+' &rarr; '+dc.newerTotal+(dd!==0?' <span style="color:'+(dd>0?'var(--ok)':'var(--crit)')+'">('+( dd>0?'+':'')+dd+')</span>':'')+'</div>';
   if(dc.added.length){o+='<div class="diff-add" style="margin:4px 0"><b>Added ('+dc.added.length+'):</b></div>';
-    dc.added.forEach(d=>{o+='<div style="margin:2px 0 2px 16px" class="diff-add">+ '+dlink(d.id,d.name)+' ('+h(d.integration||d.connectionType||'')+')</div>'})}
+    dc.added.forEach(d=>{o+='<div class="diff-item diff-add">+ '+dlink(d.id,d.name)+' ('+h(d.integration||d.connectionType||'')+')</div>'})}
   if(dc.removed.length){o+='<div class="diff-rem" style="margin:4px 0"><b>Removed ('+dc.removed.length+'):</b></div>';
-    dc.removed.forEach(d=>{o+='<div style="margin:2px 0 2px 16px" class="diff-rem">- '+dlink(d.id,d.name)+' ('+h(d.integration||d.connectionType||'')+')</div>'})}
+    dc.removed.forEach(d=>{o+='<div class="diff-item diff-rem">- '+dlink(d.id,d.name)+' ('+h(d.integration||d.connectionType||'')+')</div>'})}
   if(dc.changed.length){o+='<div class="diff-chg" style="margin:4px 0"><b>Changed ('+dc.changed.length+'):</b></div>';
     dc.changed.forEach(d=>{const ch=d.changes.map(c=>c.field+': '+c.from+' \u2192 '+c.to).join(', ');
-      o+='<div style="margin:2px 0 2px 16px" class="diff-chg">~ '+dlink(d.id,d.name)+' &mdash; '+h(ch)+'</div>'})}
+      o+='<div class="diff-item diff-chg">~ '+dlink(d.id,d.name)+' &mdash; '+h(ch)+'</div>'})}
   // Protocol changes
   if(d.connectionTypeChanges&&d.connectionTypeChanges.length){o+='<div style="margin:8px 0"><b>Connection Type Changes:</b></div>';
-    d.connectionTypeChanges.forEach(p=>{const dd=p.to-p.from;o+='<div style="margin:2px 0 2px 16px">'+h(p.connectionType)+': '+p.from+' \u2192 '+p.to+' <span style="color:'+(dd>0?'var(--ok)':'var(--crit)')+'">('+( dd>0?'+':'')+dd+')</span></div>'})}
+    d.connectionTypeChanges.forEach(p=>{const dd=p.to-p.from;o+='<div class="diff-item">'+h(p.connectionType)+': '+p.from+' \u2192 '+p.to+' <span style="color:'+(dd>0?'var(--ok)':'var(--crit)')+'">('+( dd>0?'+':'')+dd+')</span></div>'})}
   if(d.integrationChanges&&d.integrationChanges.length){o+='<div style="margin:8px 0"><b>Integration Changes:</b></div>';
-    d.integrationChanges.forEach(p=>{const dd=p.to-p.from;o+='<div style="margin:2px 0 2px 16px">'+h(p.integration)+': '+p.from+' \u2192 '+p.to+' <span style="color:'+(dd>0?'var(--ok)':'var(--crit)')+'">('+( dd>0?'+':'')+dd+')</span></div>'})}
+    d.integrationChanges.forEach(p=>{const dd=p.to-p.from;o+='<div class="diff-item">'+h(p.integration)+': '+p.from+' \u2192 '+p.to+' <span style="color:'+(dd>0?'var(--ok)':'var(--crit)')+'">('+( dd>0?'+':'')+dd+')</span></div>'})}
   // App changes
   const ac=d.appChanges;const ad=ac.newerTotal-ac.olderTotal;
   o+='<div style="margin:8px 0"><b>Apps:</b> '+ac.olderTotal+' \u2192 '+ac.newerTotal+(ad!==0?' <span style="color:'+(ad>0?'var(--ok)':'var(--crit)')+'">('+( ad>0?'+':'')+ad+')</span>':'')+'</div>';
-  if(ac.added&&ac.added.length)ac.added.forEach(a=>o+='<div style="margin:2px 0 2px 16px" class="diff-add">+ '+alink(a.id,a.label||a.name)+'</div>');
-  if(ac.removed&&ac.removed.length)ac.removed.forEach(a=>o+='<div style="margin:2px 0 2px 16px" class="diff-rem">- '+h(a.label||a.name)+'</div>');
+  if(ac.added&&ac.added.length)ac.added.forEach(a=>o+='<div class="diff-item diff-add">+ '+alink(a.id,a.label||a.name)+'</div>');
+  if(ac.removed&&ac.removed.length)ac.removed.forEach(a=>o+='<div class="diff-item diff-rem">- '+h(a.label||a.name)+'</div>');
   if(ac.changed&&ac.changed.length){o+='<div class="diff-chg" style="margin:4px 0"><b>Status Changed ('+ac.changed.length+'):</b></div>';
-    ac.changed.forEach(a=>o+='<div style="margin:2px 0 2px 16px" class="diff-chg">~ '+alink(a.id,a.label||a.name)+' &mdash; '+(a.disabled?'enabled \u2192 disabled':'disabled \u2192 enabled')+'</div>')}
+    ac.changed.forEach(a=>o+='<div class="diff-item diff-chg">~ '+alink(a.id,a.label||a.name)+' &mdash; '+(a.disabled?'enabled \u2192 disabled':'disabled \u2192 enabled')+'</div>')}
   // Network config changes
   const nc=d.networkChanges||{};
   if(nc.zigbeeChannel)o+='<div style="margin:8px 0"><b>Zigbee Channel:</b> '+(nc.zigbeeChannel.from??'?')+' \u2192 '+(nc.zigbeeChannel.to??'?')+'</div>';
   if(nc.zwaveRegion)o+='<div style="margin:8px 0"><b>Z-Wave Region:</b> '+h(nc.zwaveRegion.from||'?')+' \u2192 '+h(nc.zwaveRegion.to||'?')+'</div>';
   if(nc.matterEnabled!=null)o+='<div style="margin:8px 0"><b>Matter:</b> '+(nc.matterEnabled.from?'enabled':'disabled')+' \u2192 '+(nc.matterEnabled.to?'enabled':'disabled')+'</div>';
   if(nc.hubMeshPeers){
-    if(nc.hubMeshPeers.added&&nc.hubMeshPeers.added.length)nc.hubMeshPeers.added.forEach(p=>o+='<div style="margin:2px 0 2px 16px" class="diff-add">+ Hub Mesh peer: '+h(p)+'</div>');
-    if(nc.hubMeshPeers.removed&&nc.hubMeshPeers.removed.length)nc.hubMeshPeers.removed.forEach(p=>o+='<div style="margin:2px 0 2px 16px" class="diff-rem">- Hub Mesh peer: '+h(p)+'</div>')}
+    if(nc.hubMeshPeers.added&&nc.hubMeshPeers.added.length)nc.hubMeshPeers.added.forEach(p=>o+='<div class="diff-item diff-add">+ Hub Mesh peer: '+h(p)+'</div>');
+    if(nc.hubMeshPeers.removed&&nc.hubMeshPeers.removed.length)nc.hubMeshPeers.removed.forEach(p=>o+='<div class="diff-item diff-rem">- Hub Mesh peer: '+h(p)+'</div>')}
   // Storage
   const os=d.older?.storage,ns=d.newer?.storage,sc=d.storageChanges||{};
   if(os||ns||Object.keys(sc).length){
     const fmtSt=st=>st?(st.fileCount+' files'+(st.usedBytes!=null?', '+fmem(st.usedBytes)+' used':'')+(st.freeSpace!=null?', '+fmem(st.freeSpace)+' free':'')):'N/A';
     o+='<div style="margin:8px 0"><b>File Manager:</b> '+fmtSt(os)+' → '+fmtSt(ns)+'</div>';
-    if(sc.fileCount)o+='<div style="margin:2px 0 2px 16px"'+(sc.fileCount.to>sc.fileCount.from?' class="diff-add"':sc.fileCount.to<sc.fileCount.from?' class="diff-rem"':'')+'>Files: '+sc.fileCount.from+' → '+sc.fileCount.to+'</div>';
-    if(sc.freeSpace)o+='<div style="margin:2px 0 2px 16px"'+(sc.freeSpace.to>sc.freeSpace.from?' class="diff-add"':sc.freeSpace.to<sc.freeSpace.from?' class="diff-rem"':'')+'>Free Space: '+fmem(sc.freeSpace.from)+' → '+fmem(sc.freeSpace.to)+'</div>'}
+    if(sc.fileCount)o+='<div class="diff-item'+(sc.fileCount.to>sc.fileCount.from?' diff-add':sc.fileCount.to<sc.fileCount.from?' diff-rem':'')+'">Files: '+sc.fileCount.from+' → '+sc.fileCount.to+'</div>';
+    if(sc.freeSpace)o+='<div class="diff-item'+(sc.freeSpace.to>sc.freeSpace.from?' diff-add':sc.freeSpace.to<sc.freeSpace.from?' diff-rem':'')+'">Free Space: '+fmem(sc.freeSpace.from)+' → '+fmem(sc.freeSpace.to)+'</div>'}
   // Backups (v5.13.0)
   const bc=d.backupsChanges;
   if(bc&&Object.keys(bc).length){o+='<div style="margin:8px 0"><b>Backups:</b></div>';
-    if(bc.localCount){const dd=bc.localCount.to-bc.localCount.from;const cls=bc.localCount.to<bc.localCount.from?'diff-rem':bc.localCount.to>bc.localCount.from?'diff-add':'';o+='<div style="margin:2px 0 2px 16px" class="'+cls+'">Local backup count: '+bc.localCount.from+' → '+bc.localCount.to+(dd!==0?' ('+(dd>0?'+':'')+dd+')':'')+'</div>'}
-    if(bc.latestLocal)o+='<div style="margin:2px 0 2px 16px">Latest local backup: '+h(bc.latestLocal.from||'(none)')+' → '+h(bc.latestLocal.to||'(none)')+'</div>';
-    if(bc.cloudThisHubCount){const dd=bc.cloudThisHubCount.to-bc.cloudThisHubCount.from;const cls=bc.cloudThisHubCount.to<bc.cloudThisHubCount.from?'diff-rem':bc.cloudThisHubCount.to>bc.cloudThisHubCount.from?'diff-add':'';o+='<div style="margin:2px 0 2px 16px" class="'+cls+'">Cloud backups (this hub): '+bc.cloudThisHubCount.from+' → '+bc.cloudThisHubCount.to+(dd!==0?' ('+(dd>0?'+':'')+dd+')':'')+'</div>'}
-    if(bc.cloudBackupEntitlement)o+='<div style="margin:2px 0 2px 16px" class="diff-chg">Cloud backup entitlement: '+(bc.cloudBackupEntitlement.from?'yes':'no')+' → '+(bc.cloudBackupEntitlement.to?'yes':'no')+'</div>';
-    if(bc.cloudRestoreEntitlement)o+='<div style="margin:2px 0 2px 16px" class="diff-chg">Cloud restore entitlement: '+(bc.cloudRestoreEntitlement.from?'yes':'no')+' → '+(bc.cloudRestoreEntitlement.to?'yes':'no')+'</div>';
+    if(bc.localCount){const dd=bc.localCount.to-bc.localCount.from;const cls=bc.localCount.to<bc.localCount.from?'diff-rem':bc.localCount.to>bc.localCount.from?'diff-add':'';o+='<div class="diff-item '+cls+'">Local backup count: '+bc.localCount.from+' → '+bc.localCount.to+(dd!==0?' ('+(dd>0?'+':'')+dd+')':'')+'</div>'}
+    if(bc.latestLocal)o+='<div class="diff-item">Latest local backup: '+h(bc.latestLocal.from||'(none)')+' → '+h(bc.latestLocal.to||'(none)')+'</div>';
+    if(bc.cloudThisHubCount){const dd=bc.cloudThisHubCount.to-bc.cloudThisHubCount.from;const cls=bc.cloudThisHubCount.to<bc.cloudThisHubCount.from?'diff-rem':bc.cloudThisHubCount.to>bc.cloudThisHubCount.from?'diff-add':'';o+='<div class="diff-item '+cls+'">Cloud backups (this hub): '+bc.cloudThisHubCount.from+' → '+bc.cloudThisHubCount.to+(dd!==0?' ('+(dd>0?'+':'')+dd+')':'')+'</div>'}
+    if(bc.cloudBackupEntitlement)o+='<div class="diff-item diff-chg">Cloud backup entitlement: '+(bc.cloudBackupEntitlement.from?'yes':'no')+' → '+(bc.cloudBackupEntitlement.to?'yes':'no')+'</div>';
+    if(bc.cloudRestoreEntitlement)o+='<div class="diff-item diff-chg">Cloud restore entitlement: '+(bc.cloudRestoreEntitlement.from?'yes':'no')+' → '+(bc.cloudRestoreEntitlement.to?'yes':'no')+'</div>';
   }
   // Security (v5.13.0)
   const secCh=d.securityChanges;
   if(secCh&&Object.keys(secCh).length){o+='<div style="margin:8px 0"><b>Security:</b></div>';
-    if(secCh.limitedAccess)o+='<div style="margin:2px 0 2px 16px" class="diff-chg">Limited Access: '+(secCh.limitedAccess.from?'enabled':'off')+' → '+(secCh.limitedAccess.to?'enabled':'off')+'</div>';
-    if(secCh.limitedAddresses)o+='<div style="margin:2px 0 2px 16px" class="diff-chg">Allowed IPs: ['+secCh.limitedAddresses.from.map(h).join(', ')+'] → ['+secCh.limitedAddresses.to.map(h).join(', ')+']</div>';
-    if(secCh.allowedSubnets)o+='<div style="margin:2px 0 2px 16px" class="diff-chg">Allowed Subnets: ['+secCh.allowedSubnets.from.map(h).join(', ')+'] → ['+secCh.allowedSubnets.to.map(h).join(', ')+']</div>';
-    if(secCh.dnsFallback)o+='<div style="margin:2px 0 2px 16px" class="diff-chg">DNS Fallback: '+(secCh.dnsFallback.from?'on':'off')+' → '+(secCh.dnsFallback.to?'on':'off')+'</div>';
-    if(secCh.cloudController)o+='<div style="margin:2px 0 2px 16px" class="diff-chg">Hubitat Cloud: '+h(secCh.cloudController.from||'?')+' → '+h(secCh.cloudController.to||'?')+'</div>';
+    if(secCh.limitedAccess)o+='<div class="diff-item diff-chg">Limited Access: '+(secCh.limitedAccess.from?'enabled':'off')+' → '+(secCh.limitedAccess.to?'enabled':'off')+'</div>';
+    if(secCh.limitedAddresses)o+='<div class="diff-item diff-chg">Allowed IPs: ['+secCh.limitedAddresses.from.map(h).join(', ')+'] → ['+secCh.limitedAddresses.to.map(h).join(', ')+']</div>';
+    if(secCh.allowedSubnets)o+='<div class="diff-item diff-chg">Allowed Subnets: ['+secCh.allowedSubnets.from.map(h).join(', ')+'] → ['+secCh.allowedSubnets.to.map(h).join(', ')+']</div>';
+    if(secCh.dnsFallback)o+='<div class="diff-item diff-chg">DNS Fallback: '+(secCh.dnsFallback.from?'on':'off')+' → '+(secCh.dnsFallback.to?'on':'off')+'</div>';
+    if(secCh.cloudController)o+='<div class="diff-item diff-chg">Hubitat Cloud: '+h(secCh.cloudController.from||'?')+' → '+h(secCh.cloudController.to||'?')+'</div>';
   }
   // Network settings (NTP, load threshold) — extends networkChanges block
   if(nc.ntpServer)o+='<div style="margin:8px 0"><b>NTP Server:</b> '+h(nc.ntpServer.from||'(none)')+' → '+h(nc.ntpServer.to||'(none)')+'</div>';
@@ -2433,18 +2627,18 @@ function renderDiff(d,elId){
   const cc=d.codeChanges;
   if(cc&&Object.keys(cc).length){o+='<div style="margin:8px 0"><b>User Code:</b></div>';
     if(cc.bundles){
-      (cc.bundles.added||[]).forEach(b=>o+='<div style="margin:2px 0 2px 16px" class="diff-add">+ Bundle: '+h(b.namespace+'/'+b.name)+'</div>');
-      (cc.bundles.removed||[]).forEach(b=>o+='<div style="margin:2px 0 2px 16px" class="diff-rem">- Bundle: '+h(b.namespace+'/'+b.name)+'</div>');
+      (cc.bundles.added||[]).forEach(b=>o+='<div class="diff-item diff-add">+ Bundle: '+h(b.namespace+'/'+b.name)+'</div>');
+      (cc.bundles.removed||[]).forEach(b=>o+='<div class="diff-item diff-rem">- Bundle: '+h(b.namespace+'/'+b.name)+'</div>');
     }
     if(cc.libraries){
-      (cc.libraries.added||[]).forEach(l=>o+='<div style="margin:2px 0 2px 16px" class="diff-add">+ Library: '+h(l.namespace+'/'+l.name)+(l.version?' v'+l.version:'')+'</div>');
-      (cc.libraries.removed||[]).forEach(l=>o+='<div style="margin:2px 0 2px 16px" class="diff-rem">- Library: '+h(l.namespace+'/'+l.name)+(l.version?' v'+l.version:'')+'</div>');
-      (cc.libraries.versionChanged||[]).forEach(l=>o+='<div style="margin:2px 0 2px 16px" class="diff-chg">~ Library: '+h(l.namespace+'/'+l.name)+' v'+l.from+' → v'+l.to+'</div>');
+      (cc.libraries.added||[]).forEach(l=>o+='<div class="diff-item diff-add">+ Library: '+h(l.namespace+'/'+l.name)+(l.version?' v'+l.version:'')+'</div>');
+      (cc.libraries.removed||[]).forEach(l=>o+='<div class="diff-item diff-rem">- Library: '+h(l.namespace+'/'+l.name)+(l.version?' v'+l.version:'')+'</div>');
+      (cc.libraries.versionChanged||[]).forEach(l=>o+='<div class="diff-item diff-chg">~ Library: '+h(l.namespace+'/'+l.name)+' v'+l.from+' → v'+l.to+'</div>');
     }
     if(cc.hubVariables){
-      (cc.hubVariables.added||[]).forEach(v=>o+='<div style="margin:2px 0 2px 16px" class="diff-add">+ Hub Variable: '+h(v.name)+(v.type?' ('+h(v.type)+')':'')+'</div>');
-      (cc.hubVariables.removed||[]).forEach(v=>o+='<div style="margin:2px 0 2px 16px" class="diff-rem">- Hub Variable: '+h(v.name)+(v.type?' ('+h(v.type)+')':'')+'</div>');
-      (cc.hubVariables.typeChanged||[]).forEach(v=>o+='<div style="margin:2px 0 2px 16px" class="diff-chg">~ Hub Variable: '+h(v.name)+' '+h(v.from)+' → '+h(v.to)+'</div>');
+      (cc.hubVariables.added||[]).forEach(v=>o+='<div class="diff-item diff-add">+ Hub Variable: '+h(v.name)+(v.type?' ('+h(v.type)+')':'')+'</div>');
+      (cc.hubVariables.removed||[]).forEach(v=>o+='<div class="diff-item diff-rem">- Hub Variable: '+h(v.name)+(v.type?' ('+h(v.type)+')':'')+'</div>');
+      (cc.hubVariables.typeChanged||[]).forEach(v=>o+='<div class="diff-item diff-chg">~ Hub Variable: '+h(v.name)+' '+h(v.from)+' → '+h(v.to)+'</div>');
     }
   }
   el.innerHTML=o;
@@ -2602,7 +2796,7 @@ const RC={
     lastAggregateAt:0,
     // Per-table sort state for aggregate tables; persisted across re-renders so the user's column choice survives 1Hz ticks.
     // Top tables default to descending Frames (col 1); OTA defaults to descending Frames (col 2).
-    aggSort:{top1:{sc:1,sd:'desc'},top5:{sc:1,sd:'desc'},ota:{sc:2,sd:'desc'}}
+    aggSort:{top1:{sc:1,sd:'desc'},top5:{sc:1,sd:'desc'},ota:{sc:2,sd:'desc'},lqi:{sc:3,sd:'asc'},rssi:{sc:3,sd:'asc'}}
   }
 };
 
@@ -2673,14 +2867,9 @@ function renderZigbeeSubTab(){
   // Capture clicks on aggregate-table headers so user's sort choice survives the 1Hz re-render.
   document.getElementById('rc-zb-aggregates').addEventListener('click',rcZbHandleAggSortClick);
   rcZbUpdateBadge();
-  ['rc-zb-f-cluster','rc-zb-f-cmd','rc-zb-f-dni','rc-zb-f-mfr','rc-zb-f-minlqi','rc-zb-f-maxrssi'].forEach(id=>{
-    const el=document.getElementById(id);
-    if(el)el.addEventListener('input',()=>{rcZbReadFilters();rcZbRenderTail()});
-  });
-  document.getElementById('rc-zb-f-clear').addEventListener('click',()=>{
-    ['rc-zb-f-cluster','rc-zb-f-cmd','rc-zb-f-dni','rc-zb-f-mfr','rc-zb-f-minlqi','rc-zb-f-maxrssi'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
-    rcZbReadFilters();rcZbRenderTail();
-  });
+  // Single substring filter, 150 ms debounce — matches the tbl() filter UX used elsewhere in the SPA.
+  const fq=document.getElementById('rc-zb-f-q');
+  if(fq){let t=null;fq.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(()=>{rcZbReadFilters();rcZbRenderTail()},150)})}
   rcZbReadFilters();
 }
 
@@ -2808,17 +2997,21 @@ function rcZbDniHex(id){
 
 function rcZbFrameToRow(text){
   let f;try{f=JSON.parse(text)}catch(e){return null}
+  const zcl=rcZbParseZcl(f.payload,f.clusterId);
+  const sum=zcl?rcZbDecodedSummary(zcl):{short:'',full:''};
   return{
     time:f.time||'',
     id:rcZbDniHex(f.id),
     name:f.name||'',
     _deviceId:f.deviceId,
     cluster:f.clusterId?clusterLabel(f.clusterId):'',
-    cmd:f.payload&&f.payload.length>2?'0x'+f.payload[2]:'',
-    mfr:(f.clusterId==='0019'&&f.payload&&f.payload.length>=6)?mfrLabel((f.payload[5]+f.payload[4]).toUpperCase()):'',
+    cmd:zcl?resolveCmd(zcl):'',                       // decoded, offset-correct command
+    dirArrow:zcl?rcZbDirArrow(zcl):'',                // ←hub / →dev, folded into the Command cell
+    mfrMark:zcl&&zcl.mfrSpecific?' (mfr)':'',
+    decoded:sum.short,                                // compact payload decode for the Decoded column
+    decodedFull:sum.full,                             // full form for the cell title tooltip
     lqi:f.lastHopLqi!=null?f.lastHopLqi:'',
     rssi:f.lastHopRssi!=null?f.lastHopRssi:'',
-    payload:(f.payload||[]).slice(0,32).join(' ')+((f.payload||[]).length>32?' …':''),
     _raw:text
   };
 }
@@ -2826,57 +3019,37 @@ function rcZbFrameToRow(text){
 function rcZbFilterCard(){
   return `
     <div class="card" style="margin-bottom:12px">
-      <h3 style="margin-top:0">Filters <span style="font-weight:normal;font-size:12px;opacity:.7">(live tail only; recording stays unfiltered. Match by hex code or friendly name; comma-separate alternatives.)</span></h3>
-      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:13px">
-        <label>Cluster: <input id="rc-zb-f-cluster" placeholder="0019, OTA, On/Off" style="width:160px"></label>
-        <label>Cmd byte: <input id="rc-zb-f-cmd" placeholder="e.g. 02" style="width:80px"></label>
-        <label>DNI regex: <input id="rc-zb-f-dni" placeholder="e.g. ^0x78" style="width:120px"></label>
-        <label>Manufacturer: <input id="rc-zb-f-mfr" placeholder="100B, Signify" style="width:160px"></label>
-        <label>Min LQI: <input id="rc-zb-f-minlqi" type="number" placeholder="any" style="width:80px"></label>
-        <label>Max RSSI: <input id="rc-zb-f-maxrssi" type="number" placeholder="any" style="width:80px"></label>
-        <button id="rc-zb-f-clear">Clear filters</button>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input id="rc-zb-f-q" type="text" placeholder="Filter live tail… (name, DNI, cluster, command, decoded value, LQI, RSSI)" style="flex:1;min-width:260px;padding:6px 10px">
+        <span style="font-size:12px;opacity:.7">Substring match across all columns; space-separated terms all must match. Filters the live tail only — the recording stays full-fidelity.</span>
       </div>
     </div>`;
 }
 
 function rcZbReadFilters(){
-  const z=RC.zigbee;const get=id=>{const el=document.getElementById(id);return el?el.value.trim():''};
-  // Substring tokens, lowercased, with any "0x" prefix stripped. Empty tokens dropped.
-  const tokens=v=>{if(!v)return null;const t=v.split(/[,\s]+/).map(s=>s.toLowerCase().replace(/^0x/,'')).filter(Boolean);return t.length?t:null};
-  const csvByte=v=>v?v.split(/[,\s]+/).map(s=>s.toLowerCase().replace(/^0x/,'').padStart(2,'0')).filter(Boolean):null;
-  let dniRe=null;const dniStr=get('rc-zb-f-dni');
-  if(dniStr){try{dniRe=new RegExp(dniStr,'i')}catch(e){dniRe=null}}
-  z.filters={
-    cluster:tokens(get('rc-zb-f-cluster')),
-    cmd:csvByte(get('rc-zb-f-cmd')),
-    dni:dniRe,
-    mfr:tokens(get('rc-zb-f-mfr')),
-    minLqi:get('rc-zb-f-minlqi')?parseInt(get('rc-zb-f-minlqi'),10):null,
-    maxRssi:get('rc-zb-f-maxrssi')?parseInt(get('rc-zb-f-maxrssi'),10):null
-  };
+  const el=document.getElementById('rc-zb-f-q');
+  const v=el?el.value.trim().toLowerCase():'';
+  // Space-separated terms, AND-matched against a per-frame search string. Null = no filter.
+  RC.zigbee.filters=v?{q:v.split(/\s+/).filter(Boolean)}:null;
+}
+
+// Compose the same text the live tail shows for a frame, so the single filter box matches what the user sees.
+function rcZbFrameHaystack(frame){
+  const zcl=rcZbParseZcl(frame.payload,frame.clusterId);
+  const sum=zcl?rcZbDecodedSummary(zcl):{short:''};
+  return [
+    frame.time, frame.name, rcZbDniHex(frame.id),
+    clusterLabel(frame.clusterId||''),
+    zcl?rcZbDirArrow(zcl):'', zcl?resolveCmd(zcl):'', zcl&&zcl.mfrSpecific?'mfr':'',
+    sum.short, frame.lastHopLqi, frame.lastHopRssi
+  ].join(' ').toLowerCase();
 }
 
 function rcZbFrameMatchesFilter(text,f){
-  if(!f)return true;
+  if(!f||!f.q||!f.q.length)return true;
   let frame;try{frame=JSON.parse(text)}catch(e){return false}
-  if(f.cluster){
-    // Substring match against hex code OR friendly label. Any token hits = pass.
-    const code=String(frame.clusterId||'').toLowerCase();
-    const label=clusterLabel(frame.clusterId||'').toLowerCase();
-    if(!f.cluster.some(t=>code.includes(t)||label.includes(t)))return false;
-  }
-  if(f.cmd){const cmd=frame.payload&&frame.payload.length>2?String(frame.payload[2]).toLowerCase():'';if(!f.cmd.includes(cmd))return false}
-  if(f.dni&&!f.dni.test(rcZbDniHex(frame.id)))return false;
-  if(f.mfr){
-    // Manufacturer code is OTA-specific (cluster 0019). Skip non-OTA frames when filtering.
-    if(frame.clusterId!=='0019'||!frame.payload||frame.payload.length<6)return false;
-    const code=(frame.payload[5]+frame.payload[4]).toLowerCase();
-    const label=mfrLabel((frame.payload[5]+frame.payload[4]).toUpperCase()).toLowerCase();
-    if(!f.mfr.some(t=>code.includes(t)||label.includes(t)))return false;
-  }
-  if(f.minLqi!=null&&(frame.lastHopLqi==null||frame.lastHopLqi<f.minLqi))return false;
-  if(f.maxRssi!=null&&(frame.lastHopRssi==null||frame.lastHopRssi>f.maxRssi))return false;
-  return true;
+  const hay=rcZbFrameHaystack(frame);
+  return f.q.every(t=>hay.includes(t));
 }
 
 // Returns array of {k, v, ...extra} sorted by v desc. extraFn(frame) is called once per new key
@@ -2911,6 +3084,22 @@ function rcZbOtaSummary(frames){
     byDev.set(key,row);
   }
   return [...byDev.values()].sort((a,b)=>b.frames-a.frames);
+}
+
+// Per-device last-hop signal quality (LQI 0-255, higher=better; RSSI dBm, higher=better).
+// Skips frames missing the metric. Returns one row per device with {n,min,avg,max} for each.
+function rcZbSignalSummary(frames){
+  const byDev=new Map();
+  for(const f of frames){
+    const key=f.name||rcZbDniHex(f.id);if(!key)continue;
+    let row=byDev.get(key);
+    if(!row){row={device:key,deviceId:f.deviceId||null,lqis:[],rssis:[]};byDev.set(key,row)}
+    if(!row.deviceId&&f.deviceId)row.deviceId=f.deviceId;
+    if(f.lastHopLqi!=null)row.lqis.push(f.lastHopLqi);
+    if(f.lastHopRssi!=null)row.rssis.push(f.lastHopRssi);
+  }
+  const stat=a=>a.length?{n:a.length,min:Math.min(...a),max:Math.max(...a),avg:Math.round(a.reduce((s,x)=>s+x,0)/a.length)}:null;
+  return [...byDev.values()].map(r=>({device:r.device,deviceId:r.deviceId,lqi:stat(r.lqis),rssi:stat(r.rssis)}));
 }
 
 function rcZbRenderAggregates(){
@@ -2955,6 +3144,25 @@ function rcZbRenderAggregates(){
   tbl('rc-zb-top1',[devCol,{l:'Frames',f:'v',t:'n'}],top1,{filter:false,sc:s1.sc,sd:s1.sd});
   tbl('rc-zb-top5',[devCol,{l:'Frames',f:'v',t:'n'}],top5,{filter:false,sc:s5.sc,sd:s5.sd});
   renderBarChart(clusters.map(c=>({label:c.k,value:c.v})),'rc-zb-clusters',{height:200});
+  // Signal quality: per-device LQI/RSSI rollups over the 5-min window, weakest links first.
+  const sig=rcZbSignalSummary(parsed5);
+  const lqiRows=sig.filter(r=>r.lqi).map(r=>({device:r.device,deviceId:r.deviceId,frames:r.lqi.n,min:r.lqi.min,avg:r.lqi.avg,max:r.lqi.max}));
+  const rssiRows=sig.filter(r=>r.rssi).map(r=>({device:r.device,deviceId:r.deviceId,frames:r.rssi.n,min:r.rssi.min,avg:r.rssi.avg,max:r.rssi.max}));
+  if(lqiRows.length||rssiRows.length){
+    container.insertAdjacentHTML('beforeend',
+      '<div class="card" style="margin-top:12px"><h3 style="margin-top:0">Signal quality (last 5 min) <span style="font-weight:normal;font-size:12px;opacity:.7">— last-hop LQI/RSSI per device, weakest first</span></h3>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+      +'<div><h4 style="margin-top:0">Weakest LQI</h4><div id="rc-zb-lqi"></div></div>'
+      +'<div><h4 style="margin-top:0">Weakest RSSI</h4><div id="rc-zb-rssi"></div></div>'
+      +'</div></div>');
+    const sigCols=[
+      {l:'Device',f:'device',r:r=>r.deviceId?dlink(r.deviceId,r.device):h(r.device)},
+      {l:'Frames',f:'frames',t:'n'},{l:'Min',f:'min',t:'n'},{l:'Avg',f:'avg',t:'n'},{l:'Max',f:'max',t:'n'}
+    ];
+    const sl=z.aggSort.lqi, sr=z.aggSort.rssi;
+    if(lqiRows.length)tbl('rc-zb-lqi',sigCols,lqiRows,{filter:false,sc:sl.sc,sd:sl.sd});
+    if(rssiRows.length)tbl('rc-zb-rssi',sigCols,rssiRows,{filter:false,sc:sr.sc,sd:sr.sd});
+  }
   const ota=rcZbOtaSummary(parsed5);
   if(ota.length){
     container.insertAdjacentHTML('beforeend',
@@ -2994,25 +3202,25 @@ function rcZbRenderTailHtml(rows, selectedRaw){
   const td='padding:5px 10px;font-size:12px;border-top:1px solid rgba(255,255,255,0.05);vertical-align:top';
   const tdMono=td+';font-family:ui-monospace,SFMono-Regular,Menlo,monospace';
   let html='<table style="width:100%;border-collapse:collapse"><thead><tr>';
-  ['Time','DNI','Name','Cluster','Cmd','Manufacturer','LQI','RSSI','Payload'].forEach(l=>html+='<th style="'+th+'">'+l+'</th>');
+  ['Time','Name','DNI','LQI','RSSI','Cluster','Command','Decoded'].forEach(l=>html+='<th style="'+th+'">'+l+'</th>');
   html+='</tr></thead><tbody>';
   rows.forEach((r,idx)=>{
     const sel=r._raw===selectedRaw;
     const rowBg=sel?'background:rgba(33,150,243,0.18)':'';
+    const cmdCell=(r.dirArrow?'<span style="opacity:.65">'+h(r.dirArrow)+'</span> ':'')+h(r.cmd||'')+(r.mfrMark?'<span style="opacity:.6">'+h(r.mfrMark)+'</span>':'');
     html+='<tr data-idx="'+idx+'" style="cursor:pointer;'+rowBg+'">';
     html+='<td style="'+td+'">'+h(r.time)+'</td>';
-    html+='<td style="'+tdMono+'">'+h(r.id)+'</td>';
     html+='<td style="'+td+'">'+(r._deviceId?dlink(r._deviceId,r.name):h(r.name))+'</td>';
-    html+='<td style="'+td+'">'+h(r.cluster)+'</td>';
-    html+='<td style="'+tdMono+'">'+h(r.cmd)+'</td>';
-    html+='<td style="'+td+'">'+h(r.mfr)+'</td>';
+    html+='<td style="'+tdMono+'">'+h(r.id)+'</td>';
     html+='<td style="'+td+';text-align:right">'+h(String(r.lqi))+'</td>';
     html+='<td style="'+td+';text-align:right">'+h(String(r.rssi))+'</td>';
-    html+='<td style="'+tdMono+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px">'+h(r.payload)+'</td>';
+    html+='<td style="'+td+'">'+h(r.cluster)+'</td>';
+    html+='<td style="'+td+'">'+cmdCell+'</td>';
+    html+='<td style="'+tdMono+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px"'+(r.decodedFull?' title="'+h(r.decodedFull)+'"':'')+'>'+h(r.decoded||'')+'</td>';
     html+='</tr>';
     if(sel){
       let pretty;try{pretty=JSON.stringify(JSON.parse(r._raw),null,2)}catch(e){pretty=r._raw}
-      html+='<tr style="background:rgba(33,150,243,0.08)"><td colspan="9" style="padding:8px 14px"><pre style="margin:0;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;color:#cfe0f5">'+h(pretty)+'</pre></td></tr>';
+      html+='<tr style="background:rgba(33,150,243,0.08)"><td colspan="8" style="padding:8px 14px">'+rcZbDecodeHtml(r._raw)+'<pre style="margin:0;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;color:#cfe0f5">'+h(pretty)+'</pre></td></tr>';
     }
   });
   html+='</tbody></table>';
@@ -3025,7 +3233,7 @@ function rcZbHandleAggSortClick(e){
   const th=e.target.closest('th[data-c]');if(!th)return;
   const tableEl=th.closest('table');if(!tableEl)return;
   const wrap=tableEl.closest('[id^="rc-zb-"]');if(!wrap)return;
-  const key=wrap.id==='rc-zb-top1'?'top1':wrap.id==='rc-zb-top5'?'top5':wrap.id==='rc-zb-ota'?'ota':null;
+  const key={'rc-zb-top1':'top1','rc-zb-top5':'top5','rc-zb-ota':'ota','rc-zb-lqi':'lqi','rc-zb-rssi':'rssi'}[wrap.id]||null;
   if(!key)return;
   const ci=+th.dataset.c;
   const s=RC.zigbee.aggSort[key];
@@ -3107,7 +3315,6 @@ function buildAuditHtml(data) {
   const generatedAt = data.generatedAt || '';
   const unreferenced = data.unreferenced || [];
   const meshOrphans = data.meshOrphans || [];
-  const stuckJobs = data.stuckJobs || [];
   const tunedDevices = data.tunedDevices || [];
   const tunedDefaults = data.tunedDefaults || {};
   const criticalTop20 = data.criticalTop20 || [];
@@ -3130,11 +3337,7 @@ function buildAuditHtml(data) {
     return `<div class="card" id="${anchorId}"><details${openAttr}><summary class="card-h">${headerHtml}</summary><div class="card-b">`;
   }
   function closeCard() { return '</div></details></div>'; }
-  function driverBadge(dt) {
-    return dt === 'usr'
-      ? '<span class="badge b-community">Community</span>'
-      : '<span class="badge b-builtin">Built-in</span>';
-  }
+  function driverBadge(dt) { return dt === 'usr' ? BADGE.community : BADGE.builtin; }
 
   let o = '';
 
@@ -3142,29 +3345,11 @@ function buildAuditHtml(data) {
   o += `<div class="hdr-audit"><h1>Device Usage Audit — ${h(hubName)}</h1>`;
   o += `<div class="meta">Generated ${h(generatedAt)} · ${data.deviceCount} devices · scan ${fmtDurSec(data.scanDurationMs)}</div></div>`;
 
-  // TOC
-  o += '<div class="toc"><div class="toc-l">Contents</div><div class="toc-grid">';
-  o += '<div><a href="#summary">Summary</a></div>';
-  o += `<div><a href="#unref">Unreferenced devices (${unreferenced.length})</a></div>`;
-  o += `<div><a href="#orphans">Mesh orphans (${meshOrphans.length})</a></div>`;
-  o += `<div><a href="#stuck">Stuck scheduled jobs (${stuckJobs.length})</a></div>`;
-  o += `<div><a href="#tuned">Manually-tuned devices (${tunedDevices.length})</a></div>`;
-  o += '<div><a href="#critical">Critical devices (top 20)</a></div>';
-  o += `<div><a href="#rooms">Devices by room (${rooms.length})</a></div>`;
-  if (zwNodeRows.length > 0) o += `<div><a href="#zwjs">Z-Wave JS mesh health (${zwNodeRows.length})</a></div>`;
-  if (hmRows.length > 0) o += `<div><a href="#hubmesh">Hub Mesh linked devices (${hmRows.length})</a></div>`;
-  o += `<div><a href="#apps">Apps → devices (${appsToDevices.length})</a></div>`;
-  o += `<div><a href="#dashboards">Dashboards → devices (${dashboardsToDevices.length})</a></div>`;
-  o += '<div><a href="#all">Per-device detail table</a></div>';
-  if (failed.length > 0) o += `<div><a href="#failed" class="crit">Failed to fetch (${failed.length})</a></div>`;
-  o += '</div></div>';
-
   // Summary
   o += '<div class="card" id="summary"><div class="card-h">Summary</div><div class="card-b"><div class="metrics">';
   o += sumcell('Devices', data.deviceCount, null);
   o += sumcell('Unreferenced', unreferenced.length, 'warn');
   o += sumcell('Mesh orphans', meshOrphans.length, 'crit');
-  o += sumcell('Stuck jobs', stuckJobs.length, 'warn');
   o += sumcell(`Critical (≥${data.criticalThreshold} refs)`, data.criticalCount, null);
   o += '</div></div></div>';
 
@@ -3192,25 +3377,6 @@ function buildAuditHtml(data) {
   } else {
     o += '<div class="muted" style="margin-bottom:6px">Hubitat reports <code>orphan: true</code> — physical radio relationship lost.</div>';
     o += '<div>' + meshOrphans.map(d => dlink(d.id, d.name)).join(' · ') + '</div>';
-  }
-  o += closeCard();
-
-  // Stuck jobs
-  o += openCard('stuck', `⚠ Stuck scheduled jobs (${stuckJobs.length})`);
-  if (!stuckJobs.length) {
-    o += '<div class="muted">None — all scheduled jobs have a future or null nextRunTime.</div>';
-  } else {
-    o += '<div class="muted" style="margin-bottom:6px">A null <i>Last run</i> with a past <i>nextRunTime</i> = job was scheduled but never fired.</div>';
-    o += '<div class="tbl-wrap"><table data-sortable id="t_stuck"><thead><tr><th>Device</th><th>Handler</th><th data-t="n" data-sd="desc">Overdue</th><th>Last run</th><th>Status</th></tr></thead><tbody>';
-    stuckJobs.forEach(s => {
-      const prev = s.prevRunTime || '';
-      o += `<tr><td>${dlink(s.id, s.name)}</td>`;
-      o += `<td><code>${h(s.handler || '')}</code></td>`;
-      o += `<td data-sv="${s.overdueMs || 0}">${fmtDurSec(s.overdueMs)}</td>`;
-      o += `<td>${prev ? h(prev) : '<span class="muted">never</span>'}</td>`;
-      o += `<td>${h(s.status || '')}</td></tr>`;
-    });
-    o += '</tbody></table></div>';
   }
   o += closeCard();
 
@@ -3390,7 +3556,7 @@ function buildAuditHtml(data) {
   o += '<div class="tbl-wrap"><table data-sortable id="t_all"><thead><tr><th data-sd="asc">Name</th><th>Type</th><th>Source</th><th data-t="n">Apps</th><th data-t="n">Dashboards</th><th>Parent app</th><th>Last activity</th></tr></thead><tbody>';
   const sortedDevices = Object.values(allDevices).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   sortedDevices.forEach(d => {
-    const src = d.driverType === 'usr' ? '<span class="badge b-community">Community</span>' : '<span class="badge b-builtin">Built-in</span>';
+    const src = driverBadge(d.driverType);
     const apps = d.appsUsing || [];
     const dashs = d.dashboards || [];
     let appsCell;
