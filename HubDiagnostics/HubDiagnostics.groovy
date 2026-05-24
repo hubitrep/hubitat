@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String APP_VERSION = "5.44.2"
+@Field static final String APP_VERSION = "5.46.0"
 @Field static final String STORAGE_SCHEMA_VERSION = "5.0.0"
 
 // API endpoint paths (all relative to HUB_BASE)
@@ -432,26 +432,32 @@ Map dashboardPage() {
 
 Map settingsPage() {
     dynamicPage(name: "settingsPage", title: "Settings") {
-        section("Automatic Config Snapshots") {
-            input "autoSnapshot", "bool", title: "Enable automatic config snapshots", defaultValue: false, submitOnChange: true
-            if (autoSnapshot) {
-                input "snapshotInterval", "number", title: "Config snapshot interval (days)",
-                    defaultValue: 1, range: "1..30", required: true
-            }
-            input "maxSnapshots", "number", title: "Maximum config snapshots to retain", defaultValue: 10, range: "1..50", required: true
+        section {
+            paragraph "<i>Snapshots, checkpoints, and trigger switches re-arm when you save this page. After updating the app or UI code, open Settings and click <b>Done</b>.</i>"
         }
 
-        section("Automatic Perf Checkpoints") {
-            input "autoCheckpoint", "bool", title: "Enable automatic perf checkpoints", defaultValue: false, submitOnChange: true
+        section("Config Snapshots") {
+            input "autoSnapshot", "bool", title: "Take config snapshots on a schedule", defaultValue: false, submitOnChange: true
+            if (autoSnapshot) {
+                input "snapshotInterval", "number", title: "Schedule interval (days)",
+                    defaultValue: 1, range: "1..30", required: true
+            }
+            input "maxSnapshots", "number", title: "Maximum snapshots to retain", defaultValue: 10, range: "1..50", required: true
+            input "snapshotTriggerSwitch", "capability.switch", title: "On-demand trigger switch (optional)",
+                description: "Turning this switch ON captures a snapshot now. Switch it OFF then ON to trigger again.", required: false
+        }
+
+        section("Perf Checkpoints") {
+            input "autoCheckpoint", "bool", title: "Record perf checkpoints on a schedule", defaultValue: false, submitOnChange: true
             if (autoCheckpoint) {
-                input "checkpointInterval", "enum", title: "Perf checkpoint interval",
+                input "checkpointInterval", "enum", title: "Schedule interval",
                     options: ["5": "5 minutes", "15": "15 minutes", "30": "30 minutes",
                              "60": "1 hour", "360": "6 hours", "720": "12 hours", "1440": "24 hours"],
                     defaultValue: "60", required: true
             }
-            input "maxCheckpoints", "number", title: "Maximum perf checkpoints to keep", defaultValue: 10, range: "1..50", required: true
-            paragraph "<i>After updating the App or UI code, click <b>Done</b> on this page to re-arm scheduled jobs. A code push alone does not re-run initialize().</i>"
-            paragraph "<i>v5.33.0 migrates checkpoint storage to per-file detail records. The first Performance tab visit after upgrading splits any legacy single-blob file into one index + one detail file per checkpoint.</i>"
+            input "maxCheckpoints", "number", title: "Maximum checkpoints to keep", defaultValue: 10, range: "1..50", required: true
+            input "checkpointTriggerSwitch", "capability.switch", title: "On-demand trigger switch (optional)",
+                description: "Turning this switch ON records a checkpoint now. Switch it OFF then ON to trigger again.", required: false
         }
 
         section("Device Monitoring") {
@@ -467,8 +473,17 @@ Map settingsPage() {
             input "critMemMb",   "number",  title: "Free memory critical (MB)",   defaultValue: DEFAULT_CRIT_MEM_MB,   range: "10..2000", required: true
             input "warnCpuLoad", "decimal", title: "CPU load average warning",    defaultValue: DEFAULT_WARN_CPU_LOAD, range: "0.1..32",  required: true
             input "critCpuLoad", "decimal", title: "CPU load average critical",   defaultValue: DEFAULT_CRIT_CPU_LOAD, range: "0.1..32",  required: true
-            input "warnTempC",   "number",  title: "Hub temperature warning (°C)", defaultValue: DEFAULT_WARN_TEMP_C,  range: "20..100",  required: true
-            input "critTempC",   "number",  title: "Hub temperature critical (°C)", defaultValue: DEFAULT_CRIT_TEMP_C, range: "20..100",  required: true
+            String tempScale = getTemperatureScale()
+            // Re-derive the scale inputs from the canonical Celsius thresholds on first render and
+            // after a hub scale change, so switching scales never reinterprets a stored value.
+            // Within a scale the inputs are left untouched; updated() converts them back to °C.
+            if (settings.warnTempInput == null || state.tempInputScale != tempScale) {
+                app.updateSetting("warnTempInput", [type: "number", value: warnTempDisplayValue()])
+                app.updateSetting("critTempInput", [type: "number", value: critTempDisplayValue()])
+                state.tempInputScale = tempScale
+            }
+            input "warnTempInput", "number", title: "Hub temperature warning (°${tempScale})",  range: tempThresholdRange(), required: true
+            input "critTempInput", "number", title: "Hub temperature critical (°${tempScale})", range: tempThresholdRange(), required: true
         }
 
         section("Logging") {
@@ -991,8 +1006,9 @@ Map apiGetSettings() {
         critMemMb:             (settings.critMemMb   ?: DEFAULT_CRIT_MEM_MB)   as int,
         warnCpuLoad:           (settings.warnCpuLoad ?: DEFAULT_WARN_CPU_LOAD) as double,
         critCpuLoad:           (settings.critCpuLoad ?: DEFAULT_CRIT_CPU_LOAD) as double,
-        warnTempC:             (settings.warnTempC   ?: DEFAULT_WARN_TEMP_C)   as int,
-        critTempC:             (settings.critTempC   ?: DEFAULT_CRIT_TEMP_C)   as int,
+        warnTempC:             warnTempCValue(),
+        critTempC:             critTempCValue(),
+        temperatureScale:      getTemperatureScale(),
         debugLogging:            settings.debugLogging ?: false,
         obfuscateForumExport:    settings.obfuscateForumExport ?: false,
         liveRefreshSec:          (settings.liveRefreshSec ?: 30) as int,
@@ -1010,9 +1026,9 @@ Map apiUpdateSettings() {
 
     Set boolKeys    = ["autoSnapshot", "autoCheckpoint", "debugLogging", "obfuscateForumExport"] as Set
     Set numberKeys  = ["maxSnapshots", "maxCheckpoints", "inactivityDays", "lowBatteryThreshold",
-                        "chattyDeviceThreshold", "warnMemMb", "critMemMb", "warnTempC", "critTempC",
+                        "chattyDeviceThreshold", "warnMemMb", "critMemMb",
                         "snapshotInterval", "liveRefreshSec"] as Set
-    Set decimalKeys = ["warnCpuLoad", "critCpuLoad"] as Set
+    Set decimalKeys = ["warnCpuLoad", "critCpuLoad", "warnTempC", "critTempC"] as Set
     Set enumKeys    = ["checkpointInterval"] as Set
     boolean reschedule = false
 
@@ -1034,7 +1050,7 @@ Map apiUpdateSettings() {
             if (key == "checkpointInterval") reschedule = true
         }
     }
-    if (reschedule) { unschedule(); initialize() }
+    if (reschedule) { unsubscribe(); unschedule(); initialize() }
     return jsonResponse([success: true])
 }
 
@@ -1804,6 +1820,26 @@ Float fetchTemperature() {
     }
     return null
 }
+
+// ===== TEMPERATURE THRESHOLDS =====
+// The internal reading and the warn/crit thresholds are ALWAYS Celsius internally
+// (warnTempC/critTempC), so comparisons stay valid no matter what scale the hub is set to —
+// changing the hub scale never reinterprets a stored threshold. Conversion to the hub's
+// getTemperatureScale() happens only at the edges: the native settings inputs
+// (warnTempInput/critTempInput, in the hub scale) and the SPA display.
+private BigDecimal cToScale(Number celsius) {
+    (getTemperatureScale() == "F") ? ((celsius * 9 / 5 + 32) as BigDecimal) : (celsius as BigDecimal)
+}
+private BigDecimal scaleToC(Number v) {
+    // round canonical Celsius to 0.1° so an F→C→F round-trip stays clean and JSON stays tidy
+    BigDecimal c = (getTemperatureScale() == "F") ? (((v - 32) * 5 / 9) as BigDecimal) : (v as BigDecimal)
+    return (Math.round(c.doubleValue() * 10) / 10.0) as BigDecimal
+}
+private BigDecimal warnTempCValue() { (settings.warnTempC != null ? settings.warnTempC : DEFAULT_WARN_TEMP_C) as BigDecimal }
+private BigDecimal critTempCValue() { (settings.critTempC != null ? settings.critTempC : DEFAULT_CRIT_TEMP_C) as BigDecimal }
+private int warnTempDisplayValue() { Math.round(cToScale(warnTempCValue()).doubleValue()) as int }
+private int critTempDisplayValue() { Math.round(cToScale(critTempCValue()).doubleValue()) as int }
+private String tempThresholdRange() { (getTemperatureScale() == "F") ? "68..212" : "20..100" }
 
 Map fetchHubAlerts(Map prefetchedHubData = null) {
     Map hubData = prefetchedHubData
@@ -4412,6 +4448,10 @@ void installed() {
 void updated() {
     logInfo "Hub Diagnostics updated"
     state.installed = true
+    // Convert the scale-display threshold inputs to canonical Celsius storage. Thresholds are
+    // always compared in Celsius, so a later hub scale change can never reinterpret them.
+    if (settings.warnTempInput != null) app.updateSetting("warnTempC", [type: "decimal", value: scaleToC(settings.warnTempInput as BigDecimal)])
+    if (settings.critTempInput != null) app.updateSetting("critTempC", [type: "decimal", value: scaleToC(settings.critTempInput as BigDecimal)])
     unsubscribe()
     unschedule()
     // clear session-scoped caches so config/hardware changes take effect immediately
@@ -4566,6 +4606,36 @@ void initialize() {
     // v5.15.0: daily UI sync moved out of serveUI hot path. 03:17 local time, off-peak.
     schedule("0 17 3 * * ?", "scheduledUISync")
     logInfo "Daily UI sync scheduled at 03:17"
+
+    if (settings.snapshotTriggerSwitch) {
+        subscribe(settings.snapshotTriggerSwitch, "switch.on", "snapshotSwitchHandler")
+        logInfo "Config snapshot trigger armed on ${settings.snapshotTriggerSwitch}"
+    }
+    if (settings.checkpointTriggerSwitch) {
+        subscribe(settings.checkpointTriggerSwitch, "switch.on", "checkpointSwitchHandler")
+        logInfo "Perf checkpoint trigger armed on ${settings.checkpointTriggerSwitch}"
+    }
+}
+
+// ===== SWITCH TRIGGER HANDLERS =====
+
+void snapshotSwitchHandler(evt) {
+    if (evt?.value != "on") return        // subscribed to switch.on; defensive
+    // lightweight debounce: createSnapshot does heavy API work; ignore a bounce
+    Long last = state.lastSnapshotTriggerMs as Long
+    if (last && (now() - last) < 30_000L) {
+        logInfo "snapshotSwitchHandler: ignored re-trigger within 30s"
+        return
+    }
+    state.lastSnapshotTriggerMs = now()
+    logInfo "Config snapshot triggered by switch ${evt.displayName}"
+    createSnapshot()
+}
+
+void checkpointSwitchHandler(evt) {
+    if (evt?.value != "on") return
+    logInfo "Perf checkpoint triggered by switch ${evt.displayName}"
+    scheduledCheckpoint()                 // already has a 300s in-flight guard
 }
 
 void scheduledUISync() {
