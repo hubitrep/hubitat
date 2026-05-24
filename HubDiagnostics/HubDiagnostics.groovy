@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String APP_VERSION = "5.48.0"
+@Field static final String APP_VERSION = "5.51.0"
 @Field static final String STORAGE_SCHEMA_VERSION = "5.0.0"
 
 // API endpoint paths (all relative to HUB_BASE)
@@ -3993,19 +3993,40 @@ private Map extractAuditFields(Map fj, Long did) {
     // Zigbee exposes human-readable manufacturer/model; Z-Wave exposes them as numeric/hex IDs.
     // Virtual/cloud devices have no dataJson and yield blanks. ("make" has no distinct data value
     // on Hubitat — manufacturer is the make.)
-    String manufacturer = null, model = null, firmware = null, firmwareOta = null
+    String manufacturer = null, model = null, firmware = null, firmwareOta = null, firmwareSource = null
+    Map firmwareTargets = [:]
     try {
         String dataJson = safeToString(dev.dataJson, "")
         if (dataJson.startsWith("{")) {
             Map dv = (Map) new groovy.json.JsonSlurper().parseText(dataJson)
             manufacturer = firstDataValue(dv, ['manufacturer'])
-            model        = firstDataValue(dv, ['model'])
-            firmware     = firstDataValue(dv, ['softwareBuild', 'application', 'firmwareVersion', 'softwareVersion'])
+            // Zigbee/cloud expose `model`; Z-Wave has no `model` key — it uses `deviceModel` (e.g. ZEN55).
+            // When even deviceModel is absent (some Z-Wave devices), identify by the unique deviceType:deviceId
+            // pair, so distinct products sharing one numeric manufacturer id (e.g. ZOOZ = 634) don't collapse
+            // into a single group and get flagged as false firmware drift.
+            model        = firstDataValue(dv, ['model', 'deviceModel'])
+            if (!model && safeToString(fj?.controllerType, "").trim().equalsIgnoreCase("ZWV")) {
+                String dt = firstDataValue(dv, ['deviceType']), di = firstDataValue(dv, ['deviceId'])
+                if (dt && di) model = "${dt}:${di}"
+            }
+            for (String k : ['softwareBuild', 'application', 'firmwareVersion', 'softwareVersion']) {
+                String v = firstDataValue(dv, [k])
+                if (v) { firmware = v; firmwareSource = k; break }
+            }
             String firmwareMT = firstDataValue(dv, ['firmwareMT'])
             // OTA fileVersion = last '-' segment of firmwareMT ("1233-D3A6-10013065" -> "10013065").
             // Canonical/comparable firmware id for drift detection across identical hardware, where the
             // human-readable softwareBuild can differ in representation or be absent. Display still uses `firmware`.
             firmwareOta = firmwareMT ? firmwareMT.tokenize('-')[-1] : null
+            // Multi-target Z-Wave firmware (v5.51.0): some Z-Wave devices (e.g. locks) expose secondary
+            // firmware chips as firmware1Version, firmware2Version, … alongside the primary firmwareVersion.
+            // Collect all targets by index so identical devices can be compared across all chips.
+            dv.each { kk, vv ->
+                String idx = null
+                if (kk == 'firmwareVersion') idx = '0'
+                else { java.util.regex.Matcher fm = (kk =~ /^firmware(\d+)Version$/); if (fm.matches()) idx = fm.group(1) }
+                if (idx != null) { String s = safeToString(vv, '').trim(); if (s) firmwareTargets[idx] = s }
+            }
         }
     } catch (Exception ignored) { /* malformed dataJson — leave inventory fields blank */ }
     String protocol = controllerTypeLabel(safeToString(fj?.controllerType, ""))
@@ -4058,7 +4079,9 @@ private Map extractAuditFields(Map fj, Long did) {
         manufacturer:        manufacturer,
         model:               model,
         firmware:            firmware,
+        firmwareSource:      firmwareSource,
         firmwareOta:         firmwareOta,
+        firmwareTargets:     (firmwareTargets.size() > 1 ? firmwareTargets : null),
         protocol:            protocol,
 
         // Section B
