@@ -138,7 +138,7 @@ table[data-sortable] th[data-dir] .arr{opacity:1}
 </div>
 <script>
 // ===== VERSION =====
-const UI_VERSION = "5.60.0";
+const UI_VERSION = "5.61.0";
 
 // ===== CONFIG & MOCKS =====
 const WORKBENCH = false; // Set to true for local development without a hub
@@ -313,13 +313,60 @@ function diffStats(base, comp) {
   return res;
 }
 function h(s){const d=document.createElement('div');d.textContent=s??'';return d.innerHTML}
+// ===== Name obfuscation (UI + forum export) =====
+// Deterministic adjective-noun aliaser. Each distinct real name maps to a stable,
+// unique codename (e.g. "amber-otter"). Dependency-free so it's unit-testable via
+// extractFn. nm()=display wrapper; scrub()=rewrite names embedded in free text.
+function makeObf(){
+  const ADJECTIVES=['amber','azure','brave','brisk','bronze','calm','clever','coral','crimson','dapper','eager','fierce','frosty','gentle','glossy','golden','grand','hardy','hidden','humble','icy','indigo','jolly','keen','lively','lucky','merry','misty','mossy','noble','olive','plucky','quiet','rapid','rosy','rustic','sandy','silent','silver','sleek','smooth','snowy','solid','spry','stormy','sturdy','sunny','swift','tame','tidy','vivid','warm','wild','witty','zesty'];
+  const NOUNS=['acorn','badger','beacon','beetle','bramble','canyon','cedar','cliff','comet','cricket','dahlia','delta','ember','falcon','ferret','finch','garnet','geode','glade','harbor','heron','iris','jade','kestrel','lagoon','lichen','lotus','marble','meadow','mesa','moss','newt','onyx','opal','otter','pebble','plume','quartz','quill','raven','reef','river','sage','shoal','silt','slate','spark','spruce','sumac','thistle','tundra','vale','vine','weave','willow','yarrow'];
+  const map=new Map(), used=new Set();
+  let names=[];        // registered real names, sorted longest-first (then alpha) for scrub + deterministic priming
+  let enabled=false;
+  function hash(s){let hv=2166136261>>>0;for(let i=0;i<s.length;i++){hv^=s.charCodeAt(i);hv=Math.imul(hv,16777619);}return hv>>>0;}
+  function register(list){
+    let added=false;
+    (list||[]).forEach(n=>{if(n!=null&&n!==''){const k=String(n);if(names.indexOf(k)<0){names.push(k);added=true;}}});
+    if(added)names.sort((a,b)=>b.length-a.length||(a<b?-1:1));
+  }
+  function alias(name){
+    if(name==null||name==='')return name;
+    const key=String(name);
+    const cached=map.get(key);
+    if(cached!==undefined)return cached;
+    const hv=hash(key);
+    let ai=hv%ADJECTIVES.length, ni=(hv>>>8)%NOUNS.length, a;
+    for(let tries=0;tries<ADJECTIVES.length*NOUNS.length;tries++){
+      a=ADJECTIVES[ai]+'-'+NOUNS[ni];
+      if(!used.has(a))break;
+      ni++; if(ni>=NOUNS.length){ni=0;ai=(ai+1)%ADJECTIVES.length;}
+    }
+    if(used.has(a))a=a+'-'+map.size;   // pool exhausted: append a unique numeric suffix
+    used.add(a); map.set(key,a); register([key]);
+    return a;
+  }
+  // Pre-assign aliases for all registered names in a fixed order so collision
+  // resolution is identical across reloads (stable screenshots).
+  function prime(){for(let i=0;i<names.length;i++)alias(names[i]);}
+  function scrub(text){
+    if(!enabled||text==null||text==='')return text;
+    let out=String(text);
+    for(let i=0;i<names.length;i++){const real=names[i];if(out.indexOf(real)>=0)out=out.split(real).join(alias(real));}
+    return out;
+  }
+  function nm(s){return enabled?alias(s):s;}
+  return {alias,register,prime,scrub,nm,
+    get enabled(){return enabled;},
+    set enabled(v){enabled=!!v;}};
+}
+const Obf = makeObf();
 function fmem(kb){if(kb==null)return'N/A';if(kb>=1048576)return(kb/1048576).toFixed(2)+' GB';if(kb>=1024)return(kb/1024).toFixed(0)+' MB';return kb+' KB'}
 function fbytes(b){if(b==null)return'N/A';if(b>=1073741824)return(b/1073741824).toFixed(2)+' GB';if(b>=1048576)return(b/1048576).toFixed(2)+' MB';if(b>=1024)return(b/1024).toFixed(1)+' KB';return b+' B'}
 function sev(v,w,c,inv){if(v==null)return'';if(inv)return v<c?'var(--crit)':v<w?'var(--warn)':'var(--ok)';return v>c?'var(--crit)':v>w?'var(--warn)':'var(--ok)'}
 function sbadge(s){return'<span class="badge '+(s==='Active'?'b-ok':s==='Disabled'?'b-crit':'b-warn')+'">'+h(s)+'</span>'}
 function bat(v){if(v==null||v==='')return'';const c=v<=20?'var(--crit)':v<=50?'var(--warn)':'var(--ok)';return'<span style="color:'+c+';font-weight:600">'+v+'%</span>'}
-function dlink(id,n){return'<a href="/device/edit/'+id+'" target="_blank">'+h(n)+'</a>'}
-function alink(id,n){return'<a href="/installedapp/configure/'+id+'" target="_blank">'+h(n)+'</a>'}
+function dlink(id,n){return'<a href="/device/edit/'+id+'" target="_blank">'+h(Obf.nm(n))+'</a>'}
+function alink(id,n){return'<a href="/installedapp/configure/'+id+'" target="_blank">'+h(Obf.nm(n))+'</a>'}
 function dlistlink(count,ids){if(ids===true)return'<a href="/device/list" target="_blank">'+(count??0)+'</a>';if(!ids||!ids.length)return String(count??0);return'<a href="/device/list?ids='+ids.join(',')+'" target="_blank">'+count+'</a>'}
 function alistlink(count){return'<a href="/installedapp/list" target="_blank">'+(count??0)+'</a>'}
 const CD={paired:'Paired',lan_direct:'LAN (Direct)',lan_bridge:'LAN (Bridge)',cloud:'Cloud',virtual:'Virtual',hubmesh:'Hub Mesh',other:'Other'};
@@ -991,6 +1038,14 @@ function buildForumMarkdown(d){
   const lines=[];
   const L=s=>lines.push(s);
   const obfuscate=d.obfuscate||false;
+  Obf.enabled=obfuscate;
+  if(obfuscate){
+    const reg=[];
+    ((d.deviceStats&&d.deviceStats.allDevices)||[]).forEach(x=>{if(x&&x.name)reg.push(x.name);});
+    ((d.deviceStats&&d.deviceStats.lowBatteryDevices)||[]).forEach(x=>{if(x&&x.name)reg.push(x.name);});
+    ((d.appStats&&d.appStats.userAppsList)||[]).forEach(x=>{if(x&&x.label)reg.push(x.label);});
+    Obf.register(reg); Obf.prime();
+  }
   const hubInfo=d.hubInfo||{};
   const resources=d.resources||null;
   const networkData=d.networkData||{};
@@ -1071,12 +1126,12 @@ function buildForumMarkdown(d){
   }
   const lowBattery=deviceStats.lowBatteryDevices||[];
   if(lowBattery.length){
-    L('');L('**Low Battery:** '+lowBattery.map(it=>`${obfuscate?(it.type||'Device'):it.name} (${it.battery}%)`).join(', '));
+    L('');L('**Low Battery:** '+lowBattery.map(it=>`${Obf.nm(it.name)} (${it.battery}%)`).join(', '));
   }
   const inactiveDevices=(deviceStats.allDevices||[]).filter(it=>it.status==='Inactive');
   if(inactiveDevices.length){
     let inactiveLine=`\n**Inactive Devices (${inactiveDevices.length}):** `;
-    inactiveLine+=inactiveDevices.slice(0,15).map(it=>obfuscate?(it.type||'Device'):it.name).join(', ');
+    inactiveLine+=inactiveDevices.slice(0,15).map(it=>Obf.nm(it.name)).join(', ');
     if(inactiveDevices.length>15)inactiveLine+=` … (+${inactiveDevices.length-15} more)`;
     L(inactiveLine);
   }
@@ -1091,7 +1146,7 @@ function buildForumMarkdown(d){
     L('');L('**Installed User Apps:**');
     Object.keys(appCounts).sort().forEach(name=>{
       const count=appCounts[name];
-      L(`- ${obfuscate?'User App':name}${count>1?` (×${count})`:''}`);
+      L(`- ${name}${count>1?` (×${count})`:''}`);
     });
   }
   const builtInInstances=appStats.builtInInstances||{};
@@ -1120,7 +1175,7 @@ function buildForumMarkdown(d){
     // vs how many are recoverable (battery/range issues).
     const {ghosts,failed}=splitGhostNodes(ghostNodes);
     const renderNode=g=>{
-      const gName=obfuscate?(g.type||'Z-Wave Node'):g.name;
+      const gName=Obf.nm(g.name);
       const gSig=g.signals?` [${g.signals.join(', ')}]`:'';
       L(`- Node ${g.id}: ${gName}${gSig}`);
     };
@@ -1141,20 +1196,20 @@ function buildForumMarkdown(d){
         const issues=[];
         if(n.state!=='OK')issues.push(`State: ${n.state}`);
         if((n.per||0)>1)issues.push(`PER: ${n.per}%`);
-        L(`- ${obfuscate?(n.zwaveType||'Z-Wave Node'):n.name} (Node ${n.nodeId}): ${issues.join(', ')}`);
+        L(`- ${Obf.nm(n.name)} (Node ${n.nodeId}): ${Obf.scrub(issues.join(', '))}`);
       });
     }
     // S0 flagged
     const s0Flagged=zwNodes.filter(n=>n.s0Flag);
     if(s0Flagged.length){
-      L('');L(`**S0 on non-security devices:** ${s0Flagged.map(n=>obfuscate?(n.zwaveType||'Z-Wave Node'):n.name).join(', ')}`);
+      L('');L(`**S0 on non-security devices:** ${s0Flagged.map(n=>Obf.nm(n.name)).join(', ')}`);
     }
     // Isolated nodes (0 neighbors, non-failed)
     const isolatedNodes=zwNodes.filter(n=>(n.neighbors||0)===0&&n.state!=='FAILED');
     if(isolatedNodes.length){
       L('');L(`**Isolated Nodes (0 neighbors, ${isolatedNodes.length}):**`);
       isolatedNodes.forEach(n=>{
-        const label=obfuscate?(n.zwaveType||`Node ${n.nodeId}`):(n.name||`Node ${n.nodeId}`);
+        const label=Obf.nm(n.name||`Node ${n.nodeId}`);
         L(`- Node ${n.nodeId}: ${label}`);
       });
     }
@@ -1166,7 +1221,7 @@ function buildForumMarkdown(d){
         const rttStr=n.rtt!=null?`${n.rtt}ms`:'—';
         const drvStr=n.driverType==='usr'?'User':n.driverType==='sys'?'Built-in':'—';
         const rateStr=uptimeMin>0?Number(n.msgCount/uptimeMin).toFixed(1):'—';
-        const nodeName=obfuscate?(n.zwaveType||`Node ${n.nodeId}`):(n.name||`Node ${n.nodeId}`);
+        const nodeName=Obf.nm(n.name||`Node ${n.nodeId}`);
         L(`| ${n.nodeId} | ${nodeName} | ${n.security||'None'} | ${rttStr} | ${n.per}% | ${n.rssiStr||'—'} | ${n.route||'—'} | ${rateStr} | ${drvStr} |`);
       });
     }
@@ -1260,7 +1315,7 @@ function buildForumMarkdown(d){
       L('|---|---:|---:|---:|');
       topAppTypes.forEach(at=>{
         const pct=Number(at.pctTotal||0);
-        const aName=obfuscate?(at.type||at.name):at.name;
+        const aName=Obf.nm(at.name);
         if(pct>0)L(`| ${aName} | ${pct.toFixed(3)}% | ${at.count||0} | ${Number(at.average||0).toFixed(1)} |`);
       });
     }
@@ -1273,14 +1328,14 @@ function buildForumMarkdown(d){
     L('|---|---|---:|---:|');
     topTalkers.forEach(t=>{
       const rate=Number(t.msgCount/uptimeMin).toFixed(1);
-      const tName=obfuscate?(t.type||t.integration||'Device'):t.name;
+      const tName=Obf.nm(t.name);
       L(`| ${tName} | ${t.integration} | ${rate} | ${t.msgCount} |`);
     });
     // Spammy alerts (>= chattyDeviceThreshold)
     const chattyT=TH.chattyDeviceThreshold||10;
     const spammy=allRadioDevices.filter(it=>it.msgCount/uptimeMin>=chattyT);
     if(spammy.length){
-      L('');L(`**Elevated message rate (≥${chattyT}/min):** ${spammy.map(it=>`${obfuscate?(it.type||it.integration||'Device'):it.name} (${Number(it.msgCount/uptimeMin).toFixed(1)}/min)`).join(', ')}`);
+      L('');L(`**Elevated message rate (≥${chattyT}/min):** ${spammy.map(it=>`${Obf.nm(it.name)} (${Number(it.msgCount/uptimeMin).toFixed(1)}/min)`).join(', ')}`);
     }
   }
 
@@ -1288,7 +1343,16 @@ function buildForumMarkdown(d){
 
   return lines.join('\n');
 }
-api('settings').then(s=>{if(s)Object.assign(TH,s);}).catch(()=>{});
+api('settings').then(s=>{if(s){Object.assign(TH,s);Obf.enabled=!!s.obfuscateForumExport;if(Obf.enabled)seedObfRegistry();}}).catch(()=>{});
+async function seedObfRegistry(){
+  try{
+    const [dv,ap]=await Promise.all([api('devices'),api('apps')]);
+    const reg=[];
+    ((dv&&dv.deviceRows)||[]).forEach(d=>{if(d&&d.name)reg.push(d.name);});
+    ((ap&&ap.userApps)||[]).forEach(a=>{if(a&&a.label)reg.push(a.label);});
+    Obf.register(reg); Obf.prime();
+  }catch(e){}
+}
 function rateColor(v){return v>=TH.chattyDeviceThreshold?'var(--crit)':v>=TH.chattyDeviceThreshold*0.6?'var(--warn)':v>=2?'var(--primary)':''}
 function rateCell(r){if(r.msgPerMin==null)return'';const c=rateColor(r.msgPerMin);const s=c?' style="color:'+c+';font-weight:600"':'';return'<span'+s+'>'+r.msgPerMin.toFixed(2)+'</span>'}
 function isNewer(v1, v2) {
@@ -1691,7 +1755,7 @@ async function rDashboard(){const P='p-dashboard';loading(P);try{
   // Alerts
   const dashAlerts=composeAlerts(d);
   if(dashAlerts.length){o+='<div class="card"><div class="card-h">Platform Alerts</div><div class="card-b" role="status" aria-live="polite" aria-label="Platform alerts">';
-    dashAlerts.forEach(a=>{const sev=(a.severity==='critical')?'crit':((a.severity==='info')?'info':'warn');const icon=(a.severity==='critical')?'\u26D4':((a.severity==='info')?'\u2139':'\u26A0');o+='<div class="alert a-'+sev+'">'+icon+' '+h(a.name)+'</div>'});o+='</div></div>'}
+    dashAlerts.forEach(a=>{const sev=(a.severity==='critical')?'crit':((a.severity==='info')?'info':'warn');const icon=(a.severity==='critical')?'\u26D4':((a.severity==='info')?'\u2139':'\u26A0');o+='<div class="alert a-'+sev+'">'+icon+' '+h(Obf.scrub(a.name))+'</div>'});o+='</div></div>'}
   // Firmware update (v5.9.0)
   if(d.firmwareUpdate){const fu=d.firmwareUpdate;
     if(fu.updateAvailable){
@@ -1709,7 +1773,7 @@ async function rDashboard(){const P='p-dashboard';loading(P);try{
     rpts.reports.forEach(r=>{
       const sz=r.size?(Number(r.size)>=1048576?(Number(r.size)/1048576).toFixed(1)+' MB':(Number(r.size)/1024).toFixed(0)+' KB'):'';
       const dt=r.date?new Date(Number(r.date)).toLocaleString():'';
-      o+='<div style="display:flex;gap:12px;padding:3px 0"><a href="/local/'+h(r.name)+'" target="_blank" style="color:var(--link)">'+h(r.name)+'</a><span style="color:var(--muted)">'+sz+'</span><span style="color:var(--muted)">'+dt+'</span></div>'});
+      o+='<div style="display:flex;gap:12px;padding:3px 0"><a href="/local/'+h(r.name)+'" target="_blank" style="color:var(--link)">'+h(Obf.nm(r.name))+'</a><span style="color:var(--muted)">'+sz+'</span><span style="color:var(--muted)">'+dt+'</span></div>'});
     o+='</div></details>'}
   o+='</div></div>';
   // App settings
@@ -1965,7 +2029,7 @@ async function rApps(){const P='p-apps';loading(P);try{
   // Installed Apps table
   if(d.allApps&&d.allApps.length){
     const appLink=r=>r.source==='platform'
-      ?'<a href="/installedapp/status/'+r.id+'" target="_blank">'+h(r.name)+'</a>'
+      ?'<a href="/installedapp/status/'+r.id+'" target="_blank">'+h(Obf.nm(r.name))+'</a>'
       :alink(r.id,r.name);
     const menuPill=m=>{
       const map={automations:'Automations',integrations:'Integrations',apps:'Apps'};
@@ -1974,7 +2038,7 @@ async function rApps(){const P='p-apps';loading(P);try{
     };
     const roleStr=r=>{
       if(r.childCount>0)return`Parent (${r.childCount})`;
-      if(r.level>0)return r.parentId?`Child of <a href="/installedapp/configure/${r.parentId}" target="_blank">${h(r.parentName||'App '+r.parentId)}</a>`:'Child';
+      if(r.level>0)return r.parentId?`Child of <a href="/installedapp/configure/${r.parentId}" target="_blank">${h(Obf.nm(r.parentName||'App '+r.parentId))}</a>`:'Child';
       return'';
     };
     const vis=d.allApps.filter(a=>!a.hidden&&!a.setting);
@@ -2050,7 +2114,7 @@ async function rCode(){const P='p-code';loading(P);try{
       {l:'App Type',f:'name',r:r=>'<a href="/app/edit/'+r.id+'" target="_blank" style="color:var(--link)">'+h(r.name)+'</a>'},
       {l:'Namespace',f:'namespace',r:r=>h(r.namespace||'-')},
       {l:'OAuth',f:'oauthEnabled',r:r=>r.oauthEnabled?'<span class="badge b-ok">Enabled</span>':'<span class="muted" style="font-size:11px">—</span>'},
-      {l:'Instances',f:'usedByCount',t:'n',r:r=>r.usedByCount>0?'<span title="'+h((r.usedBy||[]).map(u=>u.name).join(', '))+'">'+r.usedByCount+'</span>':'<span class="muted">0</span>'},
+      {l:'Instances',f:'usedByCount',t:'n',r:r=>r.usedByCount>0?'<span title="'+h((r.usedBy||[]).map(u=>Obf.nm(u.name)).join(', '))+'">'+r.usedByCount+'</span>':'<span class="muted">0</span>'},
       {l:'Last Modified',f:'lastModified',r:r=>h((r.lastModified||'').slice(0,10))}
     ],d.appTypes,{sc:0,sd:'asc',filter:true,collapse:1,collapseLabel:'App Types'});
   }
@@ -2059,7 +2123,7 @@ async function rCode(){const P='p-code';loading(P);try{
       {l:'Driver Type',f:'name',r:r=>'<a href="/driver/editor/'+r.id+'" target="_blank" style="color:var(--link)">'+h(r.name)+'</a>'},
       {l:'Namespace',f:'namespace',r:r=>h(r.namespace||'-')},
       {l:'Capabilities',f:'capabilityCount',t:'n',r:r=>r.capabilityCount>0?'<span title="'+h((r.capabilities||[]).join(', '))+'">'+r.capabilityCount+'</span>':'0'},
-      {l:'Devices',f:'usedByCount',t:'n',r:r=>r.usedByCount>0?'<span title="'+h((r.usedBy||[]).map(u=>u.name).join(', '))+'">'+r.usedByCount+'</span>':'<span class="muted">0</span>'},
+      {l:'Devices',f:'usedByCount',t:'n',r:r=>r.usedByCount>0?'<span title="'+h((r.usedBy||[]).map(u=>Obf.nm(u.name)).join(', '))+'">'+r.usedByCount+'</span>':'<span class="muted">0</span>'},
       {l:'Last Modified',f:'lastModified',r:r=>h((r.lastModified||'').slice(0,10))}
     ],d.driverTypes,{sc:0,sd:'asc',filter:true,collapse:1,collapseLabel:'Driver Types'});
   }
@@ -2174,7 +2238,7 @@ async function rNetwork(){const P='p-network';loading(P);try{
     // kind=ghost  -> no Hubitat device, safe to force-remove from radio
     // kind=failed -> has device, radio reports failure; try battery/range before excluding
     if(z.ghostNodes&&z.ghostNodes.length){
-      const renderRow=g=>{const sig=g.signals&&g.signals.length?'<span style="color:var(--muted);font-size:12px"> ['+g.signals.map(s=>h(s)).join(', ')+']</span>':'';return '<div style="margin:4px 0;color:var(--crit)">'+(g.deviceId?dlink(g.deviceId,'Node '+g.id):h('Node '+g.id))+' &mdash; '+h(g.name||'Unknown')+sig+'</div>'};
+      const renderRow=g=>{const sig=g.signals&&g.signals.length?'<span style="color:var(--muted);font-size:12px"> ['+g.signals.map(s=>h(s)).join(', ')+']</span>':'';return '<div style="margin:4px 0;color:var(--crit)">'+(g.deviceId?dlink(g.deviceId,'Node '+g.id):h('Node '+g.id))+' &mdash; '+h(Obf.nm(g.name||'Unknown'))+sig+'</div>'};
       const {ghosts,failed}=splitGhostNodes(z.ghostNodes);
       if(ghosts.length){
         o+='<div style="margin-top:10px"><div class="alert a-crit">\u26D4 Ghost Nodes: '+ghosts.length+' \u2014 no Hubitat device, safe to force-remove from radio</div>';
@@ -2200,7 +2264,7 @@ async function rNetwork(){const P='p-network';loading(P);try{
     const probNodes=zwProblemNodes(z.mesh&&z.mesh.nodes);
     if(probNodes.length){
       o+='<div style="margin-top:10px"><div class="alert a-warn">\u26A0 Problem Nodes: '+probNodes.length+'</div>';
-      probNodes.forEach(n=>{o+='<div style="margin:4px 0;color:var(--crit)">'+(n.deviceId?dlink(n.deviceId,n.name):h(n.name))+' &mdash; '+h(n.issues)+'</div>'});o+='</div>'}
+      probNodes.forEach(n=>{o+='<div style="margin:4px 0;color:var(--crit)">'+(n.deviceId?dlink(n.deviceId,n.name):h(Obf.nm(n.name)))+' &mdash; '+h(Obf.scrub(n.issues))+'</div>'});o+='</div>'}
     o+='</div></div>'}
   // Z-Wave JS Controller (v5.9.0) \u2014 only when Z-Wave JS stack is active
   if(d.zwaveJs){const j=d.zwaveJs,s=j.statistics||{};
@@ -2309,7 +2373,7 @@ async function rNetwork(){const P='p-network';loading(P);try{
   // Render Z-Wave mesh table
   if(d.zwave&&d.zwave.mesh&&d.zwave.mesh.nodes&&d.zwave.mesh.nodes.length)
     tbl('zwMeshTbl',[
-      {l:'Device',f:'name',r:r=>r.deviceId?dlink(r.deviceId,r.name):h(r.name)},
+      {l:'Device',f:'name',r:r=>r.deviceId?dlink(r.deviceId,r.name):h(Obf.nm(r.name))},
       {l:'Node',f:'nodeId',t:'n',r:r=>r.nodeId!=null?'0x'+r.nodeId.toString(16).toUpperCase().padStart(2,'0'):'—'},
       {l:'Security',f:'security',r:r=>{const s=r.security||'None';const flag=r.s0Flag?'<span title="S0 on non-security device" style="color:var(--warn)"> \u26A0</span>':'';return h(s)+flag}},
       {l:'RTT',f:'rtt',t:'n',r:r=>r.rtt!=null?r.rtt+'ms':'\u2014'},
@@ -2323,7 +2387,7 @@ async function rNetwork(){const P='p-network';loading(P);try{
   // Zigbee neighbor detail table
   if(d.zigbee&&d.zigbee.mesh&&d.zigbee.mesh.neighborDetails&&d.zigbee.mesh.neighborDetails.length)
     tbl('zbNeighborTbl',[
-      {l:'Device',f:'name',r:r=>r.deviceId?dlink(r.deviceId,r.name||r.shortId):h(r.name||r.shortId||'\u2014')},
+      {l:'Device',f:'name',r:r=>r.deviceId?dlink(r.deviceId,r.name||r.shortId):h(Obf.nm(r.name||r.shortId||'\u2014'))},
       {l:'Short ID',f:'shortId',r:r=>h(r.shortId||'\u2014')},
       {l:'LQI',f:'lqi',t:'n',r:r=>r.lqi!=null?'<span style="color:'+(r.lqi<150?'var(--crit)':r.lqi<200?'var(--warn)':'var(--ok)')+'">'+r.lqi+'</span>':'N/A'},
       {l:'Age',f:'age',t:'n',r:r=>r.stale?'<span class="badge b-warn">'+r.age+' (Stale)</span>':(r.age!=null?''+r.age:'N/A')},
@@ -2333,7 +2397,7 @@ async function rNetwork(){const P='p-network';loading(P);try{
   // Zigbee message counts
   if(d.zigbee&&d.zigbee.messageCounts&&d.zigbee.messageCounts.length)
     tbl('zbMsgTbl',[
-      {l:'Device',f:'name',r:r=>r.id?dlink(r.id,r.name):h(r.name)},
+      {l:'Device',f:'name',r:r=>r.id?dlink(r.id,r.name):h(Obf.nm(r.name))},
       {l:'Messages',f:'msgCount',t:'n'},
       {l:'Msgs/Min',f:'msgPerMin',t:'n',r:rateCell}
     ],d.zigbee.messageCounts,{sc:1,sd:'desc',collapse:1,collapseLabel:'Zigbee Message Counts'});
@@ -2343,7 +2407,7 @@ async function rNetwork(){const P='p-network';loading(P);try{
 async function rHealth(){const P='p-health';loading(P);try{
   const d=await api('health');let o='';
   // Alerts
-  const allAlerts=composeAlerts(d).map(a=>({severity:a.severity||'warning',message:a.name||a.message||''})).filter(a=>a.message);
+  const allAlerts=composeAlerts(d).map(a=>({severity:a.severity||'warning',message:Obf.scrub(a.name||a.message||'')})).filter(a=>a.message);
   if(allAlerts.length){o+='<div class="card"><div class="card-h">Alerts ('+allAlerts.length+')</div><div class="card-b" role="status" aria-live="polite" aria-label="Active alerts">';
     allAlerts.forEach(a=>{const sev=(a.severity==='critical')?'crit':((a.severity==='info')?'info':'warn');const icon=(a.severity==='critical')?'\u26D4':((a.severity==='info')?'\u2139':'\u26A0');o+='<div class="alert a-'+sev+'">'+icon+' '+h(a.message)+'</div>'});o+='</div></div>'}
   else o+='<div class="alert a-ok">\u2705 No active alerts</div>';
@@ -2479,7 +2543,7 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
   if(talkers&&talkers.length){
     o+='<div class="card"><div class="card-h">Top Talkers'+(activePerfComp?' (Interval)':'')+'</div><div class="card-b">';
     talkers.forEach((t,i)=>{
-      o+='<div style="padding:4px 0">'+(i+1)+'. '+(t.deviceId?dlink(t.deviceId,t.name):h(t.name))+' <span style="color:var(--muted)">('+h(t.integration||'')+')</span> &mdash; <b>'+t.msgCount+'</b> msgs</div>'});
+      o+='<div style="padding:4px 0">'+(i+1)+'. '+(t.deviceId?dlink(t.deviceId,t.name):h(Obf.nm(t.name)))+' <span style="color:var(--muted)">('+h(t.integration||'')+')</span> &mdash; <b>'+t.msgCount+'</b> msgs</div>'});
     o+='</div></div>'}
 
   // Saved comparison
@@ -2515,9 +2579,9 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
         if(d.msgPerMin>=chattyT)alerts.push({name:d.name,proto:p,rate:d.msgPerMin});
         else if(d.msgPerMin>=chattyW)warns.push({name:d.name,proto:p,rate:d.msgPerMin})})});
       if(alerts.length){o+='<div class="alert a-crit" style="margin-bottom:8px">\u26D4 High message rate (\u2265'+chattyT+'/min): ';
-        o+=alerts.map(d=>h(d.name)+' <b>'+d.rate.toFixed(1)+'/min</b> ('+d.proto+')').join(', ');o+='</div>'}
+        o+=alerts.map(d=>h(Obf.nm(d.name))+' <b>'+d.rate.toFixed(1)+'/min</b> ('+d.proto+')').join(', ');o+='</div>'}
       if(warns.length){o+='<div class="alert a-warn" style="margin-bottom:8px">\u26A0 Elevated message rate (\u2265'+chattyW.toFixed(0)+'/min): ';
-        o+=warns.map(d=>h(d.name)+' <b>'+d.rate.toFixed(1)+'/min</b> ('+d.proto+')').join(', ');o+='</div>'}}
+        o+=warns.map(d=>h(Obf.nm(d.name))+' <b>'+d.rate.toFixed(1)+'/min</b> ('+d.proto+')').join(', ');o+='</div>'}}
     if(hasZw)o+='<div id="perfZwMsgTbl"></div>';
     if(hasZb)o+='<div id="perfZbMsgTbl" style="margin-top:8px"></div>';
     o+='</div></div>'}
@@ -2543,7 +2607,7 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
   // Device Runtime table
   if(s&&s.deviceStats)
     tbl('devStatsTbl',[
-      {l:'Name',f:'name',r:r=>r.id?dlink(r.id,r.name):h(r.name)},{l:'Total (ms)',f:'total',t:'n'},
+      {l:'Name',f:'name',r:r=>r.id?dlink(r.id,r.name):h(Obf.nm(r.name))},{l:'Total (ms)',f:'total',t:'n'},
       {l:'% Busy',f:'pct',t:'n',r:r=>r.pct!=null?r.pct.toFixed(1)+'%':''},
       {l:'% Total',f:'pctTotal',t:'n',r:r=>r.pctTotal!=null?r.pctTotal.toFixed(3)+'%':''},
       {l:'Count',f:'count',t:'n'},{l:'Avg (ms)',f:'average',t:'n',r:r=>Number(r.average||0).toFixed(1)},
@@ -2557,7 +2621,7 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
   // App Runtime table
   if(s&&s.appStats){
     tbl('appStatsTbl',[
-      {l:'Name',  f:'name',  r:r=>r.id?'<a href="/installedapp/status/'+r.id+'" target="_blank">'+h(r.name)+'</a>':h(r.name)},
+      {l:'Name',  f:'name',  r:r=>r.id?'<a href="/installedapp/status/'+r.id+'" target="_blank">'+h(Obf.nm(r.name))+'</a>':h(Obf.nm(r.name))},
       {l:'Source',f:'source',r:r=>srcBadge(r.source,false)},
       {l:'Total (ms)',f:'total',t:'n'},
       {l:'% Busy',f:'pct',t:'n',r:r=>r.pct!=null?r.pct.toFixed(1)+'%':''},
@@ -2569,12 +2633,12 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
   // Radio message count tables
   if(hasZw){
     tbl('perfZwMsgTbl',[
-      {l:'Device',f:'name',r:r=>r.deviceId?dlink(r.deviceId,r.name):h(r.name)},{l:'Messages',f:'msgCount',t:'n'},
+      {l:'Device',f:'name',r:r=>r.deviceId?dlink(r.deviceId,r.name):h(Obf.nm(r.name))},{l:'Messages',f:'msgCount',t:'n'},
       {l:'Msgs/Min',f:'msgPerMin',t:'n',r:rateCell},{l:'Route Changes',f:'routeChanges',t:'n'}
     ],rs.zwave,{sc:2,sd:'desc',collapse:10,collapseLabel:'Z-Wave Messages'})}
   if(hasZb){
     tbl('perfZbMsgTbl',[
-      {l:'Device',f:'name',r:r=>r.id?dlink(r.id,r.name):h(r.name)},{l:'Messages',f:'msgCount',t:'n'},
+      {l:'Device',f:'name',r:r=>r.id?dlink(r.id,r.name):h(Obf.nm(r.name))},{l:'Messages',f:'msgCount',t:'n'},
       {l:'Msgs/Min',f:'msgPerMin',t:'n',r:rateCell}
     ],rs.zigbee,{sc:2,sd:'desc',collapse:10,collapseLabel:'Zigbee Messages'})}
   // Saved comparison render
@@ -2951,7 +3015,7 @@ function renderDiff(d,elId){
   const ac=d.appChanges;const ad=ac.newerTotal-ac.olderTotal;
   o+='<div style="margin:8px 0"><b>Apps:</b> '+ac.olderTotal+' \u2192 '+ac.newerTotal+(ad!==0?' <span style="color:'+(ad>0?'var(--ok)':'var(--crit)')+'">('+( ad>0?'+':'')+ad+')</span>':'')+'</div>';
   if(ac.added&&ac.added.length)ac.added.forEach(a=>o+='<div class="diff-item diff-add">+ '+alink(a.id,a.label||a.name)+'</div>');
-  if(ac.removed&&ac.removed.length)ac.removed.forEach(a=>o+='<div class="diff-item diff-rem">- '+h(a.label||a.name)+'</div>');
+  if(ac.removed&&ac.removed.length)ac.removed.forEach(a=>o+='<div class="diff-item diff-rem">- '+h(Obf.nm(a.label||a.name))+'</div>');
   if(ac.changed&&ac.changed.length){o+='<div class="diff-chg" style="margin:4px 0"><b>Status Changed ('+ac.changed.length+'):</b></div>';
     ac.changed.forEach(a=>o+='<div class="diff-item diff-chg">~ '+alink(a.id,a.label||a.name)+' &mdash; '+(a.disabled?'enabled \u2192 disabled':'disabled \u2192 enabled')+'</div>')}
   // Network config changes
@@ -3060,7 +3124,7 @@ async function rConfig(){const P='p-config';loading(P);try{
 
   // Export
   o+='<div class="card"><div class="card-h">Export</div><div class="card-b"><div class="cfg-row">';
-  o+=`<label><input type="checkbox" id="cfg_obfuscate" ${s.obfuscateForumExport?'checked':''}> Obfuscate device/app labels in forum export (use driver/app type instead of name)</label>`;
+  o+=`<label><input type="checkbox" id="cfg_obfuscate" ${s.obfuscateForumExport?'checked':''}> Obfuscate device/app names throughout the UI and forum export (uses stable random aliases)</label>`;
   o+='</div></div></div>';
 
   // Alert Thresholds
@@ -3130,7 +3194,14 @@ async function rConfig(){const P='p-config';loading(P);try{
   };
 
   document.getElementById('cfg_debugLogging').onchange=async function(){await saveSetting({debugLogging:this.checked})};
-  document.getElementById('cfg_obfuscate').onchange=async function(){await saveSetting({obfuscateForumExport:this.checked});drop('settings')};
+  document.getElementById('cfg_obfuscate').onchange=async function(){
+    const on=this.checked;
+    await saveSetting({obfuscateForumExport:on});drop('settings');
+    Obf.enabled=on;
+    if(on)await seedObfRegistry();
+    document.querySelectorAll('.panel').forEach(p=>{p.innerHTML='';});
+    go(curTab);
+  };
 
   document.getElementById('cfg_saveLive').onclick=async()=>{
     const v=Math.max(10,Math.min(300,parseInt(document.getElementById('cfg_liveRefreshSec').value)||30));
@@ -3684,7 +3755,7 @@ function rcZbRenderTailHtml(rows, selectedRaw){
     const cmdCell=(r.dirArrow?'<span style="opacity:.65">'+h(r.dirArrow)+'</span> ':'')+h(r.cmd||'')+(r.mfrMark?'<span style="opacity:.6">'+h(r.mfrMark)+'</span>':'');
     html+='<tr data-idx="'+idx+'" style="cursor:pointer;'+rowBg+'">';
     html+='<td style="'+td+'">'+h(r.time)+'</td>';
-    html+='<td style="'+td+'">'+(r._deviceId?dlink(r._deviceId,r.name):h(r.name))+'</td>';
+    html+='<td style="'+td+'">'+(r._deviceId?dlink(r._deviceId,r.name):h(Obf.nm(r.name)))+'</td>';
     html+='<td style="'+tdMono+'">'+h(r.id)+'</td>';
     html+='<td style="'+td+';text-align:right">'+h(String(r.lqi))+'</td>';
     html+='<td style="'+td+';text-align:right">'+h(String(r.rssi))+'</td>';
@@ -4335,7 +4406,7 @@ function buildAuditHtml(data) {
     dashboardsToDevices.forEach(d => {
       const n = (d.devices || []).length;
       const devs = (d.devices || []).map(dv => dlink(dv.id, dv.name)).join(', ');
-      o += `<tr><td><b>${h(d.name || '')}</b></td>`;
+      o += `<tr><td><b>${h(Obf.nm(d.name || ''))}</b></td>`;
       o += `<td>${n}</td>`;
       o += `<td>${devs}</td></tr>`;
     });
@@ -4362,7 +4433,7 @@ function buildAuditHtml(data) {
       appsCell = d.parentApp == null ? '<span class="warn">⚠ unreferenced</span>' : '<span class="muted">—</span>';
     }
     const dashsCell = dashs.length
-      ? dashs.slice(0, 4).map(dash => `<a href="/installedapp/configure/${dash.id}" target="_blank">${h(dash.name || '')}</a>`).join(', ')
+      ? dashs.slice(0, 4).map(dash => `<a href="/installedapp/configure/${dash.id}" target="_blank">${h(Obf.nm(dash.name || ''))}</a>`).join(', ')
         + (dashs.length > 4 ? `, <span class="muted">+${dashs.length - 4}</span>` : '')
       : '<span class="muted">—</span>';
     const pa = d.parentApp;
