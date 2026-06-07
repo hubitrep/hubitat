@@ -31,7 +31,7 @@ metadata {
         namespace: "hubitrep",
         author: "hubitrep",
         description: "Zigbee contact sensor with battery, tamper, and temperature",
-        importUrl: "https://raw.githubusercontent.com/iamtrep/hubitat/main/drivers/XfinityContactSensor.groovy"
+        importUrl: "https://raw.githubusercontent.com/hubitrep/hubitat/main/XfinityContactSensor/XfinityContactSensor.groovy"
     ) {
         capability "Configuration"
         capability "ContactSensor"

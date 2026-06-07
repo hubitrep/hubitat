@@ -23,7 +23,7 @@ metadata {
         name: "Log Monitor Bridge",
         namespace: "hubitrep",
         author: "hubitrep",
-        importUrl: "https://raw.githubusercontent.com/iamtrep/hubitat/main/apps/LogMonitor/LogMonitorBridge.groovy"
+        importUrl: "https://raw.githubusercontent.com/hubitrep/hubitat/main/LogMonitor/LogMonitorBridge.groovy"
     ) {
         capability "Actuator"
         capability "Initialize"

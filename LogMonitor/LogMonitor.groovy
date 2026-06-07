@@ -25,7 +25,7 @@ definition(
     menu: "Apps", // new in platform 2.5.0
     category: "Utility",
     singleInstance: true,
-    importUrl: "https://raw.githubusercontent.com/iamtrep/hubitat/main/apps/LogMonitor/LogMonitor.groovy",
+    importUrl: "https://raw.githubusercontent.com/hubitrep/hubitat/main/LogMonitor/LogMonitor.groovy",
     iconUrl: "",
     iconX2Url: ""
 )
@@ -343,7 +343,7 @@ private void initialize() {
     // Create a default local bridge if none exist
     if ((state.bridges as List).size() == 0) {
         String dni = "logmon-bridge-0"
-        addChildDevice("iamtrep", "Log Monitor Bridge", dni,
+        addChildDevice("hubitrep", "Log Monitor Bridge", dni,
             [name: "Log Monitor Bridge", label: "Local Hub", isComponent: false])
         state.bridges = [[label: "Local Hub", dni: dni, hubAddress: ""]]
     }
@@ -398,7 +398,7 @@ private void savePendingBridge() {
             dni = "logmon-bridge-${nextIdx}"
         }
 
-        addChildDevice("iamtrep", "Log Monitor Bridge", dni,
+        addChildDevice("hubitrep", "Log Monitor Bridge", dni,
             [name: "Log Monitor Bridge", label: label, isComponent: false])
 
         // Set IP on the new device
