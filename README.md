@@ -1,28 +1,27 @@
-# Hubitat Apps
+# Hubitat Apps & Drivers
 
-Apps for monitoring and inventorying [Hubitat Elevation](https://hubitat.com/) hubs. Each app
-installs from a single Groovy file and serves its own web dashboard directly from the hub.
+Apps and drivers for [Hubitat Elevation](https://hubitat.com/) hubs. Apps generally install from
+a single Groovy file and, where applicable, serve a web dashboard directly from the hub; drivers
+install from a single Groovy file in the **Drivers Code** editor.
 
+<!-- AUTO:packages -->
 ## Apps
 
-### [Hub Diagnostics](HubDiagnostics/README.md)
+- [Hub Diagnostics](HubDiagnostics/) — Diagnostic dashboard for a Hubitat hub: real-time and historical visibility into devices, apps, network, performance, and configuration, served as a web UI from the hub. Also exposes a read-only audit API.
+- [Multi-Hub Inventory](MultiHubInventory/) — Read-only cross-hub aggregator that consumes the Hub Diagnostics audit API from every hub in your fleet for unified device, firmware-drift, and maintenance reports.
+- [Humidity Fan Controller](HumidityFanController/) — Bathroom-fan automation that runs while humidity stays above a reference baseline and stops once it returns, with debounced state transitions and multi-sensor median input.
+- [Switch Monitor](SwitchMonitor/) — Watches groups of switches that must stay on (or off): auto-corrects deviations after a grace period, retries to a configurable limit, and notifies on under-watt drops for power-metered loads.
+- [Log Monitor](LogMonitor/) — Hub log aggregator: WebSocket bridges to one or more hubs with independent filter configs that route matched lines to notifications, files, or HTTP endpoints.
 
-A comprehensive diagnostic dashboard for a single Hubitat hub — real-time and historical
-visibility into devices, apps, network health, performance, and configuration, all in one web UI
-served from the hub. It also exposes a read-only audit API that other tools can consume.
+## Drivers
 
-### [Multi-Hub Inventory](MultiHubInventory/README.md)
-
-A read-only, cross-hub view that aggregates the audit data from every hub in your fleet into
-unified device, firmware-drift, and maintenance reports.
-
-> **Requires Hub Diagnostics.** Multi-Hub Inventory has no data of its own — it reads the audit
-> API that Hub Diagnostics exposes. Every hub you want to include must already be running a
-> configured Hub Diagnostics instance. See the
-> [Multi-Hub Inventory requirements](MultiHubInventory/README.md#requirements) for details.
+- [Aqara WSDCGQ11LM](Aqara_WSDCGQ11LM/) — Zigbee driver for the Xiaomi Aqara temperature, humidity, and pressure sensor (WSDCGQ11LM).
+- [Xfinity Contact Sensor](XfinityContactSensor/) — Zigbee driver for the Xfinity (Comcast) door/window contact sensor, with battery EMA smoothing tuned to the device's ADC dither.
+<!-- /AUTO -->
 
 ## Installing
 
-Each app is self-contained: import its `.groovy` file into the Hubitat **Apps Code** editor, and
-the app downloads its own web dashboard (the matching `*_ui.html`) into File Manager — no separate
-upload needed. See each app's README for step-by-step instructions.
+For apps: import the `.groovy` file into the Hubitat **Apps Code** editor — bundled apps that
+ship a `*_ui.html` download it into File Manager on first save, so no separate upload is needed.
+For drivers: import the `.groovy` file into the **Drivers Code** editor. See each package's README
+where present, or the file's header comments, for setup specifics.
