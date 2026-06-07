@@ -16,7 +16,7 @@ install from a single Groovy file in the **Drivers Code** editor.
 ## Drivers
 
 - [Aqara WSDCGQ11LM](Aqara_WSDCGQ11LM/) — Zigbee driver for the Xiaomi Aqara temperature, humidity, and pressure sensor (WSDCGQ11LM).
-- [Xfinity Contact Sensor](XfinityContactSensor/) — Zigbee driver for the Xfinity (Comcast) door/window contact sensor, with battery EMA smoothing tuned to the device's ADC dither.
+- [Xfinity Contact Sensor](XfinityContactSensor/) — Zigbee driver for the Xfinity / Visonic door/window contact sensor with battery reporting.
 <!-- /AUTO -->
 
 ## Installing
