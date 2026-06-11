@@ -138,7 +138,7 @@ table[data-sortable] th[data-dir] .arr{opacity:1}
 </div>
 <script>
 // ===== VERSION =====
-const CODE_VERSION = "5.67.4";
+const CODE_VERSION = "5.68.4";
 
 // ===== CONFIG & MOCKS =====
 const WORKBENCH = false; // Set to true for local development without a hub
@@ -3400,6 +3400,29 @@ const RC={
     _suppressScrollUntil:0, // perf.now() horizon during which the scroll handler ignores our own scrollTop writes
     framesLastSec:[],     // sliding window for frames/s counter
     stack:null            // resolved at Start time from RC.zwaveStack — picks the per-stack row mapper
+  },
+  matter:{                                       // sub-tab state — poll-based capture
+    buf:null,                  // FrameBuffer (line-oriented, one push per CHIP line)
+    pollTimer:null,            // setInterval id
+    intervalMs:2000,           // poll cadence (~native page cadence)
+    state:'idle',              // idle|polling
+    pausedCapture:false,
+    lastTail:[],               // last K lines of the previous poll's buffer (dedup anchor)
+    dedupK:30,                 // anchor block size — large enough that contiguous-run collisions are vanishingly rare
+    displayBuf:[],             // grouped entries (newest first) for the Structured renderer
+    selectedRowKey:null,       // synthetic id of the currently expanded row (or null)
+    viewMode:'structured',     // 'structured' | 'raw'
+    lastTailRenderAt:0,
+    pinnedToLive:true,
+    pinBaselineLen:0,
+    _suppressScrollUntil:0,
+    filters:{component:null, op:null, q:null},  // q: array of lowercased search terms, ANDed
+    deviceByNode:new Map(),     // nodeId(int) → {id, name, model, manufacturer} — populated by rcMatterFetchDeviceMap on Start
+    components:[],             // unioned component set from observed heads (UI-sorted)
+    framesLastSec:[],
+    rotations:0,               // count of polls where the anchor missed (full-buffer rotations)
+    firstPollDone:false,
+    lastErr:null
   }
 };
 
@@ -3411,20 +3434,23 @@ async function rRadioCapture(){
     <div class="tabs" id="rc-subtabs" style="margin-bottom:12px">
       <div class="tab active" data-rcsub="zigbee">Zigbee</div>
       <div class="tab" data-rcsub="zwave">Z-Wave</div>
+      <div class="tab" data-rcsub="matter">Matter</div>
     </div>
     <div id="rc-zigbee"></div>
     <div id="rc-zwave" style="display:none"></div>
+    <div id="rc-matter" style="display:none"></div>
   `;
   document.getElementById('rc-subtabs').addEventListener('click',e=>{
     const s=e.target.dataset.rcsub;if(!s)return;
     document.querySelectorAll('#rc-subtabs .tab').forEach(t=>t.classList.toggle('active',t.dataset.rcsub===s));
-    ['zigbee','zwave'].forEach(k=>{
+    ['zigbee','zwave','matter'].forEach(k=>{
       document.getElementById('rc-'+k).style.display=k===s?'':'none';
     });
     RC.subTab=s;
   });
   renderZigbeeSubTab();
   renderZwaveSubTab();
+  renderMatterSubTab();
 }
 
 function renderZigbeeSubTab(){
@@ -3908,7 +3934,7 @@ function rcZbRenderTailHtml(rows, selectedRaw){
     html+='</tr>';
     if(sel){
       let pretty;try{pretty=JSON.stringify(JSON.parse(r._raw),null,2)}catch(e){pretty=r._raw}
-      html+='<tr style="background:rgba(33,150,243,0.08)"><td colspan="8" style="padding:8px 14px">'+rcZbDecodeHtml(r._raw)+'<pre style="margin:0;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;color:var(--text)">'+h(pretty)+'</pre></td></tr>';
+      html+='<tr style="background:rgba(33,150,243,0.08)"><td colspan="9" style="padding:8px 14px">'+rcZbDecodeHtml(r._raw)+'<pre style="margin:0;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;color:var(--text)">'+h(pretty)+'</pre></td></tr>';
     }
   });
   html+='</tbody></table>';
@@ -4200,6 +4226,811 @@ function rcZwHandleTailClick(e){
   // Expanding means "I'm reading this" — freeze auto-follow so the row doesn't get scrolled away.
   if(expanding&&z.pinnedToLive){z.pinnedToLive=false;z.pinBaselineLen=z.displayBuf.length;}  // only when following; if already in history, keep the pill's running count
   rcZwRenderTail({});
+}
+
+// ===== RADIO CAPTURE: MATTER SUB-TAB =====
+// Standalone Matter cluster / attribute / global-command tables.
+// Standalone (not reusing the Zigbee cluster table) because Matter cluster definitions are owned
+// by the CSA Matter spec; some IDs overlap with Zigbee Cluster Library but the namespaces and
+// attribute lists diverge (e.g. BasicInformation 0x0028, OperationalCredentials 0x003E).
+const MATTER_CLUSTERS = {
+  0x0003: {name:'Identify', attrs:{0x0000:'IdentifyTime', 0x0001:'IdentifyType'}, cmds:{0x00:'Identify', 0x40:'TriggerEffect'}},
+  0x0004: {name:'Groups', attrs:{0x0000:'NameSupport'}, cmds:{0x00:'AddGroup', 0x01:'ViewGroup', 0x02:'GetGroupMembership', 0x03:'RemoveGroup', 0x04:'RemoveAllGroups', 0x05:'AddGroupIfIdentifying'}},
+  0x0006: {name:'OnOff', attrs:{0x0000:'OnOff', 0x4000:'GlobalSceneControl', 0x4001:'OnTime', 0x4002:'OffWaitTime', 0x4003:'StartUpOnOff'}, cmds:{0x00:'Off', 0x01:'On', 0x02:'Toggle', 0x40:'OffWithEffect', 0x41:'OnWithRecallGlobalScene', 0x42:'OnWithTimedOff'}},
+  0x0008: {name:'LevelControl', attrs:{0x0000:'CurrentLevel', 0x0001:'RemainingTime', 0x0002:'MinLevel', 0x0003:'MaxLevel', 0x000F:'Options', 0x0010:'OnOffTransitionTime', 0x0011:'OnLevel'}, cmds:{0x00:'MoveToLevel', 0x01:'Move', 0x02:'Step', 0x03:'Stop', 0x04:'MoveToLevelWithOnOff', 0x05:'MoveWithOnOff', 0x06:'StepWithOnOff', 0x07:'StopWithOnOff'}},
+  0x001D: {name:'Descriptor', attrs:{0x0000:'DeviceTypeList', 0x0001:'ServerList', 0x0002:'ClientList', 0x0003:'PartsList'}, cmds:{}},
+  0x001E: {name:'Binding', attrs:{0x0000:'Binding'}, cmds:{}},
+  0x001F: {name:'AccessControl', attrs:{0x0000:'ACL', 0x0001:'Extension', 0x0002:'SubjectsPerAccessControlEntry', 0x0003:'TargetsPerAccessControlEntry', 0x0004:'AccessControlEntriesPerFabric'}, cmds:{}},
+  0x0028: {name:'BasicInformation', attrs:{0x0000:'DataModelRevision', 0x0001:'VendorName', 0x0002:'VendorID', 0x0003:'ProductName', 0x0004:'ProductID', 0x0005:'NodeLabel', 0x0006:'Location', 0x0007:'HardwareVersion', 0x0008:'HardwareVersionString', 0x0009:'SoftwareVersion', 0x000A:'SoftwareVersionString'}, cmds:{}},
+  0x0029: {name:'OTASoftwareUpdateProvider', attrs:{}, cmds:{0x00:'QueryImage', 0x02:'ApplyUpdateRequest', 0x04:'NotifyUpdateApplied'}},
+  0x002A: {name:'OTASoftwareUpdateRequestor', attrs:{0x0000:'DefaultOTAProviders', 0x0001:'UpdatePossible', 0x0002:'UpdateState', 0x0003:'UpdateStateProgress'}, cmds:{0x00:'AnnounceOTAProvider'}},
+  0x002B: {name:'LocalizationConfiguration', attrs:{0x0000:'ActiveLocale', 0x0001:'SupportedLocales'}, cmds:{}},
+  0x002C: {name:'TimeFormatLocalization', attrs:{0x0000:'HourFormat', 0x0001:'ActiveCalendarType', 0x0002:'SupportedCalendarTypes'}, cmds:{}},
+  0x002F: {name:'PowerSource', attrs:{0x0000:'Status', 0x0001:'Order', 0x0002:'Description', 0x000B:'BatVoltage', 0x000C:'BatPercentRemaining', 0x000E:'BatChargeLevel'}, cmds:{}},
+  0x0030: {name:'GeneralCommissioning', attrs:{0x0000:'Breadcrumb', 0x0001:'BasicCommissioningInfo', 0x0002:'RegulatoryConfig', 0x0003:'LocationCapability'}, cmds:{0x00:'ArmFailSafe', 0x02:'SetRegulatoryConfig', 0x04:'CommissioningComplete'}},
+  0x0031: {name:'NetworkCommissioning', attrs:{0x0000:'MaxNetworks', 0x0001:'Networks', 0x0004:'ConnectMaxTimeSeconds', 0x0005:'InterfaceEnabled', 0x0006:'LastNetworkingStatus', 0x0007:'LastNetworkID', 0x0008:'LastConnectErrorValue'}, cmds:{0x00:'ScanNetworks', 0x02:'AddOrUpdateWiFiNetwork', 0x03:'AddOrUpdateThreadNetwork', 0x04:'RemoveNetwork', 0x06:'ConnectNetwork'}},
+  0x0032: {name:'DiagnosticLogs', attrs:{}, cmds:{0x00:'RetrieveLogsRequest'}},
+  0x0033: {name:'GeneralDiagnostics', attrs:{0x0000:'NetworkInterfaces', 0x0001:'RebootCount', 0x0002:'UpTime', 0x0003:'TotalOperationalHours', 0x0008:'TestEventTriggersEnabled'}, cmds:{0x00:'TestEventTrigger'}},
+  0x0034: {name:'SoftwareDiagnostics', attrs:{0x0000:'ThreadMetrics', 0x0001:'CurrentHeapFree', 0x0002:'CurrentHeapUsed', 0x0003:'CurrentHeapHighWatermark'}, cmds:{0x00:'ResetWatermarks'}},
+  0x0035: {name:'ThreadNetworkDiagnostics', attrs:{0x0000:'Channel', 0x0001:'RoutingRole', 0x0002:'NetworkName'}, cmds:{0x00:'ResetCounts'}},
+  0x0036: {name:'WiFiNetworkDiagnostics', attrs:{0x0000:'BSSID', 0x0001:'SecurityType', 0x0007:'RSSI'}, cmds:{0x00:'ResetCounts'}},
+  0x0037: {name:'EthernetNetworkDiagnostics', attrs:{0x0000:'PHYRate', 0x0001:'FullDuplex'}, cmds:{0x00:'ResetCounts'}},
+  0x003C: {name:'AdministratorCommissioning', attrs:{0x0000:'WindowStatus', 0x0001:'AdminFabricIndex', 0x0002:'AdminVendorId'}, cmds:{0x00:'OpenCommissioningWindow', 0x01:'OpenBasicCommissioningWindow', 0x02:'RevokeCommissioning'}},
+  0x003E: {name:'OperationalCredentials', attrs:{0x0000:'NOCs', 0x0001:'Fabrics', 0x0002:'SupportedFabrics', 0x0003:'CommissionedFabrics', 0x0004:'TrustedRootCertificates', 0x0005:'CurrentFabricIndex'}, cmds:{0x00:'AttestationRequest', 0x02:'CertificateChainRequest', 0x04:'CSRRequest', 0x06:'AddNOC', 0x07:'UpdateNOC', 0x09:'UpdateFabricLabel', 0x0A:'RemoveFabric', 0x0B:'AddTrustedRootCertificate'}},
+  0x003F: {name:'GroupKeyManagement', attrs:{0x0000:'GroupKeyMap', 0x0001:'GroupTable', 0x0002:'MaxGroupsPerFabric', 0x0003:'MaxGroupKeysPerFabric'}, cmds:{0x00:'KeySetWrite', 0x01:'KeySetRead', 0x03:'KeySetRemove', 0x04:'KeySetReadAllIndices'}},
+  0x0045: {name:'BooleanState', attrs:{0x0000:'StateValue'}, cmds:{}},
+  0x0046: {name:'SmokeCoAlarm', attrs:{0x0000:'ExpressedState', 0x0001:'SmokeState', 0x0002:'COState', 0x0003:'BatteryAlert'}, cmds:{}},
+  0x0050: {name:'ModeSelect', attrs:{0x0000:'Description', 0x0001:'StandardNamespace', 0x0002:'SupportedModes', 0x0003:'CurrentMode', 0x0004:'StartUpMode', 0x0005:'OnMode'}, cmds:{0x00:'ChangeToMode'}},
+  0x005B: {name:'AirQuality', attrs:{0x0000:'AirQuality'}, cmds:{}},
+  0x0071: {name:'HepaFilterMonitoring', attrs:{0x0000:'Condition', 0x0001:'DegradationDirection', 0x0002:'ChangeIndication', 0x0003:'InPlaceIndicator'}, cmds:{0x00:'ResetCondition'}},
+  0x0072: {name:'ActivatedCarbonFilterMonitoring', attrs:{0x0000:'Condition', 0x0001:'DegradationDirection', 0x0002:'ChangeIndication', 0x0003:'InPlaceIndicator'}, cmds:{0x00:'ResetCondition'}},
+  0x0080: {name:'BooleanStateConfiguration', attrs:{0x0000:'CurrentSensitivityLevel', 0x0001:'SupportedSensitivityLevels', 0x0002:'DefaultSensitivityLevel'}, cmds:{}},
+  0x0081: {name:'ValveConfigurationAndControl', attrs:{0x0000:'OpenDuration', 0x0001:'DefaultOpenDuration', 0x0002:'AutoCloseTime', 0x0003:'RemainingDuration', 0x0004:'CurrentState', 0x0005:'TargetState'}, cmds:{0x00:'Open', 0x01:'Close'}},
+  0x0090: {name:'ElectricalEnergyMeasurement', attrs:{0x0000:'Accuracy', 0x0001:'CumulativeEnergyImported', 0x0002:'CumulativeEnergyExported', 0x0003:'PeriodicEnergyImported', 0x0004:'PeriodicEnergyExported', 0x0005:'CumulativeEnergyReset'}, cmds:{}},
+  0x0091: {name:'ElectricalPowerMeasurement', attrs:{0x0000:'PowerMode', 0x0001:'NumberOfMeasurementTypes', 0x0002:'Accuracy', 0x0003:'Ranges', 0x0004:'Voltage', 0x0005:'ActiveCurrent', 0x0006:'ReactiveCurrent', 0x0007:'ApparentCurrent', 0x0008:'ActivePower', 0x0009:'ReactivePower', 0x000A:'ApparentPower', 0x000B:'RMSVoltage', 0x000C:'RMSCurrent', 0x000D:'RMSPower', 0x000E:'Frequency'}, cmds:{}},
+  0x0093: {name:'DeviceEnergyManagement', attrs:{0x0000:'ESAType', 0x0001:'ESACanGenerate', 0x0002:'ESAState', 0x0003:'AbsMinPower', 0x0004:'AbsMaxPower'}, cmds:{}},
+  0x0094: {name:'EnergyEvse', attrs:{0x0000:'State', 0x0001:'SupplyState', 0x0002:'FaultState'}, cmds:{0x00:'Disable', 0x02:'EnableCharging', 0x03:'EnableDischarging'}},
+  0x0096: {name:'PowerTopology', attrs:{0x0000:'AvailableEndpoints', 0x0001:'ActiveEndpoints'}, cmds:{}},
+  0x0097: {name:'EnergyEvseMode', attrs:{0x0000:'SupportedModes', 0x0001:'CurrentMode'}, cmds:{0x00:'ChangeToMode'}},
+  0x0098: {name:'EnergyPreference', attrs:{0x0000:'EnergyBalances', 0x0001:'CurrentEnergyBalance'}, cmds:{}},
+  0x0099: {name:'DeviceEnergyManagementMode', attrs:{0x0000:'SupportedModes', 0x0001:'CurrentMode'}, cmds:{0x00:'ChangeToMode'}},
+  0x0101: {name:'DoorLock', attrs:{0x0000:'LockState', 0x0001:'LockType', 0x0002:'ActuatorEnabled'}, cmds:{0x00:'LockDoor', 0x01:'UnlockDoor'}},
+  0x0102: {name:'WindowCovering', attrs:{0x0000:'Type', 0x000A:'OperationalStatus', 0x000B:'TargetPositionLiftPercent100ths', 0x000E:'CurrentPositionLiftPercent100ths'}, cmds:{0x00:'UpOrOpen', 0x01:'DownOrClose', 0x02:'StopMotion', 0x05:'GoToLiftPercentage'}},
+  0x0200: {name:'PumpConfigAndControl', attrs:{0x0000:'MaxPressure', 0x0001:'MaxSpeed'}, cmds:{}},
+  0x0201: {name:'Thermostat', attrs:{0x0000:'LocalTemperature', 0x0011:'OccupiedCoolingSetpoint', 0x0012:'OccupiedHeatingSetpoint', 0x001B:'ControlSequenceOfOperation', 0x001C:'SystemMode'}, cmds:{0x00:'SetpointRaiseLower', 0x01:'SetWeeklySchedule', 0x02:'GetWeeklySchedule', 0x03:'ClearWeeklySchedule'}},
+  0x0202: {name:'FanControl', attrs:{0x0000:'FanMode', 0x0001:'FanModeSequence', 0x0002:'PercentSetting', 0x0003:'PercentCurrent', 0x0004:'SpeedMax', 0x0005:'SpeedSetting', 0x0006:'SpeedCurrent'}, cmds:{}},
+  0x0204: {name:'ThermostatUIConfig', attrs:{0x0000:'TemperatureDisplayMode', 0x0001:'KeypadLockout'}, cmds:{}},
+  0x0300: {name:'ColorControl', attrs:{0x0000:'CurrentHue', 0x0001:'CurrentSaturation', 0x0003:'CurrentX', 0x0004:'CurrentY', 0x0007:'ColorTemperatureMireds', 0x0008:'ColorMode', 0x4001:'EnhancedColorMode'}, cmds:{0x00:'MoveToHue', 0x04:'MoveToSaturation', 0x07:'MoveToColor', 0x0A:'MoveToColorTemperature', 0x40:'EnhancedMoveToHue', 0x47:'StopMoveStep'}},
+  0x0400: {name:'IlluminanceMeasurement', attrs:{0x0000:'MeasuredValue', 0x0001:'MinMeasuredValue', 0x0002:'MaxMeasuredValue'}, cmds:{}},
+  0x0402: {name:'TemperatureMeasurement', attrs:{0x0000:'MeasuredValue', 0x0001:'MinMeasuredValue', 0x0002:'MaxMeasuredValue'}, cmds:{}},
+  0x0403: {name:'PressureMeasurement', attrs:{0x0000:'MeasuredValue'}, cmds:{}},
+  0x0405: {name:'RelativeHumidityMeasurement', attrs:{0x0000:'MeasuredValue', 0x0001:'MinMeasuredValue', 0x0002:'MaxMeasuredValue'}, cmds:{}},
+  0x0406: {name:'OccupancySensing', attrs:{0x0000:'Occupancy', 0x0001:'OccupancySensorType'}, cmds:{}},
+  0x040C: {name:'CarbonMonoxideConcentrationMeasurement', attrs:{0x0000:'MeasuredValue'}, cmds:{}},
+  0x040D: {name:'CarbonDioxideConcentrationMeasurement', attrs:{0x0000:'MeasuredValue'}, cmds:{}},
+  0x0413: {name:'PM25ConcentrationMeasurement', attrs:{0x0000:'MeasuredValue'}, cmds:{}}
+};
+
+// Matter Interaction Model global commands — names per spec §8 (Interaction Model). Used when a
+// command is not cluster-scoped (e.g. ReadRequest, SubscribeRequest, InvokeRequest).
+const MATTER_GLOBAL_COMMANDS = {
+  0x01:'StatusResponse', 0x02:'ReadRequest', 0x03:'SubscribeRequest', 0x04:'SubscribeResponse',
+  0x05:'ReportData', 0x06:'WriteRequest', 0x07:'WriteResponse', 0x08:'InvokeRequest',
+  0x09:'InvokeResponse', 0x0A:'TimedRequest'
+};
+
+function matterClusterName(id){
+  const e = MATTER_CLUSTERS[id];
+  return e ? e.name : null;
+}
+function matterAttrName(clusterId, attrId){
+  const e = MATTER_CLUSTERS[clusterId];
+  if(!e || !e.attrs) return null;
+  return e.attrs[attrId] || null;
+}
+// clusterId may be null for IM global commands. When non-null, prefer the cluster-scoped name.
+function matterCommandName(clusterId, cmdId){
+  if(clusterId != null){
+    const e = MATTER_CLUSTERS[clusterId];
+    if(e && e.cmds && e.cmds[cmdId]) return e.cmds[cmdId];
+  }
+  return MATTER_GLOBAL_COMMANDS[cmdId] || null;
+}
+
+// ANSI CSI strip — strips both the bracket-only form CHIP emits in hub JSON
+// and the full ESC+bracket form emitted by the SDK directly.
+function stripAnsi(text){
+  return text.replace(/\x1b?\[[0-9;]*m/g, '');
+}
+
+// Parse a single CHIP log line.
+//   Head form (ANSI-stripped):  [<epoch>.<ms>] [<pid>:<tid>] [<COMPONENT>] <body>
+//   Continuation: any line that doesn't match the head regex (indented continuation lines + blanks).
+// Returns:
+//   head:        { isHead:true, epoch, ms, pid, tid, component, body, ansi:'<first SGR code seen>' | null, raw }
+//   continuation:{ isHead:false, body, ansi, raw }
+function parseChipLine(raw){
+  // Capture first SGR code (severity hint) before stripping. Errors are 0;31, warnings 0;33,
+  // progress 0;32, detail 0;34. We pass the raw code through; the renderer maps to CSS color.
+  const CHIP_HEAD_RE = /^\[(\d+)\.(\d+)\] \[(\d+):(\d+)\] \[([A-Z]+)\] ?(.*)$/;
+  let ansi=null;
+  const m=raw.match(/\x1b?\[([0-9;]+)m/);
+  if(m)ansi=m[1];
+  const stripped=stripAnsi(raw);
+  const h=stripped.match(CHIP_HEAD_RE);
+  if(h){
+    return {
+      isHead:true,
+      epoch:parseInt(h[1],10),
+      ms:parseInt(h[2],10),
+      pid:h[3], tid:h[4], component:h[5],
+      body:h[6], ansi, raw
+    };
+  }
+  return { isHead:false, body:stripped, ansi, raw };
+}
+
+// Group an array of ANSI-stripped (or ANSI-bearing) raw lines into logical CHIP entries:
+// one head + zero-or-more continuation lines, terminated by the next head line.
+// Continuation lines that appear before any head are dropped (no parent to attach to).
+function groupChipEntries(lines){
+  const groups=[];
+  let cur=null;
+  for(const raw of lines){
+    const p=parseChipLine(raw);
+    if(p.isHead){
+      if(cur)groups.push(cur);
+      cur={
+        epoch:p.epoch, ms:p.ms, pid:p.pid, tid:p.tid, component:p.component,
+        body:p.body, ansi:p.ansi, raw:p.raw, continuations:[]
+      };
+    }else if(cur){
+      cur.continuations.push(raw);
+    // else: orphan continuation before any head — drop.
+    }
+  }
+  if(cur)groups.push(cur);
+  return groups;
+}
+
+// Extract structured fields from a CHIP entry (head + continuations).
+// Searches the joined body+continuations text for the standard IM markers and the
+// Endpoint/Cluster/Attribute/Command/Exchange/Session integer fields. All integer
+// captures accept either 0x-prefixed hex or plain decimal — CHIP emits both depending
+// on the SDK version.
+function extractMatterFields(entry){
+  const text = (entry.body || '') + (entry.continuations.length ? '\n' + entry.continuations.join('\n') : '');
+  let op = null;
+  if(/AttributeReportIBs|ReportData(?:Message)?/.test(text)) op = 'Report';
+  else if(/ReadRequestMessage/.test(text)) op = 'Read';
+  else if(/SubscribeRequestMessage/.test(text)) op = 'Subscribe';
+  else if(/InvokeRequestMessage/.test(text)) op = 'Invoke';
+  else if(/WriteRequestMessage/.test(text)) op = 'Write';
+  else if(/TimedRequestMessage/.test(text)) op = 'TimedReq';
+  else if(/StatusResponseMessage/.test(text)) op = 'Status';
+  function pick(re){
+    const m = text.match(re);
+    if(!m) return null;
+    const v = m[1].replace(/_/g,'');
+    return v.startsWith('0x') || v.startsWith('0X') ? parseInt(v,16) : parseInt(v,10);
+  }
+  return {
+    op,
+    endpoint:  pick(/Endpoint\s*=\s*(0x[0-9A-Fa-f_]+|\d+)/),
+    cluster:   pick(/Cluster\s*=\s*(0x[0-9A-Fa-f_]+|\d+)/),
+    attribute: pick(/Attribute\s*=\s*(0x[0-9A-Fa-f_]+|\d+)/),
+    command:   pick(/Command\s*=\s*(0x[0-9A-Fa-f_]+|\d+)/),
+    exchange:  pick(/Exchange[:=]\s*(0x[0-9A-Fa-f_]+|\d+)/),
+    session:   pick(/Session[:=]\s*(0x[0-9A-Fa-f_]+|\d+)/),
+    fabric:    pick(/Fabric(?:Index)?\s*=\s*(0x[0-9A-Fa-f_]+|\d+)/)
+  };
+}
+
+// Dedup-append: given the previous poll's tail (last K lines) and the current poll's full
+// line array, return the lines appended since last poll plus the new tail to remember.
+// Searches `next` from the end for the contiguous K-line block matching `prevTail`; if found,
+// returns everything after it. If not found (full buffer rotation between polls — improbable
+// with a 2 s poll on a ~2 h rolling buffer) or on the first poll (empty prevTail), ingests
+// the entire `next` array. K-line block anchoring is required because individual CHIP lines
+// repeat verbatim (e.g. 'put : 0, status Success...'); single-line dedup would mis-splice.
+function matterDedupAppend(prevTail, next, k){
+  const lastTail = next.slice(Math.max(0, next.length - k));
+  if(!prevTail || prevTail.length === 0){
+    return { appended: next.slice(), lastTail };
+  }
+  // Search `next` from the end for a contiguous slice equal to prevTail. Last occurrence wins
+  // (start = next.length - ptLen, count down): if the same block appears earlier in the buffer,
+  // anchoring on the freshest one prevents over-counting.
+  const pt = prevTail.slice(Math.max(0, prevTail.length - k));    // honor caller's K
+  const ptLen = pt.length;
+  for(let start = next.length - ptLen; start >= 0; start--){
+    let ok = true;
+    for(let i = 0; i < ptLen; i++){
+      if(next[start + i] !== pt[i]){ ok = false; break; }
+    }
+    if(ok){
+      return { appended: next.slice(start + ptLen), lastTail };
+    }
+  }
+  // Anchor block missing — ingest everything (rare; logs as "rotation" in the UI metrics).
+  return { appended: next.slice(), lastTail };
+}
+
+// Extract a Matter exchange ID from a line body if present. Patterns observed on
+// /hub/matterLogs/json (C-8 Pro firmware 2.5.0.148):
+//   '>>> [E:36698r S:52787 M:165512360]'          — EM Msg TX/RX header
+//   'Handling via exchange: 36698r, Delegate:…'  — EM dispatch
+//   'Found matching exchange: 36698r, Delegate:'  — EM ack-match
+//   'Rxd Ack; … on exchange 36698r'              — EM ack-receive
+// The trailing 'r' on the ID is the responder marker; kept verbatim so users can
+// match it against IDs in the raw expand view.
+function extractExchangeId(body){
+  if(!body) return null;
+  const m = body.match(/(?:\[E:|exchange[:\s]+)(\d+r?)/);
+  return m ? m[1] : null;
+}
+
+// Pull the peer Matter NodeID from a CHIP EM line. The hub's own NodeID is the local side
+// of each message; the peer is the other end (a commissioned device). On RX the peer is the
+// 'from' end; on TX the peer is the 'to' end. Returns the 64-bit NodeID as a JS integer or
+// null when the line has no Msg RX/TX marker (DMG decode lines, RMI calls, etc.).
+function extractPeerNodeId(body){
+  if(!body) return null;
+  let m = body.match(/Msg RX from \d+:([0-9A-Fa-f]+)/);
+  if(m) return parseInt(m[1], 16);
+  m = body.match(/Msg TX from [0-9A-Fa-f]+ to \d+:([0-9A-Fa-f]+)/);
+  if(m) return parseInt(m[1], 16);
+  return null;
+}
+
+// Group raw CHIP lines into entries by exchange ID. Walks lines oldest-first;
+// maintains the most-recent exchange seen per thread-id (CHIP processes one IM
+// message at a time per delegate, so a DMG decode line that follows an EM
+// 'Handling via exchange: NNNNr' line correctly inherits that exchange).
+// Consecutive lines sharing the same (tid, exchange) become one entry.
+// Lines that never see an exchange marker stand alone as singletons.
+function groupChipByExchange(lines){
+  const groups = [];
+  const lastExchangeByTid = new Map();
+  let current = null;
+  for(const raw of lines){
+    const p = parseChipLine(raw);
+    if(!p.isHead){
+      if(current) current.continuations.push(raw);
+      continue;
+    }
+    let exchange = extractExchangeId(p.body);
+    if(exchange){
+      lastExchangeByTid.set(p.tid, exchange);
+    } else {
+      exchange = lastExchangeByTid.get(p.tid) || null;
+    }
+    const sameGroup = current && exchange != null && exchange === current.exchange && p.tid === current.tid;
+    if(sameGroup){
+      current.continuations.push(raw);
+    } else {
+      if(current) groups.push(current);
+      current = {
+        epoch:p.epoch, ms:p.ms, pid:p.pid, tid:p.tid,
+        component:p.component, body:p.body, ansi:p.ansi, raw:p.raw,
+        exchange,
+        continuations:[]
+      };
+    }
+  }
+  if(current) groups.push(current);
+  return groups;
+}
+
+// Scan an entry's combined text for every individual AttributeReportIB block and pull out
+// the (endpoint, cluster, attribute, data) tuple from each. A single ReportDataMessage can
+// carry multiple AttributeReportIBs (e.g. one sensor reporting humidity and temperature
+// together), so this is what feeds the multi-row split in rcMatterFrameToRow. Returns []
+// when there are no AttributeReportIB blocks (StatusResponse, retransmission scheduling, etc.).
+function findAttributeReports(text){
+  if(!text) return [];
+  // Split on "AttributeReportIB =" but not "AttributeReportIBs =" (the outer container).
+  const parts = text.split(/AttributeReportIB(?!s)\s*=/);
+  const reports = [];
+  function pickHex(s, re){
+    const m = s.match(re);
+    if(!m) return null;
+    const v = m[1].replace(/_/g,'');
+    return v.startsWith('0x') || v.startsWith('0X') ? parseInt(v,16) : parseInt(v,10);
+  }
+  // parts[0] is everything before the first AttributeReportIB (or the whole text if none).
+  for(let i = 1; i < parts.length; i++){
+    const p = parts[i];
+    const ep = pickHex(p, /Endpoint\s*=\s*(0x[0-9A-Fa-f_]+|\d+)/);
+    const cl = pickHex(p, /Cluster\s*=\s*(0x[0-9A-Fa-f_]+|\d+)/);
+    const at = pickHex(p, /Attribute\s*=\s*(0x[0-9A-Fa-f_]+|\d+)/);
+    const dm = p.match(/Data\s*=\s*(-?\d+)\s*\((signed|unsigned|boolean|null|float)\)/);
+    if(ep != null || cl != null || at != null || dm){
+      reports.push({
+        endpoint: ep, cluster: cl, attribute: at,
+        data: dm ? dm[1] : null,
+        dataType: dm ? dm[2] : null
+      });
+    }
+  }
+  return reports;
+}
+
+function renderMatterSubTab(){
+  const m=RC.matter;
+  document.getElementById('rc-matter').innerHTML=`
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button id="rc-m-start" class="btn-primary">Start capture</button>
+        <button id="rc-m-pause" disabled>Pause capture</button>
+        <button id="rc-m-stop" disabled>Stop capture</button>
+        <button id="rc-m-dl" disabled title="Download the current buffer">Download</button>
+        <button id="rc-m-clear" disabled>Clear buffer</button>
+        <span style="margin-left:auto">Recording cap:
+          <select id="rc-m-cap">
+            <option value="10">10 MB</option>
+            <option value="50" selected>50 MB</option>
+            <option value="200">200 MB</option>
+          </select>
+        </span>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;font-size:13px;align-items:center">
+        <span>State: <span id="rc-m-state" class="badge b-warn">idle</span></span>
+        <span>Lines/s: <span id="rc-m-rate">0</span></span>
+        <span>Buffered: <span id="rc-m-buffered">0 lines / 0 MB</span></span>
+        <span>Dropped: <span id="rc-m-dropped">0</span></span>
+        <span title="Polls where the K-line dedup anchor was not found in the new buffer (rare; indicates ≥2 h elapsed between polls).">Rotations: <span id="rc-m-rot">0</span></span>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:13px">
+        <span>View:
+          <select id="rc-m-view">
+            <option value="structured" selected>Structured</option>
+            <option value="raw">Raw</option>
+          </select>
+        </span>
+        <span>Component:
+          <select id="rc-m-fcomp"><option value="">All</option></select>
+        </span>
+        <span>Op:
+          <select id="rc-m-fop">
+            <option value="">All</option>
+            <option value="Report">Report</option>
+            <option value="Read">Read</option>
+            <option value="Write">Write</option>
+            <option value="Subscribe">Subscribe</option>
+            <option value="Invoke">Invoke</option>
+            <option value="Status">Status</option>
+            <option value="TimedReq">TimedReq</option>
+          </select>
+        </span>
+      </div>
+      <div style="margin-top:6px;font-size:12px;opacity:.7">Polls /hub/matterLogs/json every 2 s. LAN-only — won't work via the Hubitat cloud URL.</div>
+    </div>
+    ${rcMatterFilterCard()}
+    <div id="rc-m-live"></div>
+  `;
+  document.getElementById('rc-m-start').addEventListener('click',rcMatterStart);
+  document.getElementById('rc-m-stop').addEventListener('click',rcMatterStop);
+  document.getElementById('rc-m-dl').addEventListener('click',rcMatterDownload);
+  document.getElementById('rc-m-pause').addEventListener('click',rcMatterPause);
+  document.getElementById('rc-m-clear').addEventListener('click',rcMatterClear);
+  document.getElementById('rc-m-cap').addEventListener('change',e=>{
+    const mb=parseInt(e.target.value,10);
+    if(m.buf)m.buf.setMaxBytes(mb*1024*1024);
+  });
+  document.getElementById('rc-m-view').addEventListener('change',e=>{
+    m.viewMode=e.target.value;
+    m.selectedRowKey=null;
+    rcMatterRenderTail({repin:true});
+  });
+  document.getElementById('rc-m-fcomp').addEventListener('change',e=>{
+    m.filters.component=e.target.value||null;
+    rcMatterRenderTail({repin:true});
+  });
+  document.getElementById('rc-m-fop').addEventListener('change',e=>{
+    m.filters.op=e.target.value||null;
+    rcMatterRenderTail({repin:true});
+  });
+  document.getElementById('rc-m-f-q').addEventListener('input', () => {
+    rcMatterReadFilters();
+    rcMatterRenderTail({repin:true});
+  });
+  document.getElementById('rc-m-live').addEventListener('click',rcMatterHandleTailClick);
+  rcMatterUpdateBadge();
+  rcMatterRenderTail({repin:true});
+}
+
+function rcMatterUpdateBadge(){
+  const el=document.getElementById('rc-m-state');if(!el)return;
+  const m=RC.matter;
+  const s=m.state;
+  const cls=s==='polling'?'b-ok':'b-warn';
+  el.className='badge '+cls;el.textContent=s;
+  const idle=s==='idle'||s==='disconnected';
+  const hasFrames=!!m.buf&&m.buf.count()>0;
+  document.getElementById('rc-m-start').disabled=!idle;
+  document.getElementById('rc-m-stop').disabled=idle;
+  document.getElementById('rc-m-pause').disabled=idle;
+  document.getElementById('rc-m-clear').disabled=idle&&!m.buf;
+  document.getElementById('rc-m-dl').disabled=!hasFrames;
+}
+
+function rcMatterStart(){
+  const m=RC.matter;
+  if(!RC.hubIp){alert('Hub IP unknown — open the Dashboard tab once first.');return}
+  const mb=parseInt(document.getElementById('rc-m-cap').value,10);
+  m.buf=new FrameBuffer(mb*1024*1024);
+  m.displayBuf=[];
+  m.framesLastSec=[];
+  m.pausedCapture=false;
+  m.lastTail=[];
+  m.rotations=0;
+  m.firstPollDone=false;
+  m.lastErr=null;
+  m.components=[];
+  m.deviceByNode = new Map();
+  rcMatterFetchDeviceMap();
+  document.getElementById('rc-m-pause').textContent='Pause capture';
+  rcMatterRenderTail({repin:true});
+  rcMatterConnect();
+}
+
+function rcMatterStop(){
+  const m=RC.matter;
+  if(m.pollTimer){clearInterval(m.pollTimer);m.pollTimer=null}
+  m.state='idle';
+  rcMatterUpdateBadge();rcMatterUpdateMetrics();
+}
+
+function rcMatterPause(){
+  const m=RC.matter;m.pausedCapture=!m.pausedCapture;
+  document.getElementById('rc-m-pause').textContent=m.pausedCapture?'Resume capture':'Pause capture';
+}
+
+function rcMatterClear(){
+  const m=RC.matter;if(m.buf)m.buf.clear();m.displayBuf=[];m.framesLastSec=[];m.lastTail=[];m.components=[];m.deviceByNode=new Map();m.rotations=0;m.firstPollDone=false;m.lastErr=null;
+  rcMatterUpdateMetrics();rcMatterRenderTail({repin:true});
+}
+
+function rcMatterCaptureMeta(){
+  const m=RC.matter;
+  return{
+    hubName:RC.hubName,hubIp:RC.hubIp,firmware:null,protocol:'matter',
+    appVersion:CODE_VERSION,uiVersion:CODE_VERSION,
+    captureDurationS:m.buf&&m.buf.startedAt?Math.round((Date.now()-m.buf.startedAt)/1000):null,
+    rotations:m.rotations
+  };
+}
+
+function rcMatterDownload(){
+  const m=RC.matter;if(!m.buf||m.buf.count()===0)return;
+  const fn=downloadRecording(m.buf,rcMatterCaptureMeta(),'matter');
+  console.log('Saved',fn);
+}
+
+function rcMatterUpdateMetrics(){
+  const m=RC.matter;
+  const rate=m.framesLastSec.length/5;
+  const rateEl=document.getElementById('rc-m-rate');if(rateEl)rateEl.textContent=rate.toFixed(1);
+  const bufEl=document.getElementById('rc-m-buffered');
+  if(bufEl)bufEl.textContent=(m.buf?m.buf.count():0)+' lines / '+fbytes(m.buf?m.buf.bytes:0);
+  const dropEl=document.getElementById('rc-m-dropped');
+  if(dropEl)dropEl.textContent=m.buf?m.buf.dropped:0;
+  const rotEl=document.getElementById('rc-m-rot');
+  if(rotEl)rotEl.textContent=m.rotations;
+  const hasFrames=!!m.buf&&m.buf.count()>0;
+  const cl=document.getElementById('rc-m-clear');if(cl)cl.disabled=!m.buf||m.buf.count()===0;
+  const dl=document.getElementById('rc-m-dl');if(dl)dl.disabled=!hasFrames;
+}
+
+function rcMatterConnect(){
+  const m=RC.matter;
+  m.state='polling';rcMatterUpdateBadge();
+  // Kick off immediately, then on interval. Keep polling even when the tab is hidden so the
+  // recording stays continuous (capture semantics, unlike refreshLive which skips hidden tabs).
+  rcMatterPoll();
+  m.pollTimer=setInterval(rcMatterPoll, m.intervalMs);
+}
+
+function rcMatterPoll(){
+  const m=RC.matter;
+  if(!m.buf)return;     // Stopped between scheduled ticks.
+  fetch('http://'+RC.hubIp+'/hub/matterLogs/json',{credentials:'include'})
+    .then(r=>{
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      return r.json();
+    })
+    .then(j=>{
+      if(m.state!=='polling')return;   // Stop ran between fetch dispatch and resolution.
+      m.lastErr=null;
+      const text=(j&&j.text)||'';
+      const lines=text.split('\n');
+      // Drop a trailing empty entry if the buffer ended on \n.
+      if(lines.length&&lines[lines.length-1]==='')lines.pop();
+      const r=matterDedupAppend(m.lastTail, lines, m.dedupK);
+      m.lastTail=r.lastTail;
+      if(!m.firstPollDone){
+        m.firstPollDone=true;
+        // First poll: prime lastTail and ingest the whole backlog (rate will spike once; intended).
+      }else if(r.appended.length===lines.length&&lines.length>0&&m.lastTail.length){
+        // Anchor was searched but not matched even though we had a tail to anchor on:
+        // treat as a full-buffer rotation (improbable at 2 s vs ~2 h buffer).
+        m.rotations++;
+      }
+      if(!m.pausedCapture){
+        const now=Date.now();
+        for(const ln of r.appended){
+          m.buf.push(ln);
+          m.framesLastSec.push(now);
+        }
+        while(m.framesLastSec.length&&m.framesLastSec[0]<now-5000)m.framesLastSec.shift();
+      }
+      rcMatterUpdateMetrics();
+      const t=Date.now();
+      if(t-m.lastTailRenderAt>1000){m.lastTailRenderAt=t;rcMatterRenderTail({fromTick:true})}
+    })
+    .catch(err=>{
+      m.lastErr=err.message||String(err);
+      if(!m.firstPollDone){
+        // First poll error → surface clearly and stop. Most likely cause: endpoint disabled
+        // (Matter not enabled on this hub), or hub security needs an admin session cookie.
+        m.firstPollDone=true;
+        alert('Matter logging unavailable on this hub ('+m.lastErr+').\n\nIf this is a security-enabled hub, log into hub admin in this browser first; otherwise Matter may be disabled.');
+        rcMatterStop();
+        return;
+      }
+      // Mid-stream: keep polling, surface in the badge area on the next metrics tick.
+      const st=document.getElementById('rc-m-state');
+      if(st){st.title=m.lastErr;}
+    });
+}
+
+// One-shot fetch of the Matter commissioned-device list. Populates RC.matter.deviceByNode
+// so the Structured renderer can resolve peer NodeIDs to Hubitat device labels. Failures are
+// silent — the table just shows the bare NodeID hex. Triggers a re-render on success so
+// already-painted rows pick up the names without waiting for the next 1 Hz tick.
+function rcMatterFetchDeviceMap(){
+  const m = RC.matter;
+  if(!RC.hubIp) return;
+  fetch('http://' + RC.hubIp + '/hub/matterDetails/json', {credentials:'include'})
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(j => {
+      const map = new Map();
+      for(const d of (j.devices || [])){
+        if(typeof d.nodeId === 'number'){
+          map.set(d.nodeId, {id:d.id, name:d.name, model:d.model, manufacturer:d.manufacturer});
+        }
+      }
+      m.deviceByNode = map;
+      if(m.state === 'polling') rcMatterRenderTail({});
+    })
+    .catch(err => { console.warn('rcMatterFetchDeviceMap failed:', err.message); });
+}
+
+// Map a CHIP entry group → display row for the Structured table.
+// Map a CHIP entry → ARRAY of display rows for the Structured table. Most entries produce
+// one row, but a multi-attribute ReportData produces one row per AttributeReportIB so the
+// table shows each (endpoint, cluster, attribute) tuple in its own row. All sub-rows share
+// the same exchange, time, op, and full raw block — only the per-attribute columns differ.
+function rcMatterFrameToRow(entry){
+  const f = extractMatterFields(entry);
+  // Severity from the captured ANSI code on the head line.
+  let sev = null;
+  if(entry.ansi){
+    if(entry.ansi.indexOf('31') >= 0) sev = 'E';
+    else if(entry.ansi.indexOf('33') >= 0) sev = 'W';
+    else if(entry.ansi.indexOf('32') >= 0) sev = 'P';
+    else if(entry.ansi.indexOf('34') >= 0) sev = 'D';
+  }
+  const rawBlock = entry.raw + (entry.continuations.length ? '\n' + entry.continuations.join('\n') : '');
+  // Default summary
+  let summary = entry.body || '';
+  if(!summary || /^[{}]\s*$/.test(summary)){
+    const firstNonBrace = (entry.continuations || []).find(l => !/^\s*[{}]\s*$/.test(l));
+    if(firstNonBrace) summary = stripAnsi(firstNonBrace).replace(/^\s+/,'');
+  }
+  const exchange = entry.exchange || (f.exchange != null ? String(f.exchange) : null);
+
+  function makeRow(idx, ep, cl, at, cmd, sub){
+    const clusterName = cl != null ? matterClusterName(cl) : null;
+    const attrName    = (cl != null && at != null) ? matterAttrName(cl, at) : null;
+    const cmdName     = cmd != null ? matterCommandName(cl, cmd) : null;
+    return {
+      time:entry.epoch, ms:entry.ms,
+      sev, component:entry.component, op:f.op || '',
+      endpoint:ep, cluster:cl, clusterName,
+      attribute:at, attrName, command:cmd, cmdName,
+      exchange, session:f.session, fabric:f.fabric,
+      deviceNodeId: peerNodeId,
+      deviceId: peerDev ? peerDev.id : null,
+      deviceName: peerDev ? peerDev.name : null,
+      summary: sub || summary,
+      _raw:rawBlock,
+      _headRaw:entry.raw,
+      _rowKey: rawBlock + '#' + idx
+    };
+  }
+
+  // Multi-attribute path: scan for AttributeReportIB blocks and emit one row each.
+  const text = (entry.body || '') + (entry.continuations.length ? '\n' + entry.continuations.join('\n') : '');
+  const peerNodeId = extractPeerNodeId(text);
+  const peerDev = peerNodeId != null ? RC.matter.deviceByNode.get(peerNodeId) : null;
+  const reports = findAttributeReports(text);
+  if(reports.length >= 2){
+    return reports.map((r, i) => {
+      const sub = r.data != null
+        ? ('Data = ' + r.data + (r.dataType ? ' (' + r.dataType + ')' : ''))
+        : summary;
+      return makeRow(i, r.endpoint, r.cluster, r.attribute, null, sub);
+    });
+  }
+  // Single-attribute (or non-Report) — extractMatterFields' first-match values are correct.
+  return [makeRow(0, f.endpoint, f.cluster, f.attribute, f.command, null)];
+}
+
+function rcMatterFilterCard(){
+  return `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input id="rc-m-f-q" type="text" placeholder="Filter live tail… (device, exchange, op, endpoint, cluster, attribute, summary)" style="flex:1;min-width:260px;padding:6px 10px">
+        <span style="font-size:12px;opacity:.7">Substring match across all columns; space-separated terms all must match. Filters the live tail only — the recording stays full-fidelity.</span>
+      </div>
+    </div>`;
+}
+
+function rcMatterReadFilters(){
+  const el=document.getElementById('rc-m-f-q');
+  const v=el?el.value.trim().toLowerCase():'';
+  RC.matter.filters.q = v ? v.split(/\s+/).filter(Boolean) : null;
+}
+
+// Build the same flattened text the user sees in the row, so the single filter box matches what's visible.
+function rcMatterRowHaystack(r){
+  const ep   = r.endpoint  != null ? '0x'+r.endpoint.toString(16)              : '';
+  const cl   = r.cluster   != null ? '0x'+r.cluster.toString(16).padStart(4,'0').toUpperCase() : '';
+  const at   = r.attribute != null ? '0x'+r.attribute.toString(16).padStart(4,'0').toUpperCase() : '';
+  const cmd  = r.command   != null ? '0x'+r.command.toString(16).padStart(2,'0').toUpperCase() : '';
+  const node = r.deviceNodeId != null ? '0x'+r.deviceNodeId.toString(16).toUpperCase() : '';
+  return [
+    rcMatterFmtTime(r.time, r.ms),
+    r.sev || '', r.component || '', r.op || '',
+    r.deviceName || '', node,
+    r.exchange || '',
+    ep, cl, r.clusterName || '',
+    at, r.attrName || '', cmd, r.cmdName || '',
+    r.summary || ''
+  ].join(' ').toLowerCase();
+}
+
+function rcMatterRowMatchesFilter(r, f){
+  if(!f || !f.q || !f.q.length) return true;
+  const hay = rcMatterRowHaystack(r);
+  return f.q.every(t => hay.includes(t));
+}
+
+function rcMatterFmtTime(epoch, ms){
+  if(!epoch)return '';
+  const d=new Date(epoch*1000);
+  const hh=String(d.getHours()).padStart(2,'0');
+  const mm=String(d.getMinutes()).padStart(2,'0');
+  const ss=String(d.getSeconds()).padStart(2,'0');
+  return hh+':'+mm+':'+ss+'.'+String(ms||0).padStart(3,'0');
+}
+
+function rcMatterRenderStructuredHtml(rows, selectedRowKey){
+  if(!rows.length)return '<p style="color:var(--muted,#888);padding:16px;margin:0">No entries yet</p>';
+  const th='padding:6px 10px;text-align:left;font-size:12px;background:#1a1d24;position:sticky;top:0;z-index:1;border-bottom:1px solid rgba(255,255,255,0.12)';
+  const td='padding:5px 10px;font-size:12px;border-top:1px solid rgba(255,255,255,0.05);vertical-align:top';
+  const tdMono=td+';font-family:ui-monospace,SFMono-Regular,Menlo,monospace';
+  let html='<table style="width:100%;border-collapse:collapse"><thead><tr>';
+  ['Time','Sev','Comp','Op','Device','Exchange','Endpoint','Cluster','Attr/Cmd','Summary'].forEach(l=>html+='<th style="'+th+'">'+l+'</th>');
+  html+='</tr></thead><tbody>';
+  function sevBadge(s){
+    if(s==='E')return '<span class="badge b-crit" style="font-size:10px">E</span>';
+    if(s==='W')return '<span class="badge b-warn" style="font-size:10px">W</span>';
+    if(s==='P')return '<span class="badge b-ok"   style="font-size:10px">P</span>';
+    if(s==='D')return '<span class="badge"        style="font-size:10px;opacity:.7">D</span>';
+    return '';
+  }
+  rows.forEach((r,idx)=>{
+    const sel=r._rowKey===selectedRowKey;
+    const rowBg=sel?'background:rgba(33,150,243,0.18)':'';
+    const ep=r.endpoint!=null?('0x'+r.endpoint.toString(16)):'';
+    const clCell=r.cluster!=null
+      ? '0x'+r.cluster.toString(16).padStart(4,'0').toUpperCase()+(r.clusterName?' <span style="opacity:.7">'+h(r.clusterName)+'</span>':'')
+      : '';
+    let attrCell='';
+    if(r.attribute!=null){
+      attrCell='0x'+r.attribute.toString(16).padStart(4,'0').toUpperCase()+(r.attrName?' <span style="opacity:.7">'+h(r.attrName)+'</span>':'');
+    }else if(r.command!=null){
+      attrCell='cmd 0x'+r.command.toString(16).padStart(2,'0').toUpperCase()+(r.cmdName?' <span style="opacity:.7">'+h(r.cmdName)+'</span>':'');
+    }
+    html+='<tr data-idx="'+idx+'" style="cursor:pointer;'+rowBg+'">';
+    html+='<td style="'+tdMono+';white-space:nowrap">'+h(rcMatterFmtTime(r.time,r.ms))+'</td>';
+    html+='<td style="'+td+'">'+sevBadge(r.sev)+'</td>';
+    html+='<td style="'+tdMono+'">'+h(r.component||'')+'</td>';
+    html+='<td style="'+td+'">'+h(r.op||'')+'</td>';
+    let devCell='';
+    if(r.deviceNodeId!=null){
+      const hex='0x'+r.deviceNodeId.toString(16).toUpperCase();
+      devCell = r.deviceId ? dlink(r.deviceId, r.deviceName || hex) : h(hex);
+    }
+    html+='<td style="'+td+'">'+devCell+'</td>';
+    html+='<td style="'+tdMono+'">'+h(r.exchange||'')+'</td>';
+    html+='<td style="'+tdMono+'">'+h(ep)+'</td>';
+    html+='<td style="'+tdMono+'">'+clCell+'</td>';
+    html+='<td style="'+tdMono+'">'+attrCell+'</td>';
+    html+='<td style="'+td+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:520px">'+h(r.summary||'')+'</td>';
+    html+='</tr>';
+    if(sel){
+      html+='<tr style="background:rgba(33,150,243,0.08)"><td colspan="10" style="padding:8px 14px"><pre style="margin:0;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;color:var(--text)">'+h(stripAnsi(r._raw))+'</pre></td></tr>';
+    }
+  });
+  html+='</tbody></table>';
+  return html;
+}
+
+// Raw colored-tail renderer — preserves leading whitespace + maps ANSI to CSS color.
+// Operates on the FrameBuffer line-by-line (not on grouped entries) so it's a faithful
+// view of what /hub/matterLogs/json returned.
+function rcMatterRenderRawHtml(lines){
+  if(!lines.length)return '<p style="color:var(--muted,#888);padding:16px;margin:0">No lines yet</p>';
+  const tdMono='padding:2px 10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;border-top:1px solid rgba(255,255,255,0.04)';
+  let html='<div style="background:#0d1117">';
+  for(const ln of lines){
+    let color='var(--text)';
+    const m=ln.match(/\x1b?\[([0-9;]+)m/);
+    if(m){
+      const c=m[1];
+      if(c.indexOf('31')>=0)      color='#ff6b6b';
+      else if(c.indexOf('33')>=0) color='#f0b400';
+      else if(c.indexOf('32')>=0) color='#5dd66c';
+      else if(c.indexOf('34')>=0) color='#8aaecf';
+    }
+    html+='<div style="'+tdMono+';color:'+color+'">'+h(stripAnsi(ln))+'</div>';
+  }
+  html+='</div>';
+  return html;
+}
+
+function rcMatterRenderTail(opt){
+  const m=RC.matter;
+  const src=m.buf?m.buf.frames:[];
+  if(m.viewMode==='raw'){
+    // Newest-first to match the sibling sub-tabs.
+    const lines=[];
+    for(let i=src.length-1;i>=0;i--)lines.push(src[i].line);
+    // Update displayBuf to the (filtered) lines for pin-baseline arithmetic.
+    m.displayBuf = lines;
+    rcTailPaint({liveId:'rc-m-live',tblId:'rc-m-tail-tbl',z:m,rowsHtml:rcMatterRenderRawHtml(lines)},opt);
+    return;
+  }
+  // Structured: group lines into entries, then map → rows. Buffer is line-ordered (oldest first),
+  // so we group in-order and reverse the resulting entries to put newest first.
+  const rawLines=src.map(f=>f.line);
+  const entries=groupChipByExchange(rawLines);
+  // Component-set maintenance (drives the filter dropdown).
+  const compSet=new Set();
+  entries.forEach(e=>{if(e.component)compSet.add(e.component)});
+  const comps=Array.from(compSet).sort();
+  if(comps.length !== m.components.length || comps.some((c,i)=>c !== m.components[i])){
+    m.components=comps;
+    const sel=document.getElementById('rc-m-fcomp');
+    if(sel){
+      const cur=sel.value;
+      sel.innerHTML='<option value="">All</option>'+comps.map(c=>'<option value="'+c+'"'+(c===cur?' selected':'')+'>'+h(c)+'</option>').join('');
+    }
+  }
+  // Apply filters before mapping → cheaper.
+  const fComp=m.filters.component, fOp=m.filters.op, f=m.filters;
+  const rows=[];
+  for(let i=entries.length-1;i>=0;i--){
+    const e=entries[i];
+    if(fComp && e.component !== fComp)continue;
+    const newRows=rcMatterFrameToRow(e);
+    for(const row of newRows){
+      if(fOp && row.op !== fOp)continue;
+      if(!rcMatterRowMatchesFilter(row, f))continue;
+      rows.push(row);
+    }
+  }
+  m.displayBuf=rows;
+  if(m.selectedRowKey && !rows.some(r=>r._rowKey===m.selectedRowKey))m.selectedRowKey=null;
+  rcTailPaint({liveId:'rc-m-live',tblId:'rc-m-tail-tbl',z:m,rowsHtml:rcMatterRenderStructuredHtml(rows,m.selectedRowKey)},opt);
+}
+
+function rcMatterHandleTailClick(e){
+  // Raw mode doesn't have data-idx rows — nothing to expand. Bail early.
+  if(RC.matter.viewMode==='raw')return;
+  if(e.target.closest('a'))return;
+  const tr=e.target.closest('tr[data-idx]');if(!tr)return;
+  const m=RC.matter;
+  const idx=parseInt(tr.dataset.idx,10);
+  const row=m.displayBuf[idx];if(!row)return;
+  const expanding=(m.selectedRowKey!==row._rowKey);
+  m.selectedRowKey=expanding?row._rowKey:null;
+  if(expanding&&m.pinnedToLive){m.pinnedToLive=false;m.pinBaselineLen=m.displayBuf.length;}
+  rcMatterRenderTail({});
 }
 
 // ===== TAB MANAGEMENT =====
