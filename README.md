@@ -12,6 +12,8 @@ install from a single Groovy file in the **Drivers Code** editor.
 - [Humidity Fan Controller](HumidityFanController/) — Bathroom-fan automation that runs while humidity stays above a reference baseline and stops once it returns, with debounced state transitions and multi-sensor median input.
 - [Switch Monitor](SwitchMonitor/) — Watches groups of switches that must stay on (or off): auto-corrects deviations after a grace period, retries to a configurable limit, and notifies on under-watt drops for power-metered loads.
 - [Log Monitor](LogMonitor/) — Hub log aggregator: WebSocket bridges to one or more hubs with independent filter configs that route matched lines to notifications, files, or HTTP endpoints.
+- [Startup and Shutdown Monitor](StartupShutdownMonitor/) — Drives a virtual contact sensor from hub lifecycle events — opens on manualReboot/manualShutdown/update, closes on systemStart — so rules can gate on restart state.
+- [Location Event Mapper](LocationEventMapper/) — Parent/child app that maps selected location events (sunrise/sunset, hub lifecycle, radio state, etc.) onto virtual contact sensor states, so rules can gate on them as triggers or conditions.
 
 ## Drivers
 
