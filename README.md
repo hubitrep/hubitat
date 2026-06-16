@@ -29,3 +29,7 @@ For apps: import the `.groovy` file into the Hubitat **Apps Code** editor — bu
 ship a `*_ui.html` download it into File Manager on first save, so no separate upload is needed.
 For drivers: import the `.groovy` file into the **Drivers Code** editor. See each package's README
 where present, or the file's header comments, for setup specifics.
+
+## Disclaimer
+
+These apps and drivers are provided **as-is**, with no support offered. Use at your own risk.
