@@ -14,10 +14,11 @@ install from a single Groovy file in the **Drivers Code** editor.
 - [Log Monitor](LogMonitor/) — Hub log aggregator: WebSocket bridges to one or more hubs with independent filter configs that route matched lines to notifications, files, or HTTP endpoints.
 - [Startup and Shutdown Monitor](StartupShutdownMonitor/) — Drives a virtual contact sensor from hub lifecycle events — opens on manualReboot/manualShutdown/update, closes on systemStart — so rules can gate on restart state.
 - [Location Event Mapper](LocationEventMapper/) — Parent/child app that maps selected location events (sunrise/sunset, hub lifecycle, radio state, etc.) onto virtual contact sensor states, so rules can gate on them as triggers or conditions.
+- [Mirror Switch](MirrorSwitch/) — Keeps a group of on/off devices in sync: whichever member changes state drives the rest to match, with no ping-pong by construction.
 
 ## Drivers
 
-- [Aqara WSDCGQ11LM](Aqara_WSDCGQ11LM/) — Zigbee driver for the Xiaomi Aqara temperature, humidity, and pressure sensor (WSDCGQ11LM).
+- [Aqara Drivers](aqara/) — Zigbee drivers for Aqara / Xiaomi (LUMI) devices: the WSDCGQ11LM temperature/humidity/pressure sensor and the WS-USC01 no-neutral wall switch.
 - [Xfinity Contact Sensor](XfinityContactSensor/) — Zigbee driver for the Xfinity / Visonic door/window contact sensor with battery reporting.
 - [IKEA Window Blinds](IKEA-Blinds/) — Zigbee driver for IKEA window blind (FYRTUR / KADRILJ family).
 - [Sinopé Switch + Dimmer](sinope/) — Zigbee drivers for the Sinopé SW2500ZB switch and DM2500ZB dimmer.
