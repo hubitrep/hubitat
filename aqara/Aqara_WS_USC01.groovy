@@ -57,7 +57,9 @@ metadata {
             input name: "traceEnable", type: "bool", title: "Enable trace logging",       defaultValue: false
         }
 
-        input name: "operationMode", type: "enum", title: "Rocker mode",
+        // Named operationModePref (not operationMode) to avoid colliding with the
+        // operationMode *attribute* above — the bareword would otherwise be ambiguous.
+        input name: "operationModePref", type: "enum", title: "Rocker mode",
             options: ["control_relay": "Control relay (rocker switches the load)", "decoupled": "Decoupled (rocker is a scene button)"],
             defaultValue: "control_relay",
             description: "Decoupled detaches the rocker from the internal relay so it can drive automations instead."
@@ -66,7 +68,7 @@ metadata {
     }
 }
 
-@Field static final String CODE_VERSION = "1.3.0"
+@Field static final String CODE_VERSION = "1.5.0"
 
 @Field static final String MFG_CODE = "0x115F"
 
@@ -110,11 +112,16 @@ void deviceTypeUpdated() {
 }
 
 void configure() {
-    logInfo "Configuring (operationMode=${operationMode ?: 'control_relay'}, version ${CODE_VERSION})"
+    // User preference wins; fall back to the last mode the device reported (the
+    // operationMode attribute survives code pushes) so a decoupled device isn't
+    // forced back to control_relay on upgrade. Default to control_relay on a fresh
+    // install where neither is set.
+    String desiredMode = operationModePref ?: device.currentValue("operationMode") ?: "control_relay"
+    logInfo "Configuring (operationMode=${desiredMode}, version ${CODE_VERSION})"
     sendEvent(name: "numberOfButtons", value: 1, isStateChange: false)
     state.version = CODE_VERSION
 
-    int opMode  = (operationMode == "decoupled") ? 0x00 : 0x01
+    int opMode  = (desiredMode == "decoupled") ? 0x00 : 0x01
     int outage  = powerOutageMemory == false ? 0x00 : 0x01
     int ledFlip = ledIndicatorInverted ? 0x01 : 0x00
 
@@ -159,19 +166,36 @@ void on() {
     // command, so the explicit read forces a state report that satisfies the hub's
     // command-retry watchdog (no spurious "failed after N retries").
     sendZigbeeCommands(zigbee.on() + zigbee.readAttribute(CLUSTER_ON_OFF, ATTR_ON_OFF))
+    markPendingDigitalSwitchChange()
 }
 
 void off() {
     logDebug "off()"
     sendZigbeeCommands(zigbee.off() + zigbee.readAttribute(CLUSTER_ON_OFF, ATTR_ON_OFF))
+    markPendingDigitalSwitchChange()
+}
+
+// Flag the next on/off state report as digital (hub/automation-driven) so it can
+// be distinguished from a physical rocker press. The flag is normally consumed by
+// reportSwitch on the read-back report; the 5s safety-net clear covers a no-op
+// command (device already in the target state) whose deduped report would
+// otherwise leave the flag set and mislabel the next physical change as digital.
+// The clear is idempotent, so the fast path (report arrives first) is unaffected.
+private void markPendingDigitalSwitchChange() {
+    state.switchTypeDigital = true
+    runInMillis(5000, "clearSwitchTypeDigital")
+}
+
+void clearSwitchTypeDigital() {
+    state.switchTypeDigital = false
 }
 
 void push(Integer buttonId = 1) {
-    sendEvent(name: "pushed", value: buttonId, isStateChange: true)
+    sendEvent(name: "pushed", value: buttonId, type: "digital", isStateChange: true)
 }
 
 void doubleTap(Integer buttonId = 1) {
-    sendEvent(name: "doubleTapped", value: buttonId, isStateChange: true)
+    sendEvent(name: "doubleTapped", value: buttonId, type: "digital", isStateChange: true)
 }
 
 // ─── Zigbee message pipeline ──────────────────────────────────────────────────
@@ -294,16 +318,23 @@ private void parseBasic(Integer attrInt, String value, String encoding) {
 private void reportSwitch(String value) {
     if (value == null) return
     String sw = (value == "01") ? "on" : "off"
+    // type: a state report following on()/off() is digital; an unsolicited one
+    // (physical rocker in control_relay mode, or a power-restore/group command) is
+    // physical. Consume the flag set by the command here. The Aqara relay exposes
+    // no hardware action-source attribute, so this is necessarily a software
+    // inference — the same set/consume scheme kkossev and Sinopé converge on.
+    String src = state.switchTypeDigital ? "digital" : "physical"
+    state.switchTypeDigital = false
     // The on()/off() read-back and a change report can both surface the same
     // value (the read-back makes no-op commands safe for the retry watchdog).
     // sendEvent dedups the duplicate; log at info only on a real change so the
     // confirmation read doesn't double the log line.
     if (device.currentValue("switch") != sw) {
-        logInfo "Switch: ${sw}"
+        logInfo "Switch: ${sw} [${src}]"
     } else {
         logDebug "Switch: ${sw} (confirmation)"
     }
-    sendEvent(name: "switch", value: sw, descriptionText: "${device.displayName} was turned ${sw}")
+    sendEvent(name: "switch", value: sw, type: src, descriptionText: "${device.displayName} was turned ${sw} [${src}]")
 }
 
 private void reportDeviceTemperature(String value) {
@@ -323,11 +354,11 @@ private void reportButton(String value) {
     switch (Integer.parseInt(value, 16)) {
         case 1:
             logInfo "Button 1 pushed"
-            sendEvent(name: "pushed", value: 1, isStateChange: true)
+            sendEvent(name: "pushed", value: 1, type: "physical", isStateChange: true)
             break
         case 2:
             logInfo "Button 1 double-tapped"
-            sendEvent(name: "doubleTapped", value: 1, isStateChange: true)
+            sendEvent(name: "doubleTapped", value: 1, type: "physical", isStateChange: true)
             break
         default:
             logTrace "Multistate present value ${value} (unmapped action)"
@@ -349,8 +380,8 @@ private void parseLumiAttribute(Integer attrInt, String value) {
             }
             sendEvent(name: "operationMode", value: mode)
             // Keep the preferences UI in sync with the device (bidirectional sync).
-            if ((operationMode ?: "control_relay") != mode) {
-                device.updateSetting("operationMode", [value: mode, type: "enum"])
+            if ((operationModePref ?: "control_relay") != mode) {
+                device.updateSetting("operationModePref", [value: mode, type: "enum"])
             }
             return
         case LUMI_ATTR_POWER_OUTAGE:
