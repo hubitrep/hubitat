@@ -113,15 +113,17 @@ table[data-sortable] th[data-dir] .arr{opacity:1}
   <div class="tab active" data-tab="summary">Summary</div>
   <div class="tab" data-tab="register">Device Register</div>
   <div class="tab" data-tab="drift">Device Drift</div>
+  <div class="tab" data-tab="mesh">Hub Mesh</div>
 </div>
 <div class="content">
   <div class="panel active" id="p-summary"></div>
   <div class="panel" id="p-register"></div>
   <div class="panel" id="p-drift"></div>
+  <div class="panel" id="p-mesh"></div>
 </div>
 <script>
 // ===== VERSION =====
-const CODE_VERSION = "0.6.6";
+const CODE_VERSION = "0.7.0";
 const APP_VERSION = '${app_version}';   // injected by serveUI; stays literal in workbench/dev
 
 // ===== Z-WAVE MANUFACTURER TABLE (decimal maker-id -> name, from zwave-js) =====
@@ -163,7 +165,12 @@ const MOCK_AUDIT = {
        // TH01 driver drift: same mfr+model, two different drivers across hubs
        '5':{id:5,label:'Temp Sensor A',deviceTypeName:'Tuya Temp/Humidity',manufacturer:'Tuya',model:'TH01',
             firmware:'1.0',firmwareSource:'softwareBuild',firmwareOta:null,
-            protocol:'Zigbee',connectionType:'paired',integration:'Zigbee',orphan:false,disabled:false,appsUsingCount:1,dashboards:[1],lastActivityTimeMs:Date.now()-1*86400000} } },
+            protocol:'Zigbee',connectionType:'paired',integration:'Zigbee',orphan:false,disabled:false,appsUsingCount:1,dashboards:[1],lastActivityTimeMs:Date.now()-1*86400000},
+       // Hub Mesh source: shared with Hub B (see id 77 there); different onOffState -> confirmed mismatch
+       '99':{ id:99, label:'Shared Plug', deviceTypeName:'Zigbee Outlet', manufacturer:'Acme', model:'P1',
+            protocol:'Zigbee', connectionType:'paired', integration:'Zigbee', orphan:false, disabled:false,
+            appsUsingCount:1, dashboards:[], lastActivityTimeMs:Date.now()-999999999,
+            isLinked:false, hubMeshShared:true, remoteDeviceUrl:null, onOffState:'on', hubMeshDisabled:false } } },
   1: { hubName:'Hub B', generatedMs:Date.now()-240000, hubModel:'C-8', hubFirmware:'2.4.4.155', deviceCount:3, allDevices:{
        // P1 — real drift: same hub, same source, yet another value
        '7':{id:7,label:'Office Plug C',deviceTypeName:'Zigbee Outlet',manufacturer:'Acme',model:'P1',
@@ -183,7 +190,13 @@ const MOCK_AUDIT = {
        '10':{id:10,label:'Zooz ZEN55',deviceTypeName:'Z-Wave Switch',manufacturer:'634',model:'ZEN55',
              firmware:'1.05',firmwareSource:'softwareBuild',firmwareOta:null,
              firmwareTargets:{'0':'1.05','1':'2.01'},
-             protocol:'Z-Wave',connectionType:'paired',integration:'Z-Wave',orphan:false,disabled:false,appsUsingCount:1,dashboards:[1],lastActivityTimeMs:Date.now()-1*86400000} } },
+             protocol:'Z-Wave',connectionType:'paired',integration:'Z-Wave',orphan:false,disabled:false,appsUsingCount:1,dashboards:[1],lastActivityTimeMs:Date.now()-1*86400000},
+       // Hub Mesh remote pointing back at Hub A's id 99 (see MOCK_PEERS webBase); different onOffState -> confirmed mismatch
+       '77':{ id:77, label:'Shared Plug (remote)', deviceTypeName:'Zigbee Outlet', protocol:'Linked',
+             connectionType:'hubmesh', integration:null, orphan:false, disabled:false, appsUsingCount:0,
+             dashboards:[], lastActivityTimeMs:Date.now()-999999999,
+             isLinked:true, hubMeshShared:false, remoteDeviceUrl:'http://192.168.0.10/device/edit/99',
+             onOffState:'off', hubMeshDisabled:false } } },
 };
 
 // ===== CORRELATION ===== (pure functions; unit-tested in tests/test-correlation.js)
@@ -193,22 +206,24 @@ const MOCK_AUDIT = {
 const integLabel = r => r.integration || '';
 function filterLinked(rows){ return rows.filter(r => r.protocol !== 'Linked'); }
 function mergeFleet(hubResults){
-  const rows = [], hubs = [];
+  const rows = [], hubs = [], all = [];
   for (const h of hubResults){
-    const info = { label:h.label, ok:!!h.ok, error:h.error||null, hubName:null, generatedAt:null, deviceCount:0, hubModel:null, hubFirmware:null };
+    const info = { label:h.label, ok:!!h.ok, error:h.error||null, hubName:null, generatedAt:null, generatedMs:null, deviceCount:0, hubModel:null, hubFirmware:null };
     if (h.ok && h.data && h.data.allDevices){
       info.hubName = h.data.hubName || null;
+      info.generatedMs = (typeof h.data.generatedMs === 'number') ? h.data.generatedMs : null;
       info.generatedAt = h.data.generatedMs ? new Date(h.data.generatedMs).toLocaleString() : (h.data.generatedAt || null);
       info.hubModel = (h.data && h.data.hubModel) || null;
       info.hubFirmware = (h.data && h.data.hubFirmware) || null;
       const tagged = Object.values(h.data.allDevices).map(r => Object.assign({}, r, { hub:h.label }));
+      for (const r of tagged) all.push(r);
       const kept = filterLinked(tagged);
       info.deviceCount = kept.length;
       for (const r of kept) rows.push(r);
     }
     hubs.push(info);
   }
-  return { rows, hubs };
+  return { rows, hubs, all };
 }
 function fwBasis(d){
   const ota = (d.firmwareOta||'').trim();
@@ -216,6 +231,77 @@ function fwBasis(d){
   const fw = (d.firmware||'').trim();
   if (fw) return { basis: d.firmwareSource || 'firmware', value: fw };
   return { basis: null, value: null };
+}
+// Parse a Hub Mesh remote's remoteDeviceUrl (http://<sourceIP>:<port>/device/edit/<id>) into its
+// source host + source device id. Returns null for '', '#', or any non-matching value.
+function parseRemoteUrl(url){
+  if (!url || url === '#') return null;
+  const m = /^https?:\/\/([^:/]+)(?::\d+)?\/device\/edit\/(\d+)/.exec(url);
+  return m ? { sourceHost: m[1], sourceDeviceId: Number(m[2]) } : null;
+}
+// Reconstruct the cross-hub Hub Mesh source<->remote graph from the merged fleet union.
+//  all: unfiltered device rows (each tagged .hub); hubs: [{label,generatedMs}];
+//  webBaseByLabel: { label -> 'http://host' } (HUB_WEBBASE). Pure — no globals, no storage.
+function meshGraph(all, hubs, webBaseByLabel){
+  const GRACE_MS = 60000;
+  const hostToLabel = {}, genByLabel = {};
+  for (const p in (webBaseByLabel||{})){
+    const m = /^https?:\/\/([^:/]+)/.exec(webBaseByLabel[p]||''); if (m) hostToLabel[m[1]] = p;
+  }
+  for (const h of (hubs||[])) genByLabel[h.label] = (typeof h.generatedMs === 'number') ? h.generatedMs : null;
+  const byHubId = {}; for (const d of all) byHubId[d.hub + '\0' + d.id] = d;
+
+  const edges = [], consumers = {};   // consumers: 'label\0id' -> count (source side)
+  for (const r of all){
+    if (!r.isLinked) continue;
+    const edgeKey = r.hub + '\0' + r.id;
+    let status, source = null, sourceHub = null, sourceId = null;
+    if (r.hubMeshDisabled === true){ status = 'disabled-at-remote'; }
+    else {
+      const parsed = parseRemoteUrl(r.remoteDeviceUrl);
+      if (!parsed){ status = 'orphaned'; }
+      else {
+        sourceId = parsed.sourceDeviceId;
+        sourceHub = hostToLabel[parsed.sourceHost] || null;
+        if (!sourceHub){ status = 'source-not-in-fleet'; }
+        else {
+          source = byHubId[sourceHub + '\0' + sourceId];
+          if (!source){ status = 'orphaned'; }
+          else {
+            consumers[sourceHub + '\0' + sourceId] = (consumers[sourceHub + '\0' + sourceId] || 0) + 1;
+            if (r.onOffState != null && source.onOffState != null && r.onOffState !== source.onOffState){
+              const scans = [genByLabel[r.hub], genByLabel[sourceHub]].filter(v => typeof v === 'number');
+              const earliest = scans.length ? Math.min.apply(null, scans) : null;
+              const settled = earliest != null
+                && (r.lastActivityTimeMs || 0) < earliest - GRACE_MS
+                && (source.lastActivityTimeMs || 0) < earliest - GRACE_MS;
+              status = settled ? 'mismatch' : 'mismatch-recent';
+            } else status = 'healthy';
+          }
+        }
+      }
+    }
+    edges.push({ edgeKey, remoteHub:r.hub, remoteId:r.id, remoteLabel:r.label||r.displayName||('#'+r.id),
+      remoteOnOff:r.onOffState||null, sourceHub, sourceId,
+      sourceLabel: source ? (source.label||source.displayName||('#'+sourceId)) : null,
+      sourceOnOff: source ? (source.onOffState||null) : null, status });
+  }
+
+  const sourceIssues = [];
+  for (const d of all){
+    if (d.hubMeshShared !== true) continue;
+    const cnt = consumers[d.hub + '\0' + d.id] || 0;
+    if (cnt === 0) sourceIssues.push({ hub:d.hub, id:d.id, label:d.label||('#'+d.id), consumers:0, status:'zero-consumer' });
+    else if (d.disabled === true) sourceIssues.push({ hub:d.hub, id:d.id, label:d.label||('#'+d.id), consumers:cnt, status:'source-disabled-with-remotes' });
+  }
+
+  const c = { total:edges.length, healthy:0, mismatch:0, mismatchRecent:0, disabledAtRemote:0,
+    orphaned:0, sourceNotInFleet:0, zeroConsumer:0, sourceDisabledWithRemotes:0 };
+  const K = { 'healthy':'healthy','mismatch':'mismatch','mismatch-recent':'mismatchRecent',
+    'disabled-at-remote':'disabledAtRemote','orphaned':'orphaned','source-not-in-fleet':'sourceNotInFleet' };
+  for (const e of edges) c[K[e.status]]++;
+  for (const s of sourceIssues){ if (s.status==='zero-consumer') c.zeroConsumer++; else c.sourceDisabledWithRemotes++; }
+  return { edges, sourceIssues, counts:c };
 }
 function firmwareDrift(rows){
   const groups = {};
@@ -286,7 +372,7 @@ function attentionItems(rows, opts){
   }
   return res;
 }
-function fleetSummary(merged){
+function fleetSummary(merged, webBaseByLabel){
   const rows = merged.rows, byHub = {}, byIntegration = {}, byConnection = {}, byMfr = {};
   for (const r of rows){
     byHub[r.hub] = (byHub[r.hub] || 0) + 1;
@@ -295,9 +381,12 @@ function fleetSummary(merged){
     const m = (r.manufacturer||'').trim() || 'Unknown'; byMfr[m] = (byMfr[m] || 0) + 1;
   }
   const att = attentionItems(rows, {});
+  const mg = meshGraph(merged.all || [], merged.hubs || [], webBaseByLabel || {});
   return { total: rows.length, byHub, byIntegration, byConnection, byManufacturer: byMfr,
     attentionCounts: { stale:att.stale.length, orphaned:att.orphaned.length,
-      disabled:att.disabled.length, unreferenced:att.unreferenced.length } };
+      disabled:att.disabled.length, unreferenced:att.unreferenced.length },
+    meshAttention: { mismatch: mg.counts.mismatch, orphaned: mg.counts.orphaned,
+      disabledWithRemotes: mg.counts.sourceDisabledWithRemotes } };
 }
 
 // ===== HELPERS =====
@@ -346,7 +435,7 @@ function isFlagged(r){
 }
 
 // ===== ORCHESTRATION =====
-let FLEET = { rows: [], hubs: [] };
+let FLEET = { rows: [], hubs: [], all: [] };
 
 function peerUrl(hubIdx, op, extra){
   let u = `${B}/api/peer?hub=${hubIdx}&op=${op}&access_token=${T}`;
@@ -531,7 +620,7 @@ function tbl(cid,cols,rows,opts={}){
 }
 
 function renderSummary(){
-  const s = fleetSummary(FLEET);
+  const s = fleetSummary(FLEET, HUB_WEBBASE);
   const hubLines = FLEET.hubs.map(h => `<div class="ni"><div class="nl">${esc(h.label)}${h.ok?'':' ⚠'}</div>`
     + `<div class="nv">${h.ok?h.deviceCount+' devices':'<span class="crit">'+esc(h.error)+'</span>'}</div>`
     + `<div class="nl">${h.ok?('as of '+esc(h.generatedAt||'?')):''}</div>`
@@ -543,7 +632,10 @@ function renderSummary(){
        <div class="ng">${hubLines}</div></div></div>
      <div class="card"><div class="card-h">Attention</div><div class="card-b"><div class="pills">
        <span class="pill">Stale<b>${a.stale}</b></span>
-       <span class="pill">Disabled<b>${a.disabled}</b></span><span class="pill">Unreferenced<b>${a.unreferenced}</b></span></div></div></div>
+       <span class="pill">Disabled<b>${a.disabled}</b></span><span class="pill">Unreferenced<b>${a.unreferenced}</b></span>
+       <span class="pill ${s.meshAttention.mismatch?'crit':''}">Mesh mismatch<b>${s.meshAttention.mismatch}</b></span>
+       <span class="pill ${s.meshAttention.orphaned?'crit':''}">Mesh orphaned<b>${s.meshAttention.orphaned}</b></span>
+       <span class="pill ${s.meshAttention.disabledWithRemotes?'warn':''}">Mesh src disabled<b>${s.meshAttention.disabledWithRemotes}</b></span></div></div></div>
      <div class="card"><div class="card-h">By connection</div><div class="card-b"><div class="pills">${kv(s.byConnection)}</div></div></div>
      <div class="card"><div class="card-h">By integration</div><div class="card-b"><div class="pills">${kv(s.byIntegration)}</div></div></div>
      <div class="card"><div class="card-h">By manufacturer</div><div class="card-b"><div class="pills">${kv(s.byManufacturer)}</div></div></div>`;
@@ -674,10 +766,67 @@ function renderDeviceDrift(){
   });
 }
 
+function meshStatusBadge(st){
+  const map = {
+    'healthy':            ['', 'healthy'],
+    'mismatch':           ['crit', '⚠ state mismatch'],
+    'mismatch-recent':    ['warn', 'mismatch (recent?)'],
+    'disabled-at-remote': ['warn', 'disabled at remote'],
+    'orphaned':           ['crit', '⚠ orphaned'],
+    'source-not-in-fleet':['muted', 'source not in fleet'],
+  };
+  const [cls, txt] = map[st] || ['', st];
+  return `<span class="${cls}">${esc(txt)}</span>`;
+}
+
+function renderMesh(){
+  const g = meshGraph(FLEET.all, FLEET.hubs, HUB_WEBBASE), c = g.counts;
+  // A reachable peer whose devices lack the mesh fields is on pre-5.69.0 HubDiag — flag it so an
+  // empty/partial tab isn't misread as "no mesh". Detect by absence of the isLinked key on its rows.
+  const staleHubs = FLEET.hubs.filter(h => h.ok &&
+    FLEET.all.some(d => d.hub === h.label) &&
+    !FLEET.all.some(d => d.hub === h.label && Object.prototype.hasOwnProperty.call(d, 'isLinked')));
+  const staleNote = staleHubs.length
+    ? `<div class="card"><div class="card-b warn">Mesh data unavailable for: ${esc(staleHubs.map(h=>h.label).join(', '))} — update Hub Diagnostics on ${staleHubs.length>1?'those hubs':'that hub'} to ≥ 5.69.0.</div></div>`
+    : '';
+  const pill = (label, n, cls) => `<span class="pill ${n && cls ? cls : ''}">${label}<b>${n}</b></span>`;
+  const pills = '<div class="pills">'
+    + pill('Links', c.total, '') + pill('Healthy', c.healthy, '')
+    + pill('State mismatch', c.mismatch, 'crit') + pill('Mismatch (recent?)', c.mismatchRecent, 'warn')
+    + pill('Disabled at remote', c.disabledAtRemote, 'warn') + pill('Orphaned', c.orphaned, 'crit')
+    + pill('Zero-consumer src', c.zeroConsumer, '') + pill('Disabled src w/ remotes', c.sourceDisabledWithRemotes, 'warn')
+    + pill('Source not in fleet', c.sourceNotInFleet, '') + '</div>';
+
+  let html = `<div class="card"><div class="card-h">Hub Mesh — ${c.total} links</div><div class="card-b">${pills}</div></div>`
+    + `<div class="card"><div class="card-h">Links</div><div class="card-b"><div id="meshTbl"></div></div></div>`;
+  if (g.sourceIssues.length)
+    html += `<div class="card"><div class="card-h">Source issues</div><div class="card-b"><div id="meshSrcTbl"></div></div></div>`;
+  document.getElementById('p-mesh').innerHTML = staleNote + html;
+
+  tbl('meshTbl', [
+    { l:'Remote hub',    f:'remoteHub' },
+    { l:'Remote device', f:'remoteLabel', ff:r=>r.remoteLabel||'', r:r=>dlink(r.remoteId, r.remoteLabel, r.remoteHub) },
+    { l:'Remote',        f:'remoteOnOff', r:r=>esc(r.remoteOnOff||'') },
+    { l:'Source hub',    f:'sourceHub',   r:r=>esc(r.sourceHub||'—') },
+    { l:'Source device', f:'sourceLabel', ff:r=>r.sourceLabel||'', r:r=> r.sourceId!=null ? dlink(r.sourceId, r.sourceLabel||('#'+r.sourceId), r.sourceHub) : '—' },
+    { l:'Source',        f:'sourceOnOff', r:r=>esc(r.sourceOnOff||'') },
+    { l:'Status',        f:'status',      r:r=>meshStatusBadge(r.status) },
+  ], g.edges, {filter:true});
+
+  if (g.sourceIssues.length) tbl('meshSrcTbl', [
+    { l:'Hub',    f:'hub' },
+    { l:'Device', f:'label', r:r=>dlink(r.id, r.label, r.hub) },
+    { l:'Consumers', f:'consumers', t:'n' },
+    { l:'Issue',  f:'status', r:r=> r.status==='zero-consumer'
+        ? '<span class="muted">no consumers — candidate to disable mesh</span>'
+        : '<span class="warn">⚠ source disabled but still has remotes</span>' },
+  ], g.sourceIssues, {});
+}
+
 function renderAll(){
   document.getElementById('hubInfo').textContent =
     `${FLEET.hubs.filter(h=>h.ok).length}/${FLEET.hubs.length} hubs · ${FLEET.rows.length} devices`;
-  renderSummary(); renderRegister(); renderDeviceDrift();
+  renderSummary(); renderRegister(); renderDeviceDrift(); renderMesh();
 }
 
 // ===== BOOTSTRAP =====
