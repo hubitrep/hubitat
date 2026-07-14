@@ -18,8 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String CODE_VERSION = "5.76.0"
-@Field static final String STORAGE_SCHEMA_VERSION = "5.0.0"
+@Field static final String CODE_VERSION = "5.77.0"
 
 // API endpoint paths (all relative to HUB_BASE)
 @Field static final String HUB_BASE = "http://127.0.0.1:8080"
@@ -147,18 +146,6 @@ import java.util.concurrent.atomic.AtomicInteger
 // In-memory caches (survive within a JVM session; cleared on hub reboot/app reload)
 @Field static volatile String  uiVersionCache
 @Field static volatile String  zwaveStackCache
-@Field static volatile Map     fwUpdateCache
-@Field static volatile Long    fwUpdateCacheAt
-@Field static volatile Map     cachedZwaveData
-@Field static volatile Long    cachedZwaveAt
-@Field static volatile Map     cachedZigbeeData
-@Field static volatile Long    cachedZigbeeAt
-@Field static volatile Map     cachedAppsListData
-@Field static volatile Long    cachedAppsListAt
-@Field static volatile Map     cachedDevicesListData
-@Field static volatile Long    cachedDevicesListAt
-@Field static volatile Map     cachedSystemResources
-@Field static volatile Long    cachedSystemResourcesAt
 // v5.33.0: split-file storage replaces the single-blob cachedCheckpoints. Only the
 // slim index is cached in memory; per-checkpoint detail is read on demand.
 @Field static volatile List    cachedCheckpointIndex
@@ -183,14 +170,29 @@ import java.util.concurrent.atomic.AtomicInteger
 // Optional integration-overrides file: re-read at most this often so an uploaded/edited file is
 // picked up without a full Done. updated()/apiClearCache() reset it for an immediate reload.
 @Field static final long       INTEGRATION_OVERRIDES_CACHE_TTL_MS = 300_000L
-@Field static volatile Float   cachedTemperature
-@Field static volatile Long    cachedTemperatureAt
-@Field static volatile Integer cachedDatabaseSize
-@Field static volatile Long    cachedDatabaseSizeAt
-@Field static volatile Map     cachedCpuInfo
-@Field static volatile Long    cachedCpuInfoAt
-@Field static volatile Integer cachedLoadThreshold
-@Field static volatile Long    cachedLoadThresholdAt
+
+// Unified session-scoped TTL cache (Tier 2 — see ARCHITECTURE.md "Caching Strategy").
+// Key → [data: Object, at: Long]. Wiped on reboot/code push; cleared wholesale in updated().
+// Fetch closures MUST return null (not an empty map) on failure so misses are never cached.
+@Field static final ConcurrentHashMap<String, Map> TTL_CACHE = new ConcurrentHashMap<>()
+
+private Object cachedFetch(String key, long ttlMs, Closure fetch) {
+    Object hit = cachePeek(key, ttlMs)
+    if (hit != null) return hit
+    Object data = fetch()
+    if (data != null) TTL_CACHE[key] = [data: data, at: now()]
+    return data
+}
+
+private Object cachePeek(String key, long ttlMs) {
+    Map slot = TTL_CACHE[key]
+    return (slot != null && (now() - (slot.at as long)) < ttlMs) ? slot.data : null
+}
+
+private void cachePut(String key, Object data) {
+    if (data != null) TTL_CACHE[key] = [data: data, at: now()]
+}
+
 @Field static volatile boolean githubVersionRefreshPending = false
 @Field static final java.util.regex.Pattern HTML_TAG_RE = ~/<[^>]+>/
 // Green badge appended to the app label (visible in the Apps list) when a newer release is
@@ -198,34 +200,6 @@ import java.util.concurrent.atomic.AtomicInteger
 // survives the label being saved verbatim through the "Assign a name" input on Done.
 @Field static final String UPDATE_AVAILABLE_BADGE = ' <span style="color:green; font-weight:bold;">update available</span>'
 @Field static final java.util.regex.Pattern UPDATE_BADGE_RE = ~/(?i)\s*<span\b[^>]*>\s*update available\s*<\/span>\s*$/
-
-// Connection type display names
-@Field static final Map CONN_DISPLAY = [
-    "zigbee": "Zigbee",
-    "zwave": "Z-Wave",
-    "matter": "Matter",
-    "bluetooth": "Bluetooth",
-    "homekit": "HomeKit",
-    "lan_direct": "LAN (Direct)",
-    "lan_bridge": "LAN (Bridge)",
-    "cloud": "Cloud",
-    "virtual": "Virtual",
-    "hubmesh": "Hub Mesh",
-    "other": "Other"
-]
-
-// Legacy protocol display names (for migrating old snapshots)
-@Field static final Map LEGACY_PROTOCOL_DISPLAY = [
-    "zwave": "Z-Wave",
-    "zigbee": "Zigbee",
-    "matter": "Matter",
-    "hubmesh": "Hub Mesh",
-    "lan": "LAN/IP",
-    "virtual": "Virtual",
-    "cloud": "Cloud",
-    "maker": "Maker API",
-    "other": "Other"
-]
 
 // Built-in integration overrides: lowercase keyword → [conn, name]. These are Hubitat-native
 // parent-managed integrations whose devices arrive without a parentAppId in the bulk list (so the
@@ -275,18 +249,11 @@ import java.util.concurrent.atomic.AtomicInteger
     "lan_direct", "lan_bridge", "cloud", "virtual", "hubmesh", "other"
 ] as Set
 
-// Cache for the merged (built-in + user file) integration overrides map.
-// Null means "not yet loaded"; set to null in updated() to force a reload.
-@Field static volatile Map  integrationOverridesCache = null
-@Field static volatile Long integrationOverridesCacheAt = null
-
 // File names for persistence
 @Field static final String SNAPSHOTS_FILE = "hub_diagnostics_snapshots.json"
 // v5.33.0 split-file checkpoint storage:
 //   index file: small list of slim records (one per checkpoint) + detailFile pointer
 //   detail files: one per checkpoint, named with timestampMs, holds full content
-// The legacy CHECKPOINTS_FILE name is kept only for one-shot migration detection.
-@Field static final String CHECKPOINTS_FILE = "hub_diagnostics_checkpoints.json"
 @Field static final String CHECKPOINT_INDEX_FILE = "hub_diagnostics_checkpoints_index.json"
 @Field static final String CHECKPOINT_DETAIL_PREFIX = "hub_diagnostics_checkpoint_"
 @Field static final String PERFORMANCE_COMPARISON_FILE = "hub_diagnostics_performance_comparison.json"
@@ -785,6 +752,7 @@ Map apiZigbeeScan() {
     Map result = runZigbeeChannelScan()
     long elapsed = now() - start
     logDebug "apiZigbeeScan completed in ${elapsed}ms"
+    recordApiTiming("zigbeeScan", elapsed)
     boolean ok = result.error == null
     return jsonResponse([success: ok, scan: result, elapsedMs: elapsed])
 }
@@ -827,8 +795,8 @@ Map apiPerformanceCompare() {
         // v5.32.6: cache-first radio fetch with bounded budget (8s, no retry) — same
         // pattern as scheduled createCheckpoint. Keeps Compare → Now from pinning the
         // app thread for tens of seconds on a stressed hub.
-        Map zwaveData = fetchZwaveDataForCheckpoint() ?: [:]
-        Map zigbeeData = fetchZigbeeDataForCheckpoint() ?: [:]
+        Map zwaveData = fetchRadioForCheckpoint(true) ?: [:]
+        Map zigbeeData = fetchRadioForCheckpoint(false) ?: [:]
         checkpointStats.radioStats = [
             zwave: extractZwaveMessageCounts(zwaveData),
             zigbee: extractZigbeeMessageCounts(zigbeeData)
@@ -874,32 +842,6 @@ Map apiPerformanceCompare() {
     ])
 }
 
-Map migrateSnapshotDevices(Map snapshotDevices) {
-    if (!snapshotDevices?.byProtocol || snapshotDevices?.byConnectionType) return snapshotDevices
-    Map protoToConn = [
-        zigbee: CONN_ZIGBEE, zwave: CONN_ZWAVE, matter: CONN_MATTER,
-        lan: CONN_LAN_DIRECT, virtual: CONN_VIRTUAL,
-        cloud: CONN_CLOUD, hubmesh: CONN_HUBMESH, maker: CONN_OTHER, other: CONN_OTHER
-    ]
-    Map byConn = [:]
-    snapshotDevices.byProtocol.each { k, v ->
-        String conn = protoToConn[k] ?: CONN_OTHER
-        byConn[conn] = (byConn[conn] ?: 0) + (v ?: 0)
-    }
-    snapshotDevices.byConnectionType = byConn
-    snapshotDevices.byIntegration = snapshotDevices.byProtocol.collectEntries { k, v ->
-        [(LEGACY_PROTOCOL_DISPLAY[k] ?: k): v]
-    }
-    snapshotDevices.allDevices = (snapshotDevices.allDevices ?: []).collect { Map dev ->
-        if (dev.protocol && !dev.connectionType) {
-            dev.connectionType = protoToConn[dev.protocol] ?: CONN_OTHER
-            dev.integration = LEGACY_PROTOCOL_DISPLAY[dev.protocol] ?: dev.protocol
-        }
-        return dev
-    }
-    return snapshotDevices
-}
-
 Map apiSnapshots() {
     return jsonResponse(getSnapshotsData())
 }
@@ -911,7 +853,6 @@ Map apiSnapshotView() {
     List snapshots = loadSnapshots()
     if (idx < 0 || idx >= snapshots.size()) return jsonResponse([error: "Invalid snapshot index"])
     Map snap = snapshots[idx]
-    if (snap.devices) snap.devices = migrateSnapshotDevices(snap.devices)
 
     Map snapNet = snap.network ?: [:]
     return jsonResponse([
@@ -985,7 +926,7 @@ Map apiDeleteSnapshot() {
 
 Map apiCreateCheckpoint() {
     if (!createCheckpoint()) return jsonResponse([success: false, error: "Checkpoint creation failed or already in progress"])
-    return jsonResponse([success: true, checkpointCount: getCheckpointIndex().size()])
+    return jsonResponse([success: true, checkpointCount: loadCheckpointIndex().size()])
 }
 
 Map apiDeleteCheckpoint() {
@@ -1113,8 +1054,7 @@ Map apiClearCache() {
     state.controllerTypeCache = [:]
     // Also drop the integration-overrides cache so this re-reads the File Manager config on next
     // use — the intuitive "apply my override edits" action, no full Done required.
-    integrationOverridesCache = null
-    integrationOverridesCacheAt = null
+    TTL_CACHE.remove('integrationOverrides')
     return jsonResponse([success: true, cleared: cleared])
 }
 
@@ -1157,9 +1097,8 @@ Map getDevicesData() {
     List deviceRows = (deviceStats.allDevices ?: []).collect { Map dev ->
         [id: dev.id, name: dev.name, type: dev.type,
          connectionType: dev.connectionType,
-         connectionTypeDisplay: CONN_DISPLAY[dev.connectionType] ?: dev.connectionType,
          integration: dev.integration,
-         room: dev.room, status: dev.status ?: "", lastActivity: dev.lastActivity ?: "Never",
+         room: dev.room, status: dev.status ?: "", lastActivityMs: dev.lastActivityMs,
          battery: dev.battery, parentAppId: dev.parentAppId, parentAppName: dev.parentAppName,
          parentDeviceId: dev.parentDeviceId, parentDeviceName: dev.parentDeviceName,
          userType: dev.userType ?: false, deviceTypeId: dev.deviceTypeId]
@@ -1223,12 +1162,6 @@ Map getNetworkData(Map shared = [:]) {
     Map zwaveMesh = extractZwaveMeshQuality(networkData.zwave ?: [:])
     List ghostNodes = buildZwaveGhostNodes(networkData.zwave ?: [:])
     Map zigbeeRaw = networkData.zigbee ?: [:]
-    Map zigbeeDeviceByShortId = [:]
-    (zigbeeRaw.devices ?: []).each { Map d -> if (d.shortZigbeeId) zigbeeDeviceByShortId[((String)d.shortZigbeeId).toUpperCase()] = d }
-    Map zigbeeRouteByDest = [:]
-    (zigbeeMesh?.routes ?: []).each { Map r ->
-        if (r.destinationShortId && r.status == "Active") zigbeeRouteByDest[(String)r.destinationShortId] = r
-    }
     Map hubMeshRaw = networkData.hubMesh ?: [:]
     List hubMeshPeers = hubMeshRaw.hubList ? hubMeshRaw.hubList.collect { Map hub ->
         [name: hub.name, ip: hub.ipAddress, offline: hub.offline, hubId: hub.hubId,
@@ -1268,35 +1201,24 @@ Map getNetworkData(Map shared = [:]) {
             deviceCount: (zigbeeRaw.devices ?: []).size(), joinMode: zigbeeRaw.inJoinMode,
             powerLevel: zigbeeRaw.powerLevel,
             messageCounts: extractZigbeeMessageCounts(networkData.zigbee ?: [:]),
+            // Raw device identity list — the SPA joins neighbors/routes to devices by shortId
+            // (both payloads ride this same response, so the join is a pure client derivation).
+            devicesSlim: (zigbeeRaw.devices ?: []).collect { Map d ->
+                [id: d.id, name: d.name, shortZigbeeId: d.shortZigbeeId]
+            },
             mesh: zigbeeMesh ? [
                 neighbors: zigbeeMesh.neighbors?.size() ?: 0, routes: zigbeeMesh.routes?.size() ?: 0,
                 avgLqi: zigbeeMesh.avgLqi, minLqi: zigbeeMesh.minLqi, maxLqi: zigbeeMesh.maxLqi,
-                neighborDetails: (zigbeeMesh.neighbors ?: []).collect { Map n ->
-                    String sid = n.shortId ? ((String)n.shortId).toUpperCase() : null
-                    Map zdev = sid ? zigbeeDeviceByShortId[sid] : null
-                    Map route = sid ? zigbeeRouteByDest[sid] : null
-                    boolean isDirect = route ? (route.direct ?: false) : true
-                    String viaName = (route && !isDirect) ? (String)route.viaName : null
-                    String viaShortId = (route && !isDirect) ? (String)route.viaShortId : null
-                    Map viaDev = viaShortId ? zigbeeDeviceByShortId[viaShortId] : null
-                    [
-                        shortId: n.shortId, name: n.name, deviceId: zdev?.id,
-                        lqi: n.lqi, age: n.age, inCost: n.inCost, outCost: n.outCost, stale: n.stale ?: false,
-                        direct: isDirect, noLearnedRoute: (route == null),
-                        viaName: viaName, viaShortId: viaShortId, viaDeviceId: viaDev?.id
-                    ]
+                neighborList: (zigbeeMesh.neighbors ?: []).collect { Map n ->
+                    [shortId: n.shortId, name: n.name, lqi: n.lqi, age: n.age,
+                     inCost: n.inCost, outCost: n.outCost, stale: n.stale ?: false]
                 },
-                routeDetails: (zigbeeMesh.routes ?: []).findAll { Map r -> r.destinationShortId }.collect { Map r ->
-                    Map dstDev = zigbeeDeviceByShortId[r.destinationShortId]
-                    Map viaDev = r.viaShortId ? zigbeeDeviceByShortId[r.viaShortId] : null
-                    [
-                        status: r.status, age: r.age, concentratorType: r.concentratorType,
-                        destinationName: r.destinationName, destinationShortId: r.destinationShortId, destinationDeviceId: dstDev?.id,
-                        viaName: r.viaName, viaShortId: r.viaShortId, viaDeviceId: viaDev?.id,
-                        direct: r.direct ?: false
-                    ]
+                routeList: (zigbeeMesh.routes ?: []).findAll { Map r -> r.destinationShortId }.collect { Map r ->
+                    [status: r.status, age: r.age, concentratorType: r.concentratorType,
+                     destinationName: r.destinationName, destinationShortId: r.destinationShortId,
+                     viaName: r.viaName, viaShortId: r.viaShortId, direct: r.direct ?: false]
                 },
-                childDevices: zigbeeMesh.childDevices?.size() ?: 0
+                childDevices: zigbeeMesh.childDevices ?: 0
             ] : null
         ] : null,
         matter: networkData.matter ?: null,
@@ -1343,92 +1265,41 @@ Map getHealthData(Map shared = [:]) {
 }
 
 Map getPerformanceData(Map shared = [:]) {
-    // v5.33.1: per-phase timing instrumentation to break down cold-load wall time.
-    // Each phase records (a) elapsed ms, (b) whether the fetch hit the @Field static
-    // cache or made a fresh httpGet. Summary logged at end as a single info line.
-    Map t = [:]
-    long t1
-    boolean zwaveCache = false, zigbeeCache = false, appsCache = false, devicesCache = false
-
-    t1 = now()
     Map stats
-    if (shared.runtimeStats) { stats = (Map) shared.runtimeStats } else { Map r = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats"); stats = r.ok ? r.data : null }
-    t.runtime = now() - t1
+    if (shared.runtimeStats) { stats = (Map) shared.runtimeStats }
+    else { Map r = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats"); stats = r.ok ? r.data : null }
 
-    t1 = now()
-    Map resources  = (shared.resources as Map) ?: fetchSystemResources()
-    t.resources = now() - t1
+    Map resources = (shared.resources as Map) ?: fetchSystemResources()
 
-    t1 = now()
-    Map zwaveData
-    if (shared.network?.zwave) {
-        zwaveData = (Map) shared.network.zwave
-        zwaveCache = true
-    } else {
-        long nowMs = now()
-        if (cachedZwaveData && cachedZwaveAt && (nowMs - cachedZwaveAt) < RADIO_CACHE_TTL_MS) {
-            zwaveData = cachedZwaveData
-            zwaveCache = true
-            logDebug "Using cached Z-Wave data (age ${nowMs - cachedZwaveAt}ms)"
-        } else {
-            Map r = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20)
-            zwaveData = r.ok ? r.data : null
-            if (zwaveData) { cachedZwaveData = zwaveData; cachedZwaveAt = nowMs }
-        }
+    Map zwaveData = (shared.network?.zwave as Map) ?: (Map) cachedFetch('zwaveDetails', RADIO_CACHE_TTL_MS) {
+        Map r = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 20)
+        return (r.ok && r.data) ? r.data : null
     }
-    t.zwave = now() - t1
-
-    t1 = now()
-    Map zigbeeData
-    if (shared.network?.zigbee) {
-        zigbeeData = (Map) shared.network.zigbee
-        zigbeeCache = true
-    } else {
-        long nowMs = now()
-        if (cachedZigbeeData && cachedZigbeeAt && (nowMs - cachedZigbeeAt) < RADIO_CACHE_TTL_MS) {
-            zigbeeData = cachedZigbeeData
-            zigbeeCache = true
-            logDebug "Using cached Zigbee data (age ${nowMs - cachedZigbeeAt}ms)"
-        } else {
-            Map r = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20)
-            zigbeeData = r.ok ? r.data : null
-            if (zigbeeData) { cachedZigbeeData = zigbeeData; cachedZigbeeAt = nowMs }
-        }
+    Map zigbeeData = (shared.network?.zigbee as Map) ?: (Map) cachedFetch('zigbeeDetails', RADIO_CACHE_TTL_MS) {
+        Map r = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details", 20)
+        return (r.ok && r.data) ? r.data : null
     }
-    t.zigbee = now() - t1
-
-    t1 = now()
-    List zwaveMsgCounts = extractZwaveMessageCounts(zwaveData)
-    List zigbeeMsgCounts = extractZigbeeMessageCounts(zigbeeData)
-    Map radioStats = [zwave: zwaveMsgCounts, zigbee: zigbeeMsgCounts]
     // Ship the raw per-device message counts; the SPA ranks the top talkers (sort + top-N).
-    t.radioCalc = now() - t1
+    Map radioStats = [zwave: extractZwaveMessageCounts(zwaveData), zigbee: extractZigbeeMessageCounts(zigbeeData)]
 
-    t1 = now()
-    // Enrich appStats with source labels (community/builtin/platform)
+    Map appsListResp = ((Map) cachedFetch('appsList', HUB_LIST_CACHE_TTL_MS) {
+        Map w = hubMapRequest(APPS_LIST_PATH, "apps list")
+        return (w.ok && w.data) ? w.data : null
+    }) ?: [:]
+
+    // R-7 B2: id → source / root-parent-label maps so the SPA doesn't cross-fetch /api/devices
+    // and /api/apps just to label the Performance tab's CPU charts. One walk builds both.
     Map appSourceById = [:]
-    long nowApps = now()
-    Map appsListResp
-    if (cachedAppsListData && cachedAppsListAt && (nowApps - cachedAppsListAt) < HUB_LIST_CACHE_TTL_MS) {
-        logDebug "Using cached apps list (age ${nowApps - cachedAppsListAt}ms)"
-        appsListResp = cachedAppsListData
-        appsCache = true
-    } else {
-        Map appsListWrap = hubMapRequest(APPS_LIST_PATH, "apps list")
-        appsListResp = appsListWrap.ok ? appsListWrap.data : [:]
-        if (appsListWrap.ok) { cachedAppsListData = appsListResp; cachedAppsListAt = nowApps }
-    }
-    t.appsFetch = now() - t1
-
-    t1 = now()
+    Map appParentTypeById = [:]
     if (appsListResp.apps) {
-        visitAppEntries(appsListResp.apps as List) { Map appEntry, Map app, boolean isChildLevel, List _ ->
-            if (app?.id != null) appSourceById[app.id] = (app.user ? "community" : "builtin")
+        visitAppEntries(appsListResp.apps as List) { Map appEntry, Map app, boolean isChildLevel, List parents ->
+            if (app?.id == null) return
+            appSourceById[app.id] = (app.user ? "community" : "builtin")
+            Map root = parents ? (Map) parents[0] : app
+            appParentTypeById[app.id] = (root.label ?: root.name ?: 'Unknown') as String
         }
     }
-    t.appsSourceWalk = now() - t1
 
-    t1 = now()
     if (stats) {
         stats.radioStats = radioStats
         stats.uptimeSeconds = parseUptime(stats.uptime as String)
@@ -1440,72 +1311,20 @@ Map getPerformanceData(Map shared = [:]) {
             }
         }
     }
-    t.statsEnrich = now() - t1
 
-    // R-7 B2 (v5.20.0): build small id→label maps for the Performance tab's CPU charts so the
-    // SPA doesn't cross-fetch /api/devices and /api/apps just to look up names. Tiny payload
-    // (counts × ~20 bytes), saves 2 client round trips of much heavier endpoints.
-    // Walk /hub2/devicesList directly to build id→type map. Skips analyzeDevices' enrichment overhead
-    // (we only need the raw type/name from the bulk endpoint, not the cross-classification work).
-    t1 = now()
+    Map devListData = ((Map) cachedFetch('devicesList', HUB_LIST_CACHE_TTL_MS) {
+        Map w = hubMapRequest(DEVICES_LIST_PATH, "devices list (B2 labels)", 15)
+        return (w.ok && w.data) ? w.data : null
+    }) ?: [:]
     Map deviceTypeById = [:]
-    long nowDev = now()
-    Map devListData
-    if (cachedDevicesListData && cachedDevicesListAt && (nowDev - cachedDevicesListAt) < HUB_LIST_CACHE_TTL_MS) {
-        logDebug "Using cached devices list (age ${nowDev - cachedDevicesListAt}ms)"
-        devListData = cachedDevicesListData
-        devicesCache = true
-    } else {
-        Map devWrap = hubMapRequest(DEVICES_LIST_PATH, "devices list (B2 labels)", 15)
-        devListData = devWrap.ok ? devWrap.data : [:]
-        if (devWrap.ok) { cachedDevicesListData = devListData; cachedDevicesListAt = nowDev }
-    }
-    t.devicesFetch = now() - t1
-
-    t1 = now()
     if (devListData.devices) {
         flattenDeviceEntries(devListData.devices as List).each { Map entry ->
             Map dev = entry?.data instanceof Map ? (Map) entry.data : null
             if (dev?.id != null) deviceTypeById[dev.id] = (dev.type ?: 'Unknown') as String
         }
     }
-    t.devicesWalk = now() - t1
 
-    t1 = now()
-    // Walk /hub2/appsList directly for parent→child label association — reuse the response already
-    // fetched above for appSourceById rather than making a second round trip.
-    Map appParentTypeById = [:]
-    if (appsListResp?.apps) {
-        Closure walkApps
-        walkApps = { List apps, String parentLabel = null ->
-            (apps ?: []).each { Map entry ->
-                Map data = entry?.data instanceof Map ? (Map) entry.data : null
-                if (!data) return
-                Object id = data.id
-                String myLabel = (data.label ?: data.name ?: 'Unknown') as String
-                String labelForChildren = parentLabel ?: myLabel
-                if (id != null) appParentTypeById[id] = labelForChildren
-                if (entry.children) walkApps(entry.children as List, labelForChildren)
-            }
-        }
-        walkApps(appsListResp.apps as List, null)
-    }
-    t.appsParentWalk = now() - t1
-
-    t1 = now()
-    // v5.33.0: read the slim checkpoint index. Backed by loadCheckpointIndex which
-    // reads a small per-app index file (or migrates the legacy single-blob file once).
-    // The Performance tab API never touches the full per-checkpoint detail files.
-    List indexEntries = getCheckpointIndex()
-    t.indexRead = now() - t1
-
-    long totalMs = (t.values().sum() ?: 0) as long
-    logDebug "getPerformanceData breakdown (sum ${totalMs}ms): " +
-        "runtime=${t.runtime}ms resources=${t.resources}ms " +
-        "zwave=${t.zwave}ms${zwaveCache ? '(cache)' : ''} zigbee=${t.zigbee}ms${zigbeeCache ? '(cache)' : ''} radioCalc=${t.radioCalc}ms " +
-        "appsFetch=${t.appsFetch}ms${appsCache ? '(cache)' : ''} appsSourceWalk=${t.appsSourceWalk}ms statsEnrich=${t.statsEnrich}ms " +
-        "devicesFetch=${t.devicesFetch}ms${devicesCache ? '(cache)' : ''} devicesWalk=${t.devicesWalk}ms appsParentWalk=${t.appsParentWalk}ms " +
-        "indexRead=${t.indexRead}ms"
+    List indexEntries = loadCheckpointIndex()
     return [
         stats: stats, resources: resources,
         radioStats: radioStats,
@@ -1561,19 +1380,16 @@ Map getAlertSignals(Map shared = [:]) {
     }
     boolean ethernetAndWifi = (networkConfig && networkConfig.hasEthernet && networkConfig.hasWiFi) as boolean
 
-    // Z-Wave ghost nodes \u2014 cached 60 s to avoid an 8-second fetch on every
-    // Dashboard/Health load when the shared cache was built without includeNetwork.
+    // Z-Wave ghost/failed/problem signals \u2014 served from the shared 60s radio cache so
+    // Dashboard/Health loads never pay a cold 8s fetch more than once per window.
+    // state.cachedZwaveSignals persists the last computed signals across reboots.
     Map zwRaw = (shared.network?.zwave as Map)
     if (!zwRaw) {
-        long lastZwCheck = state.lastZwaveGhostCheckMs ?: 0
-        if (now() - lastZwCheck > 60000) {
+        zwRaw = (Map) cachedFetch('zwaveDetails', RADIO_CACHE_TTL_MS) {
             Map zwWrap = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 8)
-            zwRaw = zwWrap.ok ? zwWrap.data : null
-            if (zwRaw) {
-                state.lastZwaveGhostCheckMs = now()
-                state.cachedZwaveSignals = computeZwaveSignals(zwRaw)
-            }
+            return (zwWrap.ok && zwWrap.data) ? zwWrap.data : null
         }
+        if (zwRaw) state.cachedZwaveSignals = computeZwaveSignals(zwRaw)
     }
     Map zwSignals = zwRaw ? computeZwaveSignals(zwRaw) : ((state.cachedZwaveSignals as Map) ?: [:])
 
@@ -1610,26 +1426,16 @@ Map computeZwaveSignals(Map zwRaw) {
     ]
 }
 
-// ===== BUTTON HANDLER =====
-
 // ===== API TIMING =====
 
 void recordApiTiming(String endpoint, long elapsedMs) {
     synchronized (apiTimings) {
         Map entry = apiTimings[endpoint]
-        if (!entry) {
-            entry = [samples: [], median: 0, count: 0]
-            apiTimings[endpoint] = entry
-        }
+        if (!entry) { entry = [samples: [], count: 0]; apiTimings[endpoint] = entry }
         List samples = entry.samples
         samples << elapsedMs
-        if (samples.size() > API_TIMING_WINDOW) {
-            samples.remove(0)
-        }
+        if (samples.size() > API_TIMING_WINDOW) samples.remove(0)
         entry.count = (entry.count as int) + 1
-        List sorted = samples.collect().sort()
-        int mid = sorted.size() / 2
-        entry.median = sorted.size() % 2 == 0 ? ((sorted[mid - 1] + sorted[mid]) / 2) as long : sorted[mid]
     }
 }
 
@@ -1637,12 +1443,7 @@ Map apiStats() {
     Map stats = [:]
     synchronized (apiTimings) {
         apiTimings.each { String endpoint, Map entry ->
-            stats[endpoint] = [
-                median: entry.median,
-                count: entry.count,
-                recent: entry.samples.size(),
-                lastSamples: entry.samples.collect()
-            ]
+            stats[endpoint] = [count: entry.count, recent: entry.samples.size(), lastSamples: entry.samples.collect()]
         }
     }
     return jsonResponse([timings: stats])
@@ -1723,20 +1524,7 @@ private String getHubFirmwareVersion() {
 
 private boolean isVersionAtLeast(String actual, String required) {
     if (!actual || !required) return false
-    List<Integer> a = actual.split('\\.').collect { String s ->
-        try { return s.toInteger() } catch (Exception e) { return 0 }
-    }
-    List<Integer> r = required.split('\\.').collect { String s ->
-        try { return s.toInteger() } catch (Exception e) { return 0 }
-    }
-    int n = Math.max(a.size(), r.size())
-    for (int i = 0; i < n; i++) {
-        int av = i < a.size() ? a[i] : 0
-        int rv = i < r.size() ? r[i] : 0
-        if (av > rv) return true
-        if (av < rv) return false
-    }
-    return true
+    return compareVersions(actual, required) >= 0
 }
 
 private String detectZwaveStack() {
@@ -1801,36 +1589,21 @@ private Map parseResourceRow(Map row) {
 }
 
 Map fetchSystemResources() {
-    long nowMs = now()
-    if (cachedSystemResources && cachedSystemResourcesAt && (nowMs - cachedSystemResourcesAt) < SYSTEM_RESOURCES_CACHE_TTL_MS) {
-        return cachedSystemResources
-    }
-    String text = (String) hubRequest(FREE_MEMORY_PATH, "system resources", "text", 15)
-    if (!text) return null
-    try {
-        Map parsed = parseHubCsv(text)
-        if (!parsed || !parsed.rows) return null
-        Map row = (Map) ((List) parsed.rows)[0]
-        Map p = parseResourceRow(row)
-        if (p == null) {
-            logWarn "system resources CSV missing expected columns; header=${parsed.header}"
+    return (Map) cachedFetch('systemResources', SYSTEM_RESOURCES_CACHE_TTL_MS) {
+        String text = (String) hubRequest(FREE_MEMORY_PATH, "system resources", "text", 15)
+        if (!text) return null
+        try {
+            Map parsed = parseHubCsv(text)
+            if (!parsed || !parsed.rows) return null
+            Map p = parseResourceRow((Map) ((List) parsed.rows)[0])
+            if (p == null) { logWarn "system resources CSV missing expected columns; header=${parsed.header}"; return null }
+            return [timestamp: p.timestamp, freeOSMemory: p.freeOS, cpuAvg5min: p.cpu,
+                    totalJavaMemory: p.totalJava, freeJavaMemory: p.freeJava, directJavaMemory: p.directJava]
+        } catch (Exception e) {
+            logError "Error parsing system resources: ${e.message}"
             return null
         }
-        Map data = [
-            timestamp:        p.timestamp,
-            freeOSMemory:     p.freeOS,
-            cpuAvg5min:       p.cpu,
-            totalJavaMemory:  p.totalJava,
-            freeJavaMemory:   p.freeJava,
-            directJavaMemory: p.directJava
-        ]
-        cachedSystemResources = data
-        cachedSystemResourcesAt = nowMs
-        return data
-    } catch (Exception e) {
-        logError "Error parsing system resources: ${e.message}"
     }
-    return null
 }
 
 List fetchMemoryHistory() {
@@ -1872,20 +1645,10 @@ Map fetchStateCompression() {
 }
 
 Integer fetchDatabaseSize() {
-    long nowMs = now()
-    if (cachedDatabaseSizeAt != null && (nowMs - cachedDatabaseSizeAt) < DATABASE_SIZE_CACHE_TTL_MS) {
-        return cachedDatabaseSize
+    return (Integer) cachedFetch('databaseSize', DATABASE_SIZE_CACHE_TTL_MS) {
+        String text = (String) hubRequest(DATABASE_SIZE_PATH, "database size", "text")
+        try { return text?.toInteger() } catch (Exception e) { return null }
     }
-    String text = (String) hubRequest(DATABASE_SIZE_PATH, "database size", "text")
-    if (text) {
-        try {
-            Integer v = text.toInteger()
-            cachedDatabaseSize = v
-            cachedDatabaseSizeAt = nowMs
-            return v
-        } catch (Exception e) { /* ignore */ }
-    }
-    return null
 }
 
 Map fetchFileManagerStats() {
@@ -1898,20 +1661,10 @@ Map fetchFileManagerStats() {
 }
 
 Float fetchTemperature() {
-    long nowMs = now()
-    if (cachedTemperatureAt != null && (nowMs - cachedTemperatureAt) < TEMPERATURE_CACHE_TTL_MS) {
-        return cachedTemperature
+    return (Float) cachedFetch('temperature', TEMPERATURE_CACHE_TTL_MS) {
+        String text = (String) hubRequest(INTERNAL_TEMP_PATH, "internal temperature", "text")
+        try { return text?.toFloat() } catch (Exception e) { return null }
     }
-    String text = (String) hubRequest(INTERNAL_TEMP_PATH, "internal temperature", "text")
-    if (text) {
-        try {
-            Float v = text.toFloat()
-            cachedTemperature = v
-            cachedTemperatureAt = nowMs
-            return v
-        } catch (Exception e) { /* ignore */ }
-    }
-    return null
 }
 
 // ===== TEMPERATURE THRESHOLDS =====
@@ -1952,8 +1705,7 @@ List fetchHubEvents() {
         if (!(raw instanceof List)) return []
         return ((List) raw).collect { Object e ->
             Map ev = (Map) e
-            long ts = 0
-            try { ts = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", (String) ev.date).time } catch (Exception ignored) {}
+            Long ts = parseDate(ev.date) ?: 0L
             [id: ev.id, name: ev.name, description: ev.descriptionText, ts: ts, value: ev.value]
         }
     } catch (Exception e) {
@@ -2043,18 +1795,10 @@ Map fetchZwaveJsState() {
 }
 
 Integer fetchExcessiveLoadThreshold() {
-    long nowMs = now()
-    if (cachedLoadThresholdAt != null && (nowMs - cachedLoadThresholdAt) < LOAD_THRESHOLD_CACHE_TTL_MS) {
-        return cachedLoadThreshold
+    return (Integer) cachedFetch('loadThreshold', LOAD_THRESHOLD_CACHE_TTL_MS) {
+        String txt = (String) hubRequest(LOAD_THRESHOLD_PATH, "excessive load threshold", "text", 5)
+        try { return txt?.trim()?.toInteger() } catch (Exception e) { return null }
     }
-    String txt = (String) hubRequest(LOAD_THRESHOLD_PATH, "excessive load threshold", "text", 5)
-    if (!txt) return null
-    try {
-        Integer v = txt.trim().toInteger()
-        cachedLoadThreshold = v
-        cachedLoadThresholdAt = nowMs
-        return v
-    } catch (Exception e) { return null }
 }
 
 String fetchNtpServer() {
@@ -2066,25 +1810,14 @@ String fetchNtpServer() {
 }
 
 Map fetchFirmwareUpdate() {
-    long nowMs = now()
-    if (fwUpdateCache && fwUpdateCacheAt &&
-        (nowMs - fwUpdateCacheAt) < FW_UPDATE_CACHE_TTL_MS) {
-        return fwUpdateCache
+    return (Map) cachedFetch('fwUpdate', FW_UPDATE_CACHE_TTL_MS) {
+        Map wrap = hubMapRequest(FIRMWARE_UPDATE_PATH, "firmware update check", 15)
+        if (!wrap.ok) return null
+        Map resp = wrap.data
+        return [currentVersion: getHubFirmwareVersion(), availableVersion: resp.version,
+                updateAvailable: resp.upgrade == true, status: resp.status,
+                beta: resp.beta == true, releaseNotesUrl: resp.releaseNotesUrl]
     }
-    Map wrap = hubMapRequest(FIRMWARE_UPDATE_PATH, "firmware update check", 15)
-    if (!wrap.ok) return null
-    Map resp = wrap.data
-    Map result = [
-        currentVersion: getHubFirmwareVersion(),
-        availableVersion: resp.version,
-        updateAvailable: resp.upgrade == true,
-        status: resp.status,
-        beta: resp.beta == true,
-        releaseNotesUrl: resp.releaseNotesUrl
-    ]
-    fwUpdateCache = result
-    fwUpdateCacheAt = nowMs
-    return result
 }
 
 /**
@@ -2198,7 +1931,7 @@ Map fetchHubVariables() {
             Map m = (meta instanceof Map) ? (Map) meta : [value: meta]
             [name: name, value: m.value, type: m.type, lastUpdated: m.lastUpdated]
         }
-        return [count: entries.size(), supported: true, variables: entries.sort { it.name }]
+        return [count: entries.size(), supported: true, variables: entries]
     } catch (MissingMethodException mme) {
         return [count: 0, supported: false, variables: []]
     } catch (Exception e) {
@@ -2234,26 +1967,21 @@ Map fetchMdns() {
 // ===== Phase 5 fetch methods (v5.11.1) =====
 
 Map fetchCpuInfo() {
-    long nowMs = now()
-    if (cachedCpuInfoAt != null && (nowMs - cachedCpuInfoAt) < CPU_INFO_CACHE_TTL_MS) {
-        return cachedCpuInfo
-    }
-    String txt = (String) hubRequest(CPU_INFO_PATH, "CPU info", "text", 5)
-    if (!txt) return null
-    Map result = [:]
-    txt.split('\n').each { String line ->
-        String trimmed = line.trim()
-        if (!trimmed) return
-        if (trimmed.startsWith("Processors")) {
-            try { result.processors = trimmed.replaceAll(/[^\d]/, '').toInteger() } catch (Exception e) { /* skip */ }
-        } else if (trimmed.startsWith("Load Average")) {
-            try { result.loadAverage = trimmed.replaceAll(/[^\d.]/, '').toFloat() } catch (Exception e) { /* skip */ }
+    return (Map) cachedFetch('cpuInfo', CPU_INFO_CACHE_TTL_MS) {
+        String txt = (String) hubRequest(CPU_INFO_PATH, "CPU info", "text", 5)
+        if (!txt) return null
+        Map result = [:]
+        txt.split('\n').each { String line ->
+            String trimmed = line.trim()
+            if (!trimmed) return
+            if (trimmed.startsWith("Processors")) {
+                try { result.processors = trimmed.replaceAll(/[^\d]/, '').toInteger() } catch (Exception e) { /* skip */ }
+            } else if (trimmed.startsWith("Load Average")) {
+                try { result.loadAverage = trimmed.replaceAll(/[^\d.]/, '').toFloat() } catch (Exception e) { /* skip */ }
+            }
         }
+        return result.isEmpty() ? null : result
     }
-    if (result.isEmpty()) return null
-    cachedCpuInfo = result
-    cachedCpuInfoAt = nowMs
-    return result
 }
 
 String fetchZipgatewayVersion() {
@@ -2352,7 +2080,7 @@ Map fetchZigbeeMeshInfo() {
     String text = (String) hubRequest(ZIGBEE_CHILD_ROUTE_PATH, "zigbee child/route info", "text", 15)
     if (!text) return [:]
 
-    Map result = [childDevices: [], neighbors: [], routes: [], raw: text]
+    Map result = [childDevices: 0, neighbors: [], routes: []]
 
     String currentSection = ""
     text.split('\n').each { String line ->
@@ -2367,7 +2095,7 @@ Map fetchZigbeeMeshInfo() {
             currentSection = "route"
         } else if (currentSection == "neighbor" && line.contains("LQI:")) {
             // Parse neighbor entries: "[Device Name, ABCD], LQI:255, age:4, inCost:1, outCost:1"
-            Map neighbor = [raw: line]
+            Map neighbor = [:]
             java.util.regex.Matcher bracketMatch = (line =~ /^\[([^\]]+),\s*([0-9A-Fa-f]{4})\]/)
             java.util.regex.Matcher lqiMatch = (line =~ /LQI:\s*(\d+)/)
             java.util.regex.Matcher ageMatch = (line =~ /age:\s*(\d+)/)
@@ -2384,10 +2112,10 @@ Map fetchZigbeeMeshInfo() {
             neighbor.stale = (neighbor.age != null && neighbor.age >= 7)
             result.neighbors << neighbor
         } else if (currentSection == "child") {
-            result.childDevices << [raw: line]
+            result.childDevices = (result.childDevices as int) + 1
         } else if (currentSection == "route" && line.contains("status:")) {
             // Parse route entries: "status:Active, age:64, routeRecordState:0, concentratorType:None, [Dest Name, ABCD] via [Via Name, EF01]"
-            Map route = [raw: line]
+            Map route = [:]
             java.util.regex.Matcher statusMatch = (line =~ /status:\s*(\w+)/)
             java.util.regex.Matcher ageMatch = (line =~ /age:\s*(\d+|null)/)
             java.util.regex.Matcher rrsMatch = (line =~ /routeRecordState:\s*(\d+|null)/)
@@ -2554,8 +2282,9 @@ List extractZigbeeMessageCounts(Map zigbeeData) {
 
 // ===== ANALYSIS MODULES =====
 
-Map analyzeDevices(boolean deep = true) {
-    Map respWrap = hubMapRequest(DEVICES_LIST_PATH, "devices list")
+Map analyzeDevices(boolean deep = true, Map prefetchedDevices = null) {
+    Map respWrap = (prefetchedDevices != null) ? [ok: true, data: prefetchedDevices, error: null]
+                                               : hubMapRequest(DEVICES_LIST_PATH, "devices list")
 
     if (!respWrap.ok || !respWrap.data.devices) {
         logWarn "Failed to fetch devices list"
@@ -2563,31 +2292,85 @@ Map analyzeDevices(boolean deep = true) {
     }
 
     // includeParentContext=true (not just deep) so child devices carry their parentDeviceId in
-    // both passes — needed for parent-device inheritance below (the parent-device analog of
-    // parent-app grouping). The richer entry shape is otherwise consumed identically.
+    // both passes — needed for parent-device inheritance below.
     List devicesList = flattenDeviceEntries(respWrap.data.devices as List, true)
-
-    Map stats = getEmptyDeviceStats()
 
     long inactivityThresholdMs = now() - ((settings.inactivityDays ?: 7) * ONE_DAY_MS)
     Map appLookup = buildAppLookupMap()
     Set communityDrivers = buildCommunityDriverSet()
-    // Set of community app type names (app.name where app.user == true) — used as fallback in enrichDevices()
-    // to determine builtin status when per-device fullJson cache is stale or missing the field.
+    // Community app type names (app.name where app.user == true) — fallback in enrichDevices()
+    // when the per-device fullJson cache is stale or missing the builtin field.
     Set communityAppTypeNames = appLookup.values()
         .findAll { (it as Map)?.user == true }
         .collect { (String)((it as Map)?.type ?: "") }
         .findAll { it } as Set
-    // Collects devices needing deep enrichment (isNetwork + CONN_OTHER): deviceId → [appInfo, currentIntegration, currentConn, deviceId]
-    Map uncertainDevices = [:]
-    // deviceId(String) → its classification [connectionType, integration, builtin], so a child
-    // device can inherit its parent DEVICE's classification after the pass.
-    Map classByDeviceId = [:]
 
+    // ---- Pass 1: classify every device. No aggregation yet — buckets are built exactly once,
+    // after enrichment, so there is no decrement/patch step that can drift out of sync.
+    Map classByDeviceId = [:]   // id(String) → [connectionType, integration, builtin(, tentative)]
+    Map uncertainDevices = [:]  // id(String) → [appInfo, deviceId] — needs the fullJson pass
     devicesList.each { deviceEntry ->
         try {
-            Map device = deviceEntry.data
-            if (!device || !(device instanceof Map)) return
+            Map device = deviceEntry.data instanceof Map ? (Map) deviceEntry.data : null
+            if (!device) return
+            Map classification = classifyDevice(device, appLookup, communityDrivers)
+            classByDeviceId[device.id?.toString()] = classification
+            if (classification.connectionType == CONN_OTHER || classification.tentative == true) {
+                String normalizedParentAppId = normalizeAppLookupId(extractParentAppId(device))
+                uncertainDevices[device.id.toString()] = [
+                    appInfo: normalizedParentAppId ? (Map) appLookup[normalizedParentAppId] : null,
+                    deviceId: device.id
+                ]
+            }
+        } catch (Exception e) {
+            logWarn "Error classifying device ${deviceEntry.key}: ${e.message}"
+        }
+    }
+
+    // ---- Pass 2: parent-device inheritance, then fullJson enrichment for the rest.
+    if (uncertainDevices) {
+        // A child device the bulk pass couldn't place inherits its parent DEVICE's classification
+        // (e.g. a Blink/Lutron parent fronting child cameras/dimmers). Inherited children skip
+        // the per-device fullJson fetch entirely.
+        Map inherited = [:]
+        devicesList.each { deviceEntry ->
+            Object pid = deviceEntry.parentDeviceId
+            Object cid = (deviceEntry.data instanceof Map) ? ((Map) deviceEntry.data).id : null
+            if (pid == null || cid == null) return
+            String cidStr = cid.toString()
+            if (!uncertainDevices.containsKey(cidStr)) return
+            Map parentClass = (Map) classByDeviceId[pid.toString()]
+            if (parentClass && parentClass.integration && parentClass.integration != "Other") {
+                inherited[cidStr] = parentClass
+            }
+        }
+
+        Map enrichedAppInfos = (Map) uncertainDevices
+            .findAll { k, v -> !inherited.containsKey(k) }
+            .collectEntries { k, v -> [k, ((Map) v).appInfo] }
+        Map enrichments = enrichDevices(enrichedAppInfos, communityAppTypeNames)
+        if (inherited) enrichments.putAll(inherited)   // inheritance wins over the (empty) fullJson result
+
+        enrichments.each { String idStr, Map newClass ->
+            Map cur = (Map) classByDeviceId[idStr]
+            if (cur == null) return
+            classByDeviceId[idStr] = [
+                connectionType: (newClass.connectionType ?: cur.connectionType),
+                integration:    newClass.integration,
+                // builtin taken verbatim (may be null): its only consumer is the
+                // integrationSources guard below, and a null must stay null — the
+                // controllerType-fallback path intentionally sets no source entry.
+                builtin:        newClass.builtin
+            ]
+        }
+    }
+
+    // ---- Pass 3: single aggregation over the final classifications.
+    Map stats = getEmptyDeviceStats()
+    devicesList.each { deviceEntry ->
+        try {
+            Map device = deviceEntry.data instanceof Map ? (Map) deviceEntry.data : null
+            if (!device) return
 
             stats.totalDevices++
 
@@ -2609,39 +2392,23 @@ Map analyzeDevices(boolean deep = true) {
                 stats.idsByStatus.inactive << device.id
             }
 
-            // Two-dimension classification: connectionType + integration
-            Map classification = classifyDevice(device, appLookup, communityDrivers)
-            String connectionType = classification.connectionType
-            String integration = classification.integration
-            classByDeviceId[device.id?.toString()] = [connectionType: connectionType, integration: integration, builtin: classification.builtin]
+            Map cls = (Map) classByDeviceId[device.id?.toString()] ?: [connectionType: CONN_OTHER, integration: null, builtin: null]
+            String connectionType = cls.connectionType
+            String integration = cls.integration
 
             stats.byConnectionType[connectionType] = (stats.byConnectionType[connectionType] ?: 0) + 1
             if (!stats.idsByConnectionType.containsKey(connectionType)) stats.idsByConnectionType[connectionType] = []
             stats.idsByConnectionType[connectionType] << device.id
 
-            // integration is null for standalone devices (connection-type-only override): counted in
-            // the connection-type breakdown above, but intentionally omitted from the integration breakdown.
+            // integration is null for standalone devices: counted in the connection-type breakdown,
+            // intentionally omitted from the integration breakdown.
             if (integration) {
                 stats.byIntegration[integration] = (stats.byIntegration[integration] ?: 0) + 1
                 if (!stats.idsByIntegration.containsKey(integration)) stats.idsByIntegration[integration] = []
                 stats.idsByIntegration[integration] << device.id
-
-                // Track whether each integration is built-in or community (first definitive value wins)
-                if (classification.builtin != null && !stats.integrationSources.containsKey(integration)) {
-                    stats.integrationSources[integration] = classification.builtin ? "builtin" : "community"
+                if (cls.builtin != null && !stats.integrationSources.containsKey(integration)) {
+                    stats.integrationSources[integration] = cls.builtin ? "builtin" : "community"
                 }
-            }
-
-            Object parentAppId = extractParentAppId(device)
-            String normalizedParentAppId = normalizeAppLookupId(parentAppId)
-            Map parentAppInfo = normalizedParentAppId ? (Map) appLookup[normalizedParentAppId] : null
-            // Devices whose bulk metadata cannot fully resolve classification need the per-device fullJson
-            // correction pass so Dashboard and Devices summaries stay in sync.
-            boolean needsEnrichment = (connectionType == CONN_OTHER) || (classification.tentative == true)
-            if (needsEnrichment) {
-                uncertainDevices[device.id.toString()] = [
-                    appInfo: parentAppInfo, currentIntegration: integration, currentConn: connectionType, deviceId: device.id
-                ]
             }
 
             // Deep-only: parent/child, battery, type breakdown, full device list
@@ -2674,6 +2441,8 @@ Map analyzeDevices(boolean deep = true) {
                     }
                 }
 
+                String normalizedParentAppId = normalizeAppLookupId(extractParentAppId(device))
+                Map parentAppInfo = normalizedParentAppId ? (Map) appLookup[normalizedParentAppId] : null
                 String parentAppName = parentAppInfo?.label ?: (normalizedParentAppId ? "App ${normalizedParentAppId}" : null)
                 stats.allDevices << [
                     id: device.id, name: device.name ?: "Unknown",
@@ -2681,7 +2450,7 @@ Map analyzeDevices(boolean deep = true) {
                     type: typeName, userType: device.user ?: false, deviceTypeId: device.deviceTypeId,
                     connectionType: connectionType, integration: integration,
                     status: device.disabled ? "Disabled" : (lastActivity && lastActivity > inactivityThresholdMs ? "Active" : "Inactive"),
-                    lastActivity: lastActivity ? new Date(lastActivity).format("yyyy-MM-dd HH:mm") : "Never",
+                    lastActivityMs: lastActivity,
                     battery: batteryLevel,
                     isParent: deviceEntry.parent ?: false, isChild: deviceEntry.child ?: false,
                     linked: device.linked ?: false, room: device.roomName ?: "",
@@ -2691,80 +2460,6 @@ Map analyzeDevices(boolean deep = true) {
             }
         } catch (Exception e) {
             logWarn "Error processing device ${deviceEntry.key}: ${e.message}"
-        }
-    }
-
-    // Pass 2: enrich uncertain devices via device/fullJson (parentApp + controllerType).
-    // This updates summary buckets for both shallow Dashboard and deep Devices calls.
-    if (uncertainDevices) {
-        // Parent-device inheritance: a child device the bulk pass couldn't place (it landed in
-        // uncertainDevices) inherits its parent DEVICE's classification — the parent-device analog
-        // of parent-app grouping (e.g. a Blink/Lutron parent device fronting child cameras/dimmers,
-        // where the children share no driver-type token with the parent). Computed from the
-        // pre-enrichment classifications and applied before fullJson enrichment, so inherited
-        // children skip pointless per-device fetches and ride the same reassignment loop below.
-        Map inherited = [:]
-        devicesList.each { deviceEntry ->
-            Object pid = deviceEntry.parentDeviceId
-            Object cid = (deviceEntry.data instanceof Map) ? ((Map) deviceEntry.data).id : null
-            if (pid == null || cid == null) return
-            String cidStr = cid.toString()
-            if (!uncertainDevices.containsKey(cidStr)) return    // only fill devices we couldn't place
-            Map parentClass = (Map) classByDeviceId[pid.toString()]
-            if (parentClass && parentClass.integration && parentClass.integration != "Other") {
-                inherited[cidStr] = parentClass
-            }
-        }
-
-        Map enrichedAppInfos = (Map) uncertainDevices
-            .findAll { k, v -> !inherited.containsKey(k) }
-            .collectEntries { k, v -> [k, ((Map)v).appInfo] }
-        Map enrichments = enrichDevices(enrichedAppInfos, communityAppTypeNames)
-        if (inherited) enrichments.putAll(inherited)   // parent-device inheritance wins over the (empty) fullJson result
-
-        enrichments.each { String idStr, Map newClass ->
-            Map uncertain = (Map) uncertainDevices[idStr]
-            if (!uncertain) return
-
-            Object deviceId = uncertain.deviceId
-            String oldConn = (String) uncertain.currentConn
-            String oldIntegration = (String) uncertain.currentIntegration
-            String newConn = (String) newClass.connectionType
-            String newInteg = (String) newClass.integration
-
-            if (newConn == oldConn && newInteg == oldIntegration) return  // no change
-
-            // Update connection type stats (rebuild lists to avoid Integer/index remove ambiguity)
-            stats.idsByConnectionType[oldConn] = ((List) stats.idsByConnectionType[oldConn]).findAll { it?.toString() != idStr }
-            stats.byConnectionType[oldConn] = Math.max(0, ((stats.byConnectionType[oldConn] ?: 0) as int) - 1)
-            if (!stats.idsByConnectionType.containsKey(newConn)) stats.idsByConnectionType[newConn] = []
-            ((List) stats.idsByConnectionType[newConn]) << deviceId
-            stats.byConnectionType[newConn] = ((stats.byConnectionType[newConn] ?: 0) as int) + 1
-
-            // Update integration stats (oldIntegration/newInteg are null for standalone devices,
-            // which never entered the integration breakdown — guard so we don't touch a null bucket)
-            if (oldIntegration) {
-                stats.idsByIntegration[oldIntegration] = ((List) stats.idsByIntegration[oldIntegration]).findAll { it?.toString() != idStr }
-                stats.byIntegration[oldIntegration] = Math.max(0, ((stats.byIntegration[oldIntegration] ?: 0) as int) - 1)
-            }
-            if (newInteg) {
-                if (!stats.idsByIntegration.containsKey(newInteg)) stats.idsByIntegration[newInteg] = []
-                ((List) stats.idsByIntegration[newInteg]) << deviceId
-                stats.byIntegration[newInteg] = ((stats.byIntegration[newInteg] ?: 0) as int) + 1
-            }
-
-            // Update allDevices record in place
-            Map deviceRecord = (Map) stats.allDevices.find { ((Map)it).id?.toString() == idStr }
-            if (deviceRecord) {
-                deviceRecord.connectionType = newConn
-                deviceRecord.integration = newInteg
-            }
-
-            // Update integrationSources for the new integration name
-            Object newBuiltin = newClass.builtin
-            if (newBuiltin != null && !stats.integrationSources.containsKey(newInteg)) {
-                stats.integrationSources[newInteg] = (newBuiltin == true) ? "builtin" : "community"
-            }
         }
     }
 
@@ -3112,58 +2807,47 @@ Object extractParentAppId(Map device) {
 /**
  * Returns the merged integration-overrides map: user file entries first (so user wins on
  * substring-match precedence and on key collision), then built-in entries not overridden.
- * Result is cached in integrationOverridesCache for INTEGRATION_OVERRIDES_CACHE_TTL_MS so a file
- * uploaded/edited after first load is picked up without a full Done; updated() and apiClearCache()
- * reset it for an immediate reload. A parse error falls back to the built-in defaults.
+ * Result is cached in TTL_CACHE['integrationOverrides'] for INTEGRATION_OVERRIDES_CACHE_TTL_MS so a
+ * file uploaded/edited after first load is picked up without a full Done; updated() and
+ * apiClearCache() reset it for an immediate reload. A parse error falls back to the built-in defaults.
  */
 private Map getIntegrationOverrides() {
-    if (integrationOverridesCache != null && integrationOverridesCacheAt != null &&
-        (now() - integrationOverridesCacheAt) < INTEGRATION_OVERRIDES_CACHE_TTL_MS) {
-        return integrationOverridesCache
-    }
-    // The override file is OPTIONAL. downloadHubFile throws when it's absent (with the bare
-    // filename as the message) — the normal case on most hubs — so log that at debug, not warn.
-    // A WARN is reserved for a file that IS present but can't be parsed (a real misconfiguration).
-    byte[] fileData = null
-    try {
-        fileData = downloadHubFile(INTEGRATION_OVERRIDES_FILE)
-    } catch (Exception e) {
-        logDebug "No ${INTEGRATION_OVERRIDES_FILE} in File Manager — using built-in defaults"
-    }
-    if (fileData) {
+    return (Map) cachedFetch('integrationOverrides', INTEGRATION_OVERRIDES_CACHE_TTL_MS) {
+        // The override file is OPTIONAL. downloadHubFile throws when it's absent — the normal
+        // case on most hubs — so log that at debug. A WARN is reserved for a file that IS
+        // present but can't be parsed (a real misconfiguration).
+        byte[] fileData = null
         try {
-            String jsonString = new String(fileData, "UTF-8")
-            Map userRaw = (Map) new groovy.json.JsonSlurper().parseText(jsonString)
-            // Build merged map: user entries first, then built-in entries not overridden.
-            Map merged = new LinkedHashMap()
-            userRaw.each { rawKey, rawVal ->
-                if (rawKey.toString().startsWith("_")) return   // skip documentation / commented-out keys
-                String key = rawKey.toString().toLowerCase().trim()
-                if (!key) return
-                Map entry = [:]
-                if (rawVal instanceof Map) {
-                    String conn = rawVal?.conn?.toString()?.trim()
-                    if (conn && VALID_CONN.contains(conn)) entry.conn = conn
-                    String nm = rawVal?.name?.toString()?.trim()
-                    if (nm) entry.name = nm
-                }
-                if (!entry.isEmpty()) merged[key] = entry
-            }
-            INTEGRATION_OVERRIDES.each { k, v ->
-                if (!merged.containsKey(k)) merged[k] = v
-            }
-            int userEntryCount = userRaw.keySet().count { !it.toString().startsWith("_") } as int
-            logDebug "Loaded integration overrides: ${merged.size()} entries (${userEntryCount} from user file)"
-            integrationOverridesCache = merged
-            integrationOverridesCacheAt = now()
-            return merged
+            fileData = downloadHubFile(INTEGRATION_OVERRIDES_FILE)
         } catch (Exception e) {
-            logWarn "Found ${INTEGRATION_OVERRIDES_FILE} but could not parse it (${e.message}) — using built-in defaults"
+            logDebug "No ${INTEGRATION_OVERRIDES_FILE} in File Manager — using built-in defaults"
         }
+        if (fileData) {
+            try {
+                Map userRaw = (Map) new groovy.json.JsonSlurper().parseText(new String(fileData, "UTF-8"))
+                Map merged = new LinkedHashMap()
+                userRaw.each { rawKey, rawVal ->
+                    if (rawKey.toString().startsWith("_")) return   // skip documentation keys
+                    String key = rawKey.toString().toLowerCase().trim()
+                    if (!key) return
+                    Map entry = [:]
+                    if (rawVal instanceof Map) {
+                        String conn = rawVal?.conn?.toString()?.trim()
+                        if (conn && VALID_CONN.contains(conn)) entry.conn = conn
+                        String nm = rawVal?.name?.toString()?.trim()
+                        if (nm) entry.name = nm
+                    }
+                    if (!entry.isEmpty()) merged[key] = entry
+                }
+                INTEGRATION_OVERRIDES.each { k, v -> if (!merged.containsKey(k)) merged[k] = v }
+                logDebug "Loaded integration overrides: ${merged.size()} entries"
+                return merged
+            } catch (Exception e) {
+                logWarn "Found ${INTEGRATION_OVERRIDES_FILE} but could not parse it (${e.message}) — using built-in defaults"
+            }
+        }
+        return INTEGRATION_OVERRIDES
     }
-    integrationOverridesCache = INTEGRATION_OVERRIDES
-    integrationOverridesCacheAt = now()
-    return INTEGRATION_OVERRIDES
 }
 
 Map lookupIntegration(String text) {
@@ -3199,6 +2883,17 @@ String cleanIntegrationName(String raw) {
         }
     }
     return s ?: raw
+}
+
+// Shared parent-app classification: override wins, else cleaned app name + LAN-signal-derived
+// connection. Used by classifyDevice (bulk pass, isLan = device.isNetwork) and enrichDevices
+// (fullJson pass, isLan = controllerType NET/LAN) so the two passes cannot drift.
+private Map classifyFromParentApp(String appType, String appLabel, boolean isLan, Boolean builtin) {
+    Map ov = lookupIntegration(appType) ?: (appLabel ? lookupIntegration(appLabel) : null)
+    String raw = appType ?: appLabel
+    String integration = (ov?.name) ? (String) ov.name : cleanIntegrationName(raw)
+    String connectionType = ov?.conn ? (String) ov.conn : (isLan ? CONN_LAN_DIRECT : CONN_CLOUD)
+    return [connectionType: connectionType, integration: integration ?: raw, builtin: builtin]
 }
 
 // Returns [connectionType, integration, builtin]. Two orthogonal axes:
@@ -3243,21 +2938,8 @@ Map classifyDevice(Map device, Map appLookup, Set communityDrivers) {
     if (normalizedParentAppId) {
         Map appInfo = (Map) appLookup[normalizedParentAppId]
         if (appInfo) {
-            String appType  = (appInfo.type  ?: "").toString()
-            String appLabel = (appInfo.label ?: "").toString()
-            boolean isBuiltin = !(appInfo.user == true)
-            // Check override map first (bridges, AirPlay) — falls back to algorithmic derivation
-            Map ov = lookupIntegration(appType) ?: lookupIntegration(appLabel)
-            String raw = appType ?: appLabel
-            String integration = (ov?.name) ? (String) ov.name : cleanIntegrationName(raw)
-            // Connection type: override wins; otherwise LAN signal ⇒ local, no LAN ⇒ cloud
-            String connectionType
-            if (ov?.conn) {
-                connectionType = (String) ov.conn
-            } else {
-                connectionType = (device.isNetwork == true) ? CONN_LAN_DIRECT : CONN_CLOUD
-            }
-            return [connectionType: connectionType, integration: integration ?: raw, builtin: isBuiltin]
+            return classifyFromParentApp((appInfo.type ?: "").toString(), (appInfo.label ?: "").toString(),
+                                         device.isNetwork == true, !(appInfo.user == true))
         }
     }
 
@@ -3301,10 +2983,15 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
     Map result = [:]
 
     uncertainDevices.each { String idStr, Map appInfo ->
-        String cachedJson = (String) cache[idStr]
+        // v5.77.0: entries are plain maps (state is JSON-serialized anyway — the old JSON-string
+        // encoding double-parsed on every pass). Legacy string entries survive a code push
+        // (updated() doesn't fire), so read both formats; unreadable ones re-fetch.
+        Object cachedVal = cache[idStr]
         Map cachedEntry = null
-        if (cachedJson?.startsWith("{")) {
-            try { cachedEntry = (Map) new groovy.json.JsonSlurper().parseText(cachedJson) }
+        if (cachedVal instanceof Map) {
+            cachedEntry = (Map) cachedVal
+        } else if (cachedVal instanceof String && ((String) cachedVal).startsWith("{")) {
+            try { cachedEntry = (Map) new groovy.json.JsonSlurper().parseText((String) cachedVal) }
             catch (Exception ignored) { /* stale/invalid format — re-fetch */ }
         }
 
@@ -3330,15 +3017,15 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
                     if (dataJson?.startsWith("{")) {
                         Map dataValues = (Map) new groovy.json.JsonSlurper().parseText(dataJson)
                         String hint = safeToString(dataValues?.get("hubdiag:conn"), "")
-                        if (hint && CONN_DISPLAY.containsKey(hint)) connHint = hint
+                        if (hint && VALID_CONN.contains(hint)) connHint = hint
                     }
                 } catch (Exception ignored) {}
-                cacheUpdates[idStr] = groovy.json.JsonOutput.toJson([
+                cacheUpdates[idStr] = [
                     parentAppTypeName: parentAppTypeName ?: "",
                     controllerType: ct ?: "",
                     connHint: connHint ?: "",
                     builtin: isBuiltin == null ? "" : (isBuiltin ? "true" : "false")
-                ])
+                ]
             } catch (Exception e) {
                 logDebug "enrichDevices: could not fetch device ${idStr}: ${e.message}"
                 return
@@ -3361,18 +3048,9 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
             return
         }
 
-        // Primary: algorithm-primary parent-app classification (mirrors classifyDevice branch 2)
+        // Primary: parent-app classification — same rules as classifyDevice branch 2.
         if (parentAppTypeName) {
-            Map ov = lookupIntegration(parentAppTypeName)
-            String integration = (ov?.name) ? (String) ov.name : cleanIntegrationName(parentAppTypeName)
-            // Connection type: override wins; LAN controllerType ⇒ lan_direct; else cloud
-            String connectionType
-            if (ov?.conn) {
-                connectionType = (String) ov.conn
-            } else {
-                connectionType = (ct == "NET" || ct == "LAN") ? CONN_LAN_DIRECT : CONN_CLOUD
-            }
-            result[idStr] = [connectionType: connectionType, integration: integration ?: parentAppTypeName, builtin: isBuiltin]
+            result[idStr] = classifyFromParentApp(parentAppTypeName, null, (ct == "NET" || ct == "LAN"), isBuiltin)
             return
         }
 
@@ -3485,12 +3163,11 @@ void asyncOnRuntimeStats(resp, data) {
 }
 
 private void chainNextRadio(boolean zwave) {
-    long nowMs = now()
-    Map cached = zwave ? cachedZwaveData : cachedZigbeeData
-    Long cachedAt = zwave ? cachedZwaveAt  : cachedZigbeeAt
+    String key = zwave ? 'zwaveDetails' : 'zigbeeDetails'
     String path = zwave ? ZWAVE_DETAILS_PATH : ZIGBEE_DETAILS_PATH
     String cbName = zwave ? "asyncOnZwave" : "asyncOnZigbee"
-    if (cached && cachedAt && (nowMs - cachedAt) < RADIO_CACHE_TTL_MS) {
+    Map cached = (Map) cachePeek(key, RADIO_CACHE_TTL_MS)
+    if (cached != null) {
         // Cache hit — invoke callback synchronously with a cached carrier so the
         // callback shape stays uniform across cache hit and async fetch.
         this."${cbName}"(null, [cached: true, body: cached])
@@ -3501,21 +3178,20 @@ private void chainNextRadio(boolean zwave) {
         asynchttpGet(cbName, params, null)
     } catch (Exception e) {
         logError "scheduledCheckpoint: dispatch ${zwave ? 'Z-Wave' : 'Zigbee'}: ${e.message}"
-        // Continue chain with empty data rather than abort
         this."${cbName}"(null, [cached: true, body: [:]])
     }
 }
 
 void asyncOnZwave(resp, data) {
     Map zw = extractAsyncBody(resp, data, "Z-Wave")
-    if (zw != null && !data?.cached) { cachedZwaveData = zw; cachedZwaveAt = now() }
+    if (zw && !data?.cached) cachePut('zwaveDetails', zw)
     asyncCheckpointStaging.zwaveRaw = zw ?: [:]
     chainNextRadio(false)
 }
 
 void asyncOnZigbee(resp, data) {
     Map zb = extractAsyncBody(resp, data, "Zigbee")
-    if (zb != null && !data?.cached) { cachedZigbeeData = zb; cachedZigbeeAt = now() }
+    if (zb && !data?.cached) cachePut('zigbeeDetails', zb)
     asyncCheckpointStaging.zigbeeRaw = zb ?: [:]
     finalizeAsyncCheckpoint()
 }
@@ -3567,31 +3243,15 @@ private void abortAsyncChain() {
     atomicState.checkpointInFlight = null
 }
 
-// v5.32.6: radio fetch with cache-first + bounded budget. Used by checkpoint paths
-// (createCheckpoint, apiPerformanceCompare 'now') where blocking the app thread for
-// tens of seconds contributes to hub-wide overload. getPerformanceData has its own
-// cache check inline (it returns the data directly into the response) so it keeps
-// the longer 20s timeout — the user explicitly opened the tab and wants the data.
-private Map fetchZwaveDataForCheckpoint() {
-    long nowMs = now()
-    if (cachedZwaveData && cachedZwaveAt && (nowMs - cachedZwaveAt) < RADIO_CACHE_TTL_MS) {
-        logDebug "Using cached Z-Wave data for checkpoint (age ${nowMs - cachedZwaveAt}ms)"
-        return cachedZwaveData
+// Radio fetch with cache-first + bounded budget (8s, no retry) for checkpoint paths, where
+// blocking the app thread for tens of seconds contributes to hub-wide overload.
+// getPerformanceData keeps its 20s timeout — the user explicitly opened the tab.
+private Map fetchRadioForCheckpoint(boolean zwave) {
+    return (Map) cachedFetch(zwave ? 'zwaveDetails' : 'zigbeeDetails', RADIO_CACHE_TTL_MS) {
+        Map r = hubMapRequest(zwave ? ZWAVE_DETAILS_PATH : ZIGBEE_DETAILS_PATH,
+                              "${zwave ? 'Z-Wave' : 'Zigbee'} details (checkpoint)", 8, false)
+        return (r.ok && r.data) ? r.data : null
     }
-    Map r = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details (checkpoint)", 8, false)
-    if (r.ok) { cachedZwaveData = r.data; cachedZwaveAt = nowMs; return r.data }
-    return null
-}
-
-private Map fetchZigbeeDataForCheckpoint() {
-    long nowMs = now()
-    if (cachedZigbeeData && cachedZigbeeAt && (nowMs - cachedZigbeeAt) < RADIO_CACHE_TTL_MS) {
-        logDebug "Using cached Zigbee data for checkpoint (age ${nowMs - cachedZigbeeAt}ms)"
-        return cachedZigbeeData
-    }
-    Map r = hubMapRequest(ZIGBEE_DETAILS_PATH, "Zigbee details (checkpoint)", 8, false)
-    if (r.ok) { cachedZigbeeData = r.data; cachedZigbeeAt = nowMs; return r.data }
-    return null
 }
 
 private boolean doCreateCheckpoint() {
@@ -3608,12 +3268,12 @@ private boolean doCreateCheckpoint() {
     Float temperature = fetchTemperature()
     Integer databaseSize = fetchDatabaseSize()
 
-    // v5.32.6: capture radio message counts via the same 60s @Field static cache used by
+    // v5.32.6: capture radio message counts via the same 60s TTL cache used by
     // getPerformanceData. On a cold cache, bound the fetch to 8s with no retry — worst-case
     // per-radio blocking drops from ~40s (20s × once-retry) to 8s, halving total checkpoint
     // app-thread time. If the call still fails, store empty arrays rather than crashing.
-    Map zwaveData = fetchZwaveDataForCheckpoint()
-    Map zigbeeData = fetchZigbeeDataForCheckpoint()
+    Map zwaveData = fetchRadioForCheckpoint(true)
+    Map zigbeeData = fetchRadioForCheckpoint(false)
     List zwaveRadio = extractZwaveMessageCounts(zwaveData)
     List zigbeeRadio = extractZigbeeMessageCounts(zigbeeData)
 
@@ -3653,7 +3313,6 @@ void clearAllCheckpoints() {
     deleteFile(CHECKPOINT_INDEX_FILE)
     deleteFile(PERFORMANCE_COMPARISON_FILE)
     cachedCheckpointIndex = []
-    state.checkpointIndex = []
     logInfo "All perf checkpoints cleared (${detailFiles.size()} detail file(s) removed)"
 }
 
@@ -3881,31 +3540,21 @@ int parseUptime(String uptime) {
     return seconds
 }
 
-String formatMemory(int kb) {
-    if (Math.abs(kb) >= 1024 * 1024) {
-        return String.format("%.2f GB", kb / (1024.0 * 1024.0))
-    } else if (Math.abs(kb) >= 1024) {
-        return String.format("%.2f MB", kb / 1024.0)
-    } else {
-        return "${kb} KB"
+// Numeric dotted-version compare; non-numeric or missing segments count as 0.
+private int compareVersions(String a, String b) {
+    List ap = a.tokenize('.'), bp = b.tokenize('.')
+    int n = Math.max(ap.size(), bp.size())
+    for (int i = 0; i < n; i++) {
+        int av = (i < ap.size() && ((String) ap[i]).isInteger()) ? ((String) ap[i]).toInteger() : 0
+        int bv = (i < bp.size() && ((String) bp[i]).isInteger()) ? ((String) bp[i]).toInteger() : 0
+        if (av != bv) return (av < bv) ? -1 : 1
     }
+    return 0
 }
 
 boolean isNewer(String v1, String v2) {
     if (!v1 || v1 == "Unknown" || !v2 || v2 == "Unknown") return false
-    List v1p = v1.tokenize('.'), v2p = v2.tokenize('.')
-    for (int i = 0; i < Math.max(v1p.size(), v2p.size()); i++) {
-        String s1 = i < v1p.size() ? v1p[i] : "0"
-        String s2 = i < v2p.size() ? v2p[i] : "0"
-        int n1 = s1.isInteger() ? s1.toInteger() : 0
-        int n2 = s2.isInteger() ? s2.toInteger() : 0
-        if (n1 > n2) return true
-        if (n1 < n2) return false
-    }
-    return false
-}
-
-void appButtonHandler(String btn) {
+    return compareVersions(v1, v2) > 0
 }
 
 private String getAppTypeId() {
@@ -4006,33 +3655,26 @@ private String detailFilenameFor(Object timestampMs) {
 }
 
 List loadCheckpointIndex() {
-    // N4: return a defensive copy so a caller doing `loadCheckpointIndex() << x` can't mutate the
-    // shared cache (which would also bypass the FileManager write in saveCheckpointIndex).
+    // Defensive copies both ways (N4): callers can never mutate the shared cache.
     if (cachedCheckpointIndex != null) return new ArrayList(cachedCheckpointIndex)
     try {
         List data = (List) readFile(CHECKPOINT_INDEX_FILE)
         if (data != null) {
             cachedCheckpointIndex = data
-            state.checkpointIndex = cachedCheckpointIndex
             return new ArrayList(cachedCheckpointIndex)
         }
     } catch (Exception e) {
         logDebug "No existing checkpoint index: ${e.message}"
     }
-    // No new index file — check for a legacy blob and migrate if found.
-    List migrated = migrateLegacyCheckpointsIfPresent()
-    cachedCheckpointIndex = migrated
-    state.checkpointIndex = cachedCheckpointIndex
-    return cachedCheckpointIndex == null ? null : new ArrayList(cachedCheckpointIndex)
+    // First run or index missing: start an empty index file so later reads short-circuit.
+    saveCheckpointIndex([])
+    return []
 }
 
 void saveCheckpointIndex(List index) {
     try {
-        String json = groovy.json.JsonOutput.toJson(index)
-        writeFile(CHECKPOINT_INDEX_FILE, json)
-        // N4: store our own copy so the caller's ongoing reference can't later mutate the cache.
+        writeFile(CHECKPOINT_INDEX_FILE, groovy.json.JsonOutput.toJson(index))
         cachedCheckpointIndex = (index == null ? null : new ArrayList(index))
-        state.checkpointIndex = cachedCheckpointIndex
     } catch (Exception e) {
         logError "Error saving checkpoint index: ${e}"
     }
@@ -4070,46 +3712,6 @@ void deleteCheckpointDetail(String filename) {
     }
 }
 
-// One-shot legacy migration. Reads the v5.32.x single-blob file, splits it into
-// per-checkpoint detail files + the new index, then deletes the legacy file.
-// Idempotent: returns [] if nothing legacy is present.
-private List migrateLegacyCheckpointsIfPresent() {
-    List legacy
-    try {
-        List data = (List) readFile(CHECKPOINTS_FILE)
-        if (data == null) {
-            // No legacy file. First-time install — start with an empty index file
-            // so subsequent reads short-circuit without a migration probe.
-            saveCheckpointIndex([])
-            return []
-        }
-        legacy = data
-    } catch (Exception e) {
-        logDebug "Legacy migration: no legacy file: ${e.message}"
-        saveCheckpointIndex([])
-        return []
-    }
-    if (!legacy) {
-        saveCheckpointIndex([])
-        deleteCheckpointDetail(CHECKPOINTS_FILE)
-        return []
-    }
-    logInfo "Migrating ${legacy.size()} checkpoint(s) to split-file storage..."
-    List newIndex = []
-    legacy.each { Map cp ->
-        String filename = saveCheckpointDetail(cp)
-        if (filename) {
-            newIndex << buildCheckpointIndexEntry(cp, filename)
-        } else {
-            logError "Migration: failed to write detail file for checkpoint ${cp.timestampMs}"
-        }
-    }
-    saveCheckpointIndex(newIndex)
-    deleteCheckpointDetail(CHECKPOINTS_FILE)
-    logInfo "Migration complete: ${newIndex.size()} checkpoint detail file(s) + index"
-    return newIndex
-}
-
 // v5.33.0: write a new checkpoint to disk. Used by both the sync (apiCreateCheckpoint)
 // and async (scheduledCheckpoint) paths. Persists detail file first, then updates the
 // index. Trims oldest entries beyond settings.maxCheckpoints, deleting their detail files.
@@ -4129,21 +3731,6 @@ void persistCheckpoint(Map cp) {
         idx = idx.take(cap)
     }
     saveCheckpointIndex(idx)
-}
-
-List getCheckpointIndex() {
-    List idx = state.checkpointIndex as List
-    // v5.33.0 upgrade-from-v5.32.6 detection: v5.32.6 populated state.checkpointIndex
-    // with entries that lack the detailFile pointer. Treat as cold start so
-    // loadCheckpointIndex runs migration of the legacy single-blob file.
-    if (idx != null && !idx.isEmpty() && idx[0]?.detailFile == null) {
-        logInfo "v5.33.0 upgrade detected: forcing migration of legacy checkpoint blob"
-        state.checkpointIndex = null
-        cachedCheckpointIndex = null
-        idx = null
-    }
-    if (idx != null) return idx
-    return loadCheckpointIndex()
 }
 
 List loadSnapshots() {
@@ -4207,11 +3794,12 @@ def readFile(String fileName) {
  * hubMesh live on each entry's `data`; onOffState + hubMeshDisabled come from `data.currentStates`.
  * These aren't in fullJson (or read null there), so the bulk list is the source of truth.
  */
-private Map<Long, Map> buildMeshFieldsMap() {
+private Map<Long, Map> buildMeshFieldsMap(Map prefetchedDevices = null) {
     Map<Long, Map> out = [:]
-    Map wrap = hubMapRequest(DEVICES_LIST_PATH, "devices list (mesh enrichment)", 30)
+    Map wrap = (prefetchedDevices != null) ? [ok: true, data: prefetchedDevices, error: null]
+                                           : hubMapRequest(DEVICES_LIST_PATH, "devices list (mesh enrichment)", 30)
     if (!wrap.ok) { logWarn "mesh enrichment: device list fetch failed: ${wrap.error}"; return out }
-    List entries = flattenDeviceList((wrap.data?.devices ?: []) as List)
+    List entries = flattenDeviceEntries((wrap.data?.devices ?: []) as List)
     entries.each { Object e ->
         Map d = ((e instanceof Map && ((Map) e).data instanceof Map) ? ((Map) e).data : e) as Map
         Long id = d.id as Long
@@ -4325,7 +3913,7 @@ private Map extractAuditFields(Map fj, Long did) {
         createTime:          dev.createTime,
         updateTime:          dev.updateTime,
         lastActivityTime:    dev.lastActivityTime,
-        lastActivityTimeMs:  parseHubitatTimestamp(dev.lastActivityTime as String),  // epoch for SPA-side unreferenced sort
+        lastActivityTimeMs:  parseDate(dev.lastActivityTime),  // epoch for SPA-side unreferenced sort
         parentDeviceId:      (dev.parentDeviceId as Long),
         childDeviceIds:      ((fj?.childDevices ?: [:]) as Map).keySet()?.collect { it as Long } ?: [],
         notes:               dev.notes,
@@ -4404,19 +3992,6 @@ private String controllerTypeLabel(String ct) {
         case 'BLE':
         case 'BTH': return 'Bluetooth'
         default:    return ct
-    }
-}
-
-/**
- * Parse a Hubitat ISO-8601 timestamp ("2026-05-08T00:27:27+0000") to epoch millis.
- * Returns null on parse failure (don't fail the report — just skip the value).
- */
-private Long parseHubitatTimestamp(String s) {
-    if (!s) return null
-    try {
-        return Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", s).time
-    } catch (Exception e) {
-        return null
     }
 }
 
@@ -4529,6 +4104,11 @@ private void finalizeAudit(String scanId) {
     long enrichStart = now()
     xref.rooms = fetchRoomsForAudit()
 
+    // One fresh devicesList for the whole finalize phase — shared request-scoped (NOT via the
+    // TTL cache: buildMeshFieldsMap extracts live switch state that must not be minutes old).
+    Map finalizeDevWrap = hubMapRequest(DEVICES_LIST_PATH, "devices list (audit finalize)", 30)
+    Map finalizeDevList = finalizeDevWrap.ok ? finalizeDevWrap.data : null
+
     // Z-Wave JS per-node enrichment (only when Z-Wave JS stack is active)
     if (detectZwaveStack() == "js") {
         Map zwData = reqData(ZWAVE_DETAILS_PATH, "Z-Wave details (audit enrichment)", 10)
@@ -4570,7 +4150,7 @@ private void finalizeAudit(String scanId) {
     // result onto the audit records by id so external consumers (e.g. Multi-Hub Inventory) get the
     // same connectionType/integration the SPA shows — without duplicating the classification logic.
     try {
-        List classified = (analyzeDevices(true)?.allDevices ?: []) as List
+        List classified = (analyzeDevices(true, finalizeDevList)?.allDevices ?: []) as List
         Map classById = classified.collectEntries { Map d -> [(d.id?.toString()): d] }
         devices.each { Object devId, Object recObj ->
             Map cls = (Map) classById[devId?.toString()]
@@ -4587,7 +4167,7 @@ private void finalizeAudit(String scanId) {
     // switch state / hubMeshDisabled off the bulk /hub2/devicesList so cross-hub consumers can
     // reconstruct the source↔remote graph. Keyed by device id, same shape as the join above.
     try {
-        Map<Long, Map> meshById = buildMeshFieldsMap()
+        Map<Long, Map> meshById = buildMeshFieldsMap(finalizeDevList)
         devices.each { Object devId, Object recObj ->
             Map mf = (Map) meshById[devId as Long]
             if (mf) {
@@ -4671,7 +4251,7 @@ Map apiAuditStart() {
     if (!bulkWrap.ok) {
         return jsonResponse([error: "Failed to fetch device list", detail: bulkWrap.error])
     }
-    List devs = flattenDeviceList((bulkWrap.data.devices ?: []) as List)
+    List devs = flattenDeviceEntries((bulkWrap.data.devices ?: []) as List)
     List<Long> ids = devs.collect { ((it.data ?: it) as Map).id as Long }.findAll { it != null }
     if (ids.isEmpty()) {
         return jsonResponse([error: "No devices to audit"])
@@ -4702,19 +4282,6 @@ Map apiAuditStart() {
 
     logInfo "[audit ${scanId}] started — ${ids.size()} devices to scan"
     return jsonResponse([scanId: scanId, total: ids.size(), alreadyRunning: false])
-}
-
-/**
- * Flatten the parent/child/grandchild structure returned by /hub2/devicesList into a flat list.
- */
-private List flattenDeviceList(List items) {
-    List out = []
-    items.each { Map item ->
-        out << item
-        List children = (item.children ?: []) as List
-        if (children) out.addAll(flattenDeviceList(children))
-    }
-    return out
 }
 
 /**
@@ -4796,23 +4363,18 @@ void updated() {
     unschedule()
     // clear session-scoped caches so config/hardware changes take effect immediately
     zwaveStackCache  = null   // re-detect Z-Wave stack on next use (handles user switching legacy ↔ JS)
-    fwUpdateCache    = null   // force fresh cloud fetch on next dashboard render
-    fwUpdateCacheAt  = null
     state.remove('controllerTypeCache') // evict per-device classification cache; rebuilds on next analysis pass
+    // Retired state keys (v5.77.0): the checkpoint index lives in File Manager + a session cache
+    // only — keeping a copy in state taxed every app invocation. lastZwaveGhostCheckMs was
+    // replaced by the shared TTL cache; storageSchemaVersion by the ≥5.33 upgrade floor.
+    state.remove('checkpointIndex')
+    state.remove('storageSchemaVersion')
+    state.remove('lastZwaveGhostCheckMs')
     apiTimings.clear()                  // drop stats for renamed/removed endpoints; fresh measurements from now
-    // N1: clear the TTL'd radio/list/resource caches too, so a settings change isn't masked by
-    // stale data for up to the cache TTL. Matches the A3/A7/B5 invalidation discipline.
-    cachedZwaveData = null;        cachedZwaveAt = null
-    cachedZigbeeData = null;       cachedZigbeeAt = null
-    cachedAppsListData = null;     cachedAppsListAt = null
-    cachedDevicesListData = null;  cachedDevicesListAt = null
-    cachedSystemResources = null;  cachedSystemResourcesAt = null
-    cachedTemperature = null;      cachedTemperatureAt = null
-    cachedDatabaseSize = null;     cachedDatabaseSizeAt = null
-    cachedCpuInfo = null;          cachedCpuInfoAt = null
-    cachedLoadThreshold = null;    cachedLoadThresholdAt = null
+    // N1: clear the TTL'd radio/list/resource/fwUpdate/integrationOverrides caches too, so a
+    // settings change isn't masked by stale data for up to the cache TTL.
+    TTL_CACHE.clear()   // N1: one wholesale clear — a new cache can never be missed here again
     cachedCheckpointIndex = null   // re-read the checkpoint index from FileManager on next access
-    integrationOverridesCache = null; integrationOverridesCacheAt = null  // reload user integration-overrides file on next use
     // C2: auto-disable debug logging after 30 min so it can't be left on indefinitely
     if (settings.debugLogging) runIn(1800, 'logsOff')
     runIn(1, 'syncUIForced')
@@ -4903,7 +4465,6 @@ private boolean processSyncUIResponse(String htmlText) {
 
 void initialize() {
     logInfo "Hub Diagnostics initialized"
-    migrateStorageIfNeeded()
 
     // Reconcile audit state: if a scan was in-flight when the app reloaded, AUDIT_SCANS is now
     // empty and the scan can never complete — mark it failed so the UI doesn't get stuck.
@@ -5000,24 +4561,3 @@ void syncUIForced() {
     syncUI(true)
 }
 
-void migrateStorageIfNeeded() {
-    String currentSchema = (state.storageSchemaVersion ?: "") as String
-    if (currentSchema == STORAGE_SCHEMA_VERSION) {
-        return
-    }
-
-    boolean migratedLegacyState = false
-    if (state.lastPerformanceComparison != null) {
-        state.remove("lastPerformanceComparison")
-        migratedLegacyState = true
-    }
-    if (state.lastSnapshotDiff != null) {
-        state.remove("lastSnapshotDiff")
-        migratedLegacyState = true
-    }
-
-    state.storageSchemaVersion = STORAGE_SCHEMA_VERSION
-    if (migratedLegacyState) {
-        logInfo "Migrated legacy comparison state to file-backed storage for v${CODE_VERSION}"
-    }
-}

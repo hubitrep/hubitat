@@ -138,7 +138,7 @@ table[data-sortable] th[data-dir] .arr{opacity:1}
 </div>
 <script>
 // ===== VERSION =====
-const CODE_VERSION = "5.76.0";
+const CODE_VERSION = "5.77.0";
 
 // ===== CONFIG & MOCKS =====
 const WORKBENCH = false; // Set to true for local development without a hub
@@ -378,6 +378,27 @@ function alink(id,n){return'<a href="/installedapp/configure/'+id+'" target="_bl
 function dlistlink(count,ids){if(ids===true)return'<a href="/device/list" target="_blank">'+(count??0)+'</a>';if(!ids||!ids.length)return String(count??0);return'<a href="/device/list?ids='+ids.join(',')+'" target="_blank">'+count+'</a>'}
 function alistlink(count){return'<a href="/installedapp/list" target="_blank">'+(count??0)+'</a>'}
 const CD={zigbee:'Zigbee',zwave:'Z-Wave',matter:'Matter',bluetooth:'Bluetooth',homekit:'HomeKit',lan_direct:'LAN (Direct)',lan_bridge:'LAN (Bridge)',cloud:'Cloud',virtual:'Virtual',hubmesh:'Hub Mesh',other:'Other'};
+// Join the raw mesh neighbor/route lists against the zigbee device list (all shipped in the
+// same /api/network payload). Produces the same neighborDetails/routeDetails shapes the hub
+// used to assemble. Idempotent: no-op if details are already attached.
+function zbMeshDetails(zb){
+  if(!zb||!zb.mesh||zb.mesh.neighborDetails)return;
+  const m=zb.mesh;
+  const devByShort={};(zb.devicesSlim||[]).forEach(d=>{if(d.shortZigbeeId)devByShort[String(d.shortZigbeeId).toUpperCase()]=d});
+  const routeByDest={};(m.routeList||[]).forEach(r=>{if(r.destinationShortId&&r.status==='Active')routeByDest[r.destinationShortId]=r});
+  m.neighborDetails=(m.neighborList||[]).map(n=>{
+    const sid=n.shortId?String(n.shortId).toUpperCase():null;
+    const zdev=sid?devByShort[sid]:null,route=sid?routeByDest[sid]:null;
+    const isDirect=route?(route.direct||false):true;
+    const viaShortId=(route&&!isDirect)?route.viaShortId:null;
+    const viaDev=viaShortId?devByShort[viaShortId]:null;
+    return{shortId:n.shortId,name:n.name,deviceId:zdev?zdev.id:null,lqi:n.lqi,age:n.age,inCost:n.inCost,outCost:n.outCost,stale:n.stale||false,direct:isDirect,noLearnedRoute:route==null,viaName:(route&&!isDirect)?route.viaName:null,viaShortId:viaShortId,viaDeviceId:viaDev?viaDev.id:null};
+  });
+  m.routeDetails=(m.routeList||[]).map(r=>{
+    const dstDev=devByShort[r.destinationShortId],viaDev=r.viaShortId?devByShort[r.viaShortId]:null;
+    return Object.assign({},r,{destinationDeviceId:dstDev?dstDev.id:null,viaDeviceId:viaDev?viaDev.id:null});
+  });
+}
 const BADGE={builtin:'<span class="badge b-builtin">Built-in</span>',community:'<span class="badge b-community">Community</span>',platform:'<span class="badge b-platform">Platform</span>'};
 // Source classification → badge markup. emptyAsBuiltin=true renders Built-in for a missing source (apps); false renders nothing (perf rows).
 function srcBadge(source,emptyAsBuiltin){if(source==='platform')return BADGE.platform;if(source==='community')return BADGE.community;if(!source&&!emptyAsBuiltin)return'';return BADGE.builtin;}
@@ -1104,6 +1125,7 @@ function assembleForumData(r){
         hlth=r.health||{}, perf=r.performance||{}, set=r.settings||{};
   const ds=dev.summary||{}, as=app.summary||{};
   const zw=net.zwave||null, zb=net.zigbee||null;
+  zbMeshDetails(zb);
   return {
     hubInfo: hlth.hub||dash.hub||{},
     appVersion: dash.appVersion,
@@ -2091,7 +2113,7 @@ async function rDevices(){const P='p-devices';loading(P);try{
   const bt=d.byType||{},it=d.idsByType||{};
   const dt=Object.keys(bt).length?Object.entries(bt).map(([k,v])=>({name:k,count:v,ids:it[k]||[]})).sort((a,b)=>b.count-a.count):[];
   const staleCutoff=Date.now()-2*(d.inactivityDays||7)*86400000;
-  const stale=d.deviceRows.filter(r=>{if(r.lastActivity==='Never')return true;const t=new Date(r.lastActivity).getTime();return !isNaN(t)&&t<staleCutoff});
+  const stale=d.deviceRows.filter(r=>!r.lastActivityMs||r.lastActivityMs<staleCutoff);
   // Device types
   if(dt.length)o+='<div class="card"><div class="card-h">Device Types ('+dt.length+')</div><div class="card-b"><div id="dtTbl"></div></div></div>';
   // Low battery
@@ -2109,17 +2131,17 @@ async function rDevices(){const P='p-devices';loading(P);try{
   // Stale devices table
   if(stale.length)
     tbl('staleTbl',[
-      {l:'Name',f:'name',r:r=>dlink(r.id,r.name)},{l:'Type',f:'type'},{l:'Connection',f:'connectionTypeDisplay'},{l:'Integration',f:'integration',r:r=>h(r.integration||'-')},
-      {l:'Last Activity',f:'lastActivity'},{l:'Room',f:'room',r:r=>h(r.room||'-')}
+      {l:'Name',f:'name',r:r=>dlink(r.id,r.name)},{l:'Type',f:'type'},{l:'Connection',f:'connectionType',r:r=>CD[r.connectionType]||r.connectionType||'-'},{l:'Integration',f:'integration',r:r=>h(r.integration||'-')},
+      {l:'Last Activity',f:'lastActivityMs',t:'n',r:r=>r.lastActivityMs?new Date(r.lastActivityMs).toLocaleString():'Never'},{l:'Room',f:'room',r:r=>h(r.room||'-')}
     ],stale,{sc:3,sd:'asc',filter:true,collapse:10,collapseLabel:'Stale Devices'});
   tbl('devTbl',[
     {l:'Name',f:'name',r:r=>dlink(r.id,r.name)},
     {l:'Type',f:'type',r:r=>r.userType&&r.deviceTypeId?'<a href="/driver/editor/'+r.deviceTypeId+'" target="_blank">'+h(r.type)+'</a>':h(r.type)},
-    {l:'Connection',f:'connectionTypeDisplay'},
+    {l:'Connection',f:'connectionType',r:r=>CD[r.connectionType]||r.connectionType||'-'},
     {l:'Integration',f:'integration',r:r=>h(r.integration||'-')},
     {l:'Room',f:'room',r:r=>h(r.room||'-')},
     {l:'Status',f:'status',r:r=>sbadge(r.status)},
-    {l:'Last Activity',f:'lastActivity'},
+    {l:'Last Activity',f:'lastActivityMs',t:'n',r:r=>r.lastActivityMs?new Date(r.lastActivityMs).toLocaleString():'Never'},
     {l:'Battery',f:'battery',t:'n',r:r=>bat(r.battery)},
     {l:'Parent',f:'parentAppName',r:r=>r.parentAppName?alink(r.parentAppId,r.parentAppName):r.parentDeviceName?dlink(r.parentDeviceId,r.parentDeviceName):'-'}
   ],d.deviceRows,{filter:true,sc:0,sd:'asc',collapse:10,collapseLabel:'All Devices'});
@@ -2275,6 +2297,7 @@ async function rCode(){const P='p-code';loading(P);try{
 // ===== TAB: NETWORK =====
 async function rNetwork(){const P='p-network';loading(P);try{
   const d=await api('network');let o='';
+  zbMeshDetails(d.zigbee);
   // Radio + transport health badges (v5.9.0; Matter v5.66.2; Hub Mesh v5.66.3;
   // three-state model v5.66.4 — DISABLED/ONLINE/OFFLINE, always shown so the operator can
   // see what's actually enabled at a glance. Per-subsystem signals:
@@ -3094,7 +3117,7 @@ function renderSnapshotView(s,elId){
 
 // Compute snapshot diff client-side. Mirrors the structure that renderDiff() expects;
 // hub no longer ships /api/snapshot/diff. Inputs are two full snapshots fetched via
-// /api/snapshot/view (which already runs migrateSnapshotDevices on the way out).
+// /api/snapshot/view.
 function computeSnapshotDiff(older, newer){
   // Chronological order
   if((older.timestampMs||0) > (newer.timestampMs||0)){const tmp=older;older=newer;newer=tmp}
