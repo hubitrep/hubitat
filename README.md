@@ -18,7 +18,7 @@ install from a single Groovy file in the **Drivers Code** editor.
 
 ## Drivers
 
-- [Aqara Drivers](aqara/) — Zigbee drivers for Aqara / Xiaomi (LUMI) devices: the WSDCGQ11LM temperature/humidity/pressure sensor and the WS-USC01 no-neutral wall switch.
+- [Aqara Drivers](aqara/) — Zigbee drivers for Aqara / Xiaomi (LUMI) devices: the WSDCGQ11LM temperature/humidity/pressure sensor, the MCCGQ11LM door/window contact sensor, and the WS-USC01 no-neutral wall switch.
 - [Xfinity Contact Sensor](XfinityContactSensor/) — Zigbee driver for the Xfinity / Visonic door/window contact sensor with battery reporting.
 - [IKEA Window Blinds](IKEA-Blinds/) — Zigbee driver for IKEA window blind (FYRTUR / KADRILJ family).
 - [Sinopé Switch + Dimmer + Water Valve](sinope/) — Zigbee drivers for the Sinopé SW2500ZB switch, DM2500ZB dimmer, and VA422xZB water valve (with optional FS422x flow sensor).
