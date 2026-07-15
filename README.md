@@ -22,6 +22,7 @@ install from a single Groovy file in the **Drivers Code** editor.
 - [Xfinity Contact Sensor](XfinityContactSensor/) — Zigbee driver for the Xfinity / Visonic door/window contact sensor with battery reporting.
 - [IKEA Window Blinds](IKEA-Blinds/) — Zigbee driver for IKEA window blind (FYRTUR / KADRILJ family).
 - [Sinopé Switch + Dimmer + Water Valve](sinope/) — Zigbee drivers for the Sinopé SW2500ZB switch, DM2500ZB dimmer, and VA422xZB water valve (with optional FS422x flow sensor).
+- [Third Reality Dual Smart Plug](thirdreality/) — Zigbee driver for the Third Reality 3RDP01072Z dual-outlet smart plug with per-outlet power monitoring, plus its outlet component child driver.
 <!-- /AUTO -->
 
 ## Installing
