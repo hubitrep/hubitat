@@ -142,7 +142,7 @@ table[data-sortable] th[data-dir] .arr{opacity:1}
 </div>
 <script>
 // ===== VERSION =====
-const CODE_VERSION = "5.81.0";
+const CODE_VERSION = "5.82.0";
 
 // ===== CONFIG & MOCKS =====
 const WORKBENCH = false; // Set to true for local development without a hub
@@ -1525,6 +1525,9 @@ async function seedObfRegistry(){
 }
 function rateColor(v){return v>=TH.chattyDeviceThreshold?'var(--crit)':v>=TH.chattyDeviceThreshold*0.6?'var(--warn)':v>=2?'var(--primary)':''}
 function rateCell(r){if(r.msgPerMin==null)return'';const c=rateColor(r.msgPerMin);const s=c?' style="color:'+c+';font-weight:600"':'';return'<span'+s+'>'+r.msgPerMin.toFixed(2)+'</span>'}
+// Route Changes: null means the hub reported no route-change count (Z-Wave Long Range
+// nodes have no mesh routing; nodes with no accumulated traffic report none yet) -> '—'.
+function routeChangesCell(r){return r.routeChanges!=null?''+r.routeChanges:'—'}
 function isNewer(v1, v2) {
   if (!v1 || v1 === 'Unknown' || !v2 || v2 === 'Unknown') return false;
   const p1 = v1.split('.').map(Number), p2 = v2.split('.').map(Number);
@@ -2180,11 +2183,11 @@ async function rDevices(){const P='p-devices';loading(P);try{
   // Stale devices table
   if(stale.length)
     tbl('staleTbl',[
-      {l:'Name',f:'name',r:r=>dlink(r.id,r.name)},{l:'Type',f:'type'},{l:'Connection',f:'connectionType',r:r=>CD[r.connectionType]||r.connectionType||'-'},{l:'Integration',f:'integration',r:r=>h(r.integration||'-')},
+      {l:'Label (Name)',f:'label',r:r=>dlink(r.id,r.label)},{l:'Type',f:'type'},{l:'Connection',f:'connectionType',r:r=>CD[r.connectionType]||r.connectionType||'-'},{l:'Integration',f:'integration',r:r=>h(r.integration||'-')},
       {l:'Last Activity',f:'lastActivityMs',t:'n',r:r=>r.lastActivityMs?new Date(r.lastActivityMs).toLocaleString():'Never'},{l:'Room',f:'room',r:r=>h(r.room||'-')}
     ],stale,{sc:3,sd:'asc',filter:true,collapse:10,collapseLabel:'Stale Devices'});
   tbl('devTbl',[
-    {l:'Name',f:'name',r:r=>dlink(r.id,r.name)},
+    {l:'Label (Name)',f:'label',r:r=>dlink(r.id,r.label)},
     {l:'Type',f:'type',r:r=>r.userType&&r.deviceTypeId?'<a href="/driver/editor/'+r.deviceTypeId+'" target="_blank">'+h(r.type)+'</a>':h(r.type)},
     {l:'Connection',f:'connectionType',r:r=>CD[r.connectionType]||r.connectionType||'-'},
     {l:'Integration',f:'integration',r:r=>h(r.integration||'-')},
@@ -2701,7 +2704,7 @@ async function rNetwork(){const P='p-network';loading(P);try{
       {l:'RTT',f:'rtt',t:'n',r:r=>r.rtt!=null?r.rtt+'ms':'\u2014'},
       {l:'RSSI',f:'rssi',t:'n',r:r=>r.rssi!=null?'<span style="color:'+(r.rssi<-80?'var(--crit)':r.rssi<-60?'var(--warn)':'var(--ok)')+'">'+r.rssi+' dBm</span>':'N/A'},
       {l:'PER %',f:'per',t:'n',r:r=>'<span style="color:'+(r.per>1?'var(--crit)':r.per>0?'var(--warn)':'var(--ok)')+'">'+r.per+'%</span>'},
-      {l:'Neighbors',f:'neighbors',t:'n'},{l:'Route',f:'route'},{l:'Route Changes',f:'routeChanges',t:'n'},
+      {l:'Neighbors',f:'neighbors',t:'n'},{l:'Route',f:'route'},{l:'Route Changes',f:'routeChanges',t:'n',r:routeChangesCell},
       {l:'Msgs',f:'msgCount',t:'n'},{l:'Msgs/Min',f:'msgPerMin',t:'n',r:rateCell},
       {l:'Driver',f:'driverType',r:r=>r.driverType==='usr'?'<span style="color:var(--primary)">User</span>':r.driverType==='sys'?'Built-in':'\u2014'},
       {l:'State',f:'state',r:r=>'<span style="color:'+(r.state==='OK'?'var(--ok)':'var(--crit)')+'">'+h(r.state)+'</span>'}
@@ -2969,7 +2972,7 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
   if(hasZw){
     tbl('perfZwMsgTbl',[
       {l:'Device',f:'name',r:r=>r.deviceId?dlink(r.deviceId,r.name):h(Obf.nm(r.name))},{l:'Messages',f:'msgCount',t:'n'},
-      {l:'Msgs/Min',f:'msgPerMin',t:'n',r:rateCell},{l:'Route Changes',f:'routeChanges',t:'n'}
+      {l:'Msgs/Min',f:'msgPerMin',t:'n',r:rateCell},{l:'Route Changes',f:'routeChanges',t:'n',r:routeChangesCell}
     ],rs.zwave,{sc:2,sd:'desc',collapse:10,collapseLabel:'Z-Wave Messages'})}
   if(hasZb){
     tbl('perfZbMsgTbl',[
@@ -5767,7 +5770,7 @@ function buildAuditHtml(data) {
   // Per-device detail table
   o += openCard('all', `📋 Per-device detail table (${data.deviceCount})`);
   o += '<div class="filter"><input type="text" data-filter="t_all" placeholder="Filter devices…"></div>';
-  o += '<div class="tbl-wrap"><table data-sortable id="t_all"><thead><tr><th data-sd="asc">Name</th><th>Type</th><th>Source</th><th data-t="n">Apps</th><th data-t="n">Dashboards</th><th>Parent app</th><th>Last activity</th></tr></thead><tbody>';
+  o += '<div class="tbl-wrap"><table data-sortable id="t_all"><thead><tr><th data-sd="asc">Label (Name)</th><th>Type</th><th>Source</th><th data-t="n">Apps</th><th data-t="n">Dashboards</th><th>Parent app</th><th>Last activity</th></tr></thead><tbody>';
   const sortedDevices = Object.values(allDevices).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   sortedDevices.forEach(d => {
     const src = driverBadge(d.driverType);

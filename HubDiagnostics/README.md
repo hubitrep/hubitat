@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 A comprehensive diagnostic dashboard for Hubitat Elevation hubs. Provides real-time and historical visibility into devices, apps, network health, performance, and configuration — all in a single web UI served directly from your hub.
 
 <!-- AUTO:hubdiag-version -->
-**Current version:** 5.76.0
+**Current version:** 5.82.0
 <!-- /AUTO -->
 
 ---
@@ -128,7 +128,7 @@ A full inventory of every device on the hub.
 
 | Column | Description |
 |---|---|
-| Name | Linked to the device edit page |
+| Label (Name) | The device's display name — its label, or the device name when unlabeled; linked to the device edit page |
 | Type | Driver type; community drivers are linked to the driver editor |
 | Connection | How the hub reaches the device: Zigbee, Z-Wave, Matter, Bluetooth, HomeKit, LAN (Direct), LAN (Bridge), Cloud, Virtual, Hub Mesh |
 | Integration | The parent integration that manages the device (Lutron, Blink, Kasa, …); blank for standalone devices |
@@ -322,7 +322,7 @@ The user's own channel is annotated with "(your channel)" when it appears in the
 
 **Problem Nodes** — Nodes with state ≠ OK or packet error rate > 1%.
 
-**Mesh Quality table** columns: Device, Node, Security (S0/S2/None — S0 on non-lock devices is flagged), RTT (ms), RSSI (dBm), PER %, Neighbors, Route, Route Changes, Msgs, Msgs/Min, Driver (Built-in/User), State.
+**Mesh Quality table** columns: Device, Node, Security (S0/S2/None — S0 on non-lock devices is flagged), RTT (ms), RSSI (dBm), PER %, Neighbors, Route, Route Changes, Msgs, Msgs/Min, Driver (Built-in/User), State. Route Changes shows `—` when the hub reports no route-change count — expected for Z-Wave Long Range nodes (star topology, no mesh routing) and for nodes with no accumulated traffic yet; such nodes are excluded from the mesh-wide route-change total rather than counted as zero.
 
 **Message Counts table** — Devices ranked by message volume, with messages/minute color-coded against the chatty device threshold.
 
@@ -473,7 +473,7 @@ Generates a one-time, per-device cross-reference report covering:
 - **Hub Mesh Linked Devices** — for each device this hub consumes from another hub via Hub Mesh, source hub + source device ID + status from `/hubMesh/localLinkedDevice/<id>`.
 - **Apps → devices** and **Dashboards → devices reverse indices** — disabled app subscribers are rendered with strikethrough so "ghost references" stand out.
 - **Device inventory** — every device's hardware identity: protocol, manufacturer, model, and firmware revision, parsed from each device's pairing-time data values (no extra hub calls — it rides on the scan the audit already runs). Sortable and filterable, with **Download CSV** / **Copy CSV** export for documentation or firmware tracking. Z-Wave manufacturer/model appear as hex IDs (shown verbatim); virtual and cloud devices have blank cells.
-- **Per-device detail table** with all subscribers as clickable links. Type cells link to `/driver/editor/<id>` for community drivers.
+- **Per-device detail table** with all subscribers as clickable links. The **Label (Name)** column shows each device's display name — its label, or the device name when unlabeled. Type cells link to `/driver/editor/<id>` for community drivers.
 
 ### How it works
 
