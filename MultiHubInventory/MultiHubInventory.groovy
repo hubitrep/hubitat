@@ -4,7 +4,7 @@
  */
 import groovy.transform.Field
 
-@Field static final String CODE_VERSION = "0.7.0"
+@Field static final String CODE_VERSION = "0.8.0"
 @Field static final String UI_FILE = "multi_hub_inventory_ui.html"
 @Field static final String IMPORT_URL_APP = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/MultiHubInventory/MultiHubInventory.groovy"
 @Field static final String IMPORT_URL_WEB = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/MultiHubInventory/multi_hub_inventory_ui.html"
@@ -36,6 +36,8 @@ mappings {
     path('/api/peers') { action: [GET: 'apiPeers'] }
     path('/api/peer')  { action: [GET: 'apiPeer'] }
     path('/api/reinit') { action: [POST: 'apiReinit'] }
+    path('/api/version/check') { action: [GET: 'apiVersionCheck'] }
+    path('/api/ui/sync')       { action: [POST: 'apiSyncUI'] }
 }
 
 // ===== CONFIG PAGE =====
@@ -62,7 +64,9 @@ def mainPage() {
                 href url: "${fullLocalApiServerUrl}/ui.html?access_token=${state.accessToken}",
                      title: "Open Multi-Hub Inventory", style: "external", required: false
             } else {
-                paragraph "Enable OAuth (Apps Code → this app → OAuth) and re-open to get the dashboard link."
+                String ep0 = getAppEditorPath()
+                String codeLink0 = ep0 ? "<a href='${ep0}' target='_blank'>Apps Code</a>" : "Apps Code"
+                paragraph "Enable OAuth (${codeLink0} → this app → OAuth) and re-open to get the dashboard link."
             }
         }
         section {
@@ -74,7 +78,9 @@ def mainPage() {
                 paragraph "<small>App v${CODE_VERSION} · Dashboard UI v${uiVer}</small>"
             }
             if (isNewer(latest, CODE_VERSION)) {
-                paragraph "🔄 <b>Update available:</b> v${latest} on GitHub (you have v${CODE_VERSION}). Use <b>Import</b> on the Apps Code page to update."
+                String ep = getAppEditorPath()
+                String importLink = ep ? "<a href='${ep}' target='_blank'>Open App Code Editor</a> and use Import to update." : "Use <b>Import</b> on the Apps Code page to update."
+                paragraph "🔄 <b>Update available:</b> v${latest} on GitHub (you have v${CODE_VERSION}). ${importLink}"
             }
         }
     }
@@ -172,6 +178,11 @@ private String getAppTypeId() {
         logDebug "Failed to fetch user app types: ${e.message}"
     }
     return typeId
+}
+
+private String getAppEditorPath() {
+    String typeId = getAppTypeId()
+    return typeId ? "/app/editor/${typeId}" : null
 }
 
 // Enable OAuth on this app type via the hub loopback API (loopback is trusted, no session needed).
@@ -359,6 +370,27 @@ Map apiReinit() {
     logInfo "Reinitialize requested via API (running updated())"
     updated()
     return jsonResponse([success: true, version: CODE_VERSION])
+}
+
+// GET /api/version/check — current vs. latest GitHub version, for the SPA update badge.
+Map apiVersionCheck() {
+    if (!checkOAuth()) return render(status: 403, contentType: 'text/plain', data: 'OAuth not enabled')
+    String latest = checkGithubVersion()
+    if (!latest) return jsonResponse([error: "Unable to check for updates"])
+    return jsonResponse([
+        currentVersion: CODE_VERSION,
+        latestVersion: latest,
+        updateAvailable: isNewer(latest, CODE_VERSION),
+        editorPath: getAppEditorPath()
+    ])
+}
+
+// POST /api/ui/sync — manual re-download of the UI HTML from GitHub, for the SPA's Check-for-updates button.
+Map apiSyncUI() {
+    if (!checkOAuth()) return render(status: 403, contentType: 'text/plain', data: 'OAuth not enabled')
+    logInfo "Manual UI sync requested via API..."
+    boolean success = syncUIBlocking()
+    return jsonResponse([success: success, version: CODE_VERSION])
 }
 
 // GET /api/peers — labels + index + reachability. NEVER returns tokens.
