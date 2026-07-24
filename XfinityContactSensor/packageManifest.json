@@ -1,0 +1,17 @@
+{
+    "packageName": "Xfinity / Visonic / UEI Contact Sensor",
+    "author": "hubitrep",
+    "version": "0.1.5",
+    "minimumHEVersion": "2.3.0",
+    "dateReleased": "2026-07-24",
+    "drivers": [
+        {
+            "id": "d9f67722-7710-46e0-a3b3-e673bf9a3c6d",
+            "name": "Universal Electronics / Visonic / Xfinity Contact Sensor",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/XfinityContactSensor/XfinityContactSensor.groovy",
+            "required": true,
+            "version": "0.1.5"
+        }
+    ]
+}

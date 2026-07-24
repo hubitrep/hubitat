@@ -1,0 +1,17 @@
+{
+    "packageName": "ThirdReality Zigbee Drivers",
+    "author": "hubitrep",
+    "version": "0.0.8",
+    "minimumHEVersion": "2.3.0",
+    "dateReleased": "2026-07-24",
+    "drivers": [
+        {
+            "id": "ce02bd49-e09b-4169-a2cb-f38b231cc8f2",
+            "name": "Third Reality Smart Plug (3RSP02028BZ)",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/thirdreality/ThirdReality_3RSP02028BZ.groovy",
+            "required": true,
+            "version": "0.0.8"
+        }
+    ]
+}
