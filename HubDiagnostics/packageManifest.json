@@ -1,0 +1,18 @@
+{
+    "packageName": "Hub Diagnostics",
+    "author": "hubitrep",
+    "version": "5.83.1",
+    "dateReleased": "2026-07-24",
+    "minimumHEVersion": "2.5.0",
+    "apps": [
+        {
+            "id": "57716640-a6fb-4e9a-9186-c6bb6d3509b3",
+            "name": "Hub Diagnostics",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubDiagnostics/HubDiagnostics.groovy",
+            "required": true,
+            "oauth": true,
+            "primary": true
+        }
+    ]
+}
