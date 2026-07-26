@@ -6,18 +6,18 @@
         {
             "id": "8a4ad471-ce79-46aa-8d66-6ca1602c8b62",
             "name": "ThirdReality Zigbee Drivers",
-            "category": "Integrations",
+            "category": "Control",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/thirdreality/packageManifest.json",
-            "description": "Community drivers for ThirdReality Zigbee devices. Currently: Smart Plug (3RSP02028BZ) with full power/energy metering, configurable reporting, and power-restore mode.",
-            "tags": ["Zigbee", "Integrations"]
+            "description": "Community Hubitat drivers for ThirdReality Zigbee devices — plugs, sensors, and lighting, with full power/energy metering where applicable.",
+            "tags": ["Zigbee", "Energy Monitoring", "Relays"]
         },
         {
             "id": "11f6b093-755a-4dc0-92aa-557b2a5df37f",
             "name": "Xfinity / Visonic / UEI Contact Sensor",
-            "category": "Integrations",
+            "category": "Control",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/XfinityContactSensor/packageManifest.json",
             "description": "Driver for Universal Electronics / Visonic / Xfinity Zigbee contact sensors — contact, temperature, tamper, and battery with configurable reporting intervals.",
-            "tags": ["Zigbee", "Integrations"]
+            "tags": ["Zigbee", "Doors & Windows", "Temperature & Humidity"]
         }
     ]
 }

@@ -1,9 +1,9 @@
 {
     "packageName": "ThirdReality Zigbee Drivers",
     "author": "hubitrep",
-    "version": "0.0.8",
+    "version": "0.1.0",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-07-24",
+    "dateReleased": "2026-07-26",
     "drivers": [
         {
             "id": "ce02bd49-e09b-4169-a2cb-f38b231cc8f2",
@@ -12,6 +12,22 @@
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/thirdreality/ThirdReality_3RSP02028BZ.groovy",
             "required": true,
             "version": "0.0.8"
+        },
+        {
+            "id": "19fa6248-6299-4e7c-a47c-f668bee52669",
+            "name": "Third Reality Dual Smart Plug (3RDP01072Z)",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/thirdreality/ThirdReality_3RDP01072Z.groovy",
+            "required": true,
+            "version": "0.0.1"
+        },
+        {
+            "id": "b5d7c4be-ebd7-48bd-bc20-afb4f1d26b70",
+            "name": "Third Reality Outlet (Component)",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/thirdreality/ThirdReality_Outlet_Component.groovy",
+            "required": true,
+            "version": "0.0.1"
         }
     ]
 }
