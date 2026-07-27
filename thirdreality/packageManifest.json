@@ -1,15 +1,21 @@
 {
     "packageName": "ThirdReality Zigbee Drivers",
     "author": "hubitrep",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-07-26",
     "releaseNotes": "Choose the drivers for the devices you own. The outlet component driver is always installed — the dual smart plug creates its child devices with it.",
     "drivers": [
         {
             "id": "ce02bd49-e09b-4169-a2cb-f38b231cc8f2",
-            "name": "Third Reality Smart Plug (3RSP02028BZ)",
+            "name": "Third Reality Energy-Monitoring Smart Plug Gen2 (US/EU) and Gen3 (US/UK/EU)",
             "namespace": "hubitrep",
+            "alternateNames": [
+                {
+                    "name": "Third Reality Smart Plug (3RSP02028BZ)",
+                    "namespace": "hubitrep"
+                }
+            ],
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/thirdreality/ThirdReality_3RSP02028BZ.groovy",
             "required": false,
             "version": "0.0.8"
