@@ -1,9 +1,10 @@
 {
     "packageName": "ThirdReality Zigbee Drivers",
     "author": "hubitrep",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-07-26",
+    "releaseNotes": "Drivers for the Third Reality smart plug (3RSP02028BZ) and dual smart plug (3RDP01072Z), plus the outlet component driver used by the dual plug's child devices. All three are installed.",
     "drivers": [
         {
             "id": "ce02bd49-e09b-4169-a2cb-f38b231cc8f2",
