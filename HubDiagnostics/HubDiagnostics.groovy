@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String CODE_VERSION = "5.85.1"
+@Field static final String CODE_VERSION = "5.86.7"
 
 // API endpoint paths (all relative to HUB_BASE)
 @Field static final String HUB_BASE = "http://127.0.0.1:8080"
@@ -63,7 +63,6 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final String USER_BUNDLES_PATH = "/hub2/userBundles"
 @Field static final String USER_LIBRARIES_PATH = "/hub2/userLibraries"
 @Field static final String USER_APP_TYPES_PATH = "/hub2/userAppTypes"
-@Field static final String ROOMS_LIST_PATH = "/hub2/roomsList"
 @Field static final String ZWAVE_JS_NODE_STATE_PREFIX = "/hub/zwave2/getNodeState?node="
 @Field static final String HUB_MESH_LINKED_DEVICE_PREFIX = "/hubMesh/localLinkedDevice/"
 @Field static final String CPU_INFO_PATH = "/hub/cpuInfo"
@@ -173,6 +172,7 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final int        RUNTIME_STATS_RETRY_S      = 60
 @Field static final long       RADIO_CACHE_TTL_MS = 60_000L
 @Field static final long       HUB_LIST_CACHE_TTL_MS = 120_000L
+@Field static final long       HUB_DATA_CACHE_TTL_MS = 30_000L
 @Field static final long       SYSTEM_RESOURCES_CACHE_TTL_MS = 10_000L
 // apiLive polls every 30s by default and fans out to 5 hub HTTP calls. The slow-changing ones
 // (temperature, databaseSize, cpuInfo, loadThreshold) carry longer TTLs to spare the hub.
@@ -276,17 +276,22 @@ private void cachePut(String key, Object data) {
 @Field static final String HOURLY_FILE = "hub_diagnostics_hourly.json"
 @Field static final int    HOURLY_KEEP = 720
 @Field static final int    TEMP_SAMPLE_CAP  = 8640   // 30 days of 5-minute samples
-// In-memory 5-minute temperature samples [ms, tempC] per app instance. Resets on hub reboot or
-// code push, like the hub's own memory history. Copy-on-write: the sampler replaces the list.
+// In-memory 5-minute temperature samples [ms, tempC] per app instance. Lost on hub reboot or
+// code push; the SPA falls back to HOURLY_FILE averages for hours before the first sample.
+// Copy-on-write: the sampler replaces the list.
 @Field static final ConcurrentHashMap<Long, List> TEMP_SAMPLES = new ConcurrentHashMap<>()
 @Field static final String CHECKPOINT_DETAIL_PREFIX = "hub_diagnostics_checkpoint_"
 @Field static final String PERFORMANCE_COMPARISON_FILE = "hub_diagnostics_performance_comparison.json"
+// Scheduled snapshots and checkpoints: cron fires JITTER_BASE_MIN past the slot, then a
+// random 1..JITTER_MAX_S delay, so each run lands between :03 and :07.
+@Field static final int    JITTER_BASE_MIN = 3
+@Field static final int    JITTER_MAX_S    = 240
 
 @Field static final String IMPORT_URL_APP = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubDiagnostics/HubDiagnostics.groovy"
 @Field static final String IMPORT_URL_WEB = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubDiagnostics/hub_diagnostics_ui.html"
 
 
-// Maps controllerType values (from device/fullJson top-level field) to connection type constants.
+// Maps controllerType values (from the device/fullJson `device.controllerType` field) to connection type constants.
 // Actual observed values: ZGB=Zigbee, MAT=Matter, LNK=HubMesh, HKC=HomeKit, BLE=Bluetooth.
 // Used only as a last-resort fallback when parentApp is absent from fullJson.
 @Field static final Map CONTROLLER_TYPE_CONN = [
@@ -670,10 +675,18 @@ private String stripUpdateBadge(String label) {
  * @param includeNetwork  set true when the caller will use network/runtimeStats (Network/Performance tabs);
  *                        defaults false because analyzeNetwork is heavier than the savings on Dashboard/Health.
  */
+// /hub2/hubData (hub alerts, model, cloud-controller flag) takes about a second to build and
+// several endpoints read it, so one page load would fetch it repeatedly without this.
+Map fetchHubData() {
+    return (Map) cachedFetch('hubData', HUB_DATA_CACHE_TTL_MS) {
+        Map r = hubMapRequest(HUB_DATA_PATH, "hub data", 10)
+        return r.ok ? r.data : null
+    }
+}
+
 private Map buildSharedCache(boolean includeNetwork = false) {
     Map shared = [:]
-    Map hubDataWrap = hubMapRequest(HUB_DATA_PATH, "hub data (shared)", 10)
-    shared.hubData     = hubDataWrap.ok ? hubDataWrap.data : null
+    shared.hubData     = fetchHubData()
     shared.resources   = fetchSystemResources()
     shared.temperature = fetchTemperature()
     shared.databaseSize = fetchDatabaseSize()
@@ -741,8 +754,7 @@ Map apiNetwork() {
     return timed("network") {
         // Network tab needs hubData (for fetchSecurityInfo's cloudController flag); rest is fetched by analyzeNetwork
         Map shared = [:]
-        Map hubDataWrap = hubMapRequest(HUB_DATA_PATH, "hub data (shared)", 10)
-        shared.hubData = hubDataWrap.ok ? hubDataWrap.data : null
+        shared.hubData = fetchHubData()
         getNetworkData(shared)
     }
 }
@@ -1856,8 +1868,8 @@ private Map summarizeValues(List vals, int scale) {
 // Model-dependent default for the free-memory warning; the hub model is looked up once per code load.
 private int defaultWarnMemMb() {
     if (hubModelCache == null) {
-        Map r = hubMapRequest(HUB_DATA_PATH, "hub data", 10)
-        if (r.ok) hubModelCache = (r.data?.model ?: "") as String
+        Map hd = fetchHubData()
+        if (hd != null) hubModelCache = (hd.model ?: "") as String
     }
     return hubModelCache == "C-8 Pro" ? DEFAULT_WARN_MEM_MB_C8PRO : DEFAULT_WARN_MEM_MB
 }
@@ -1891,7 +1903,7 @@ private String tempThresholdRange() { (getTemperatureScale() == "F") ? "68..212"
 
 Map fetchHubAlerts(Map prefetchedHubData = null) {
     Map hubData = prefetchedHubData
-    if (!hubData) { Map r = hubMapRequest(HUB_DATA_PATH, "hub data", 10); hubData = r.ok ? r.data : null }
+    if (!hubData) hubData = fetchHubData()
     if (!hubData) return [:]
     return [
         alerts: hubData.alerts ?: [:],
@@ -2061,24 +2073,22 @@ private static String stripHubPrefix(String v) {
 }
 
 /**
- * Walks /hub2/roomsList tree and returns flat list:
- *   [{id, name, deviceCount, deviceIds[]}]
- * Devices not assigned to any room are gathered under a synthetic "(Unassigned)" room with id=null.
+ * Rooms from getRooms(): [{id, name, deviceCount, deviceIds[]}], child devices included.
+ * Unlike /hub2/roomsList it has no "Unassigned" room and can list ids of deleted devices;
+ * the SPA reconciles both against allDevices (buildAuditRooms() in hub_diagnostics_ui.html).
  */
 List fetchRoomsForAudit() {
-    Map wrap = hubMapRequest(ROOMS_LIST_PATH, "rooms list", 10)
-    if (!wrap.ok) return []
-    List nodes = (wrap.data.roomNodes as List) ?: []
-    List rooms = []
-    nodes.each { Map rn ->
-        Map data = (rn.data as Map) ?: [:]
-        if (!data.id) return
-        List children = (rn.children as List) ?: []
-        List devIds = children.collect { Map c -> (c.data as Map)?.id as Long }.findAll { it }
-        rooms << [id: data.id, name: data.name, deviceCount: devIds.size(), deviceIds: devIds]
+    List rooms
+    try {
+        rooms = (getRooms() ?: []) as List
+    } catch (Exception e) {
+        logWarn "rooms: getRooms() failed: ${e.message}"
+        return []
     }
-    rooms.sort { (it.name as String)?.toLowerCase() }
-    return rooms
+    return rooms.collect { Map r ->
+        List<Long> ids = ((r.deviceIds as List) ?: []).collect { it as Long }
+        [id: r.id, name: r.name, deviceCount: ids.size(), deviceIds: ids]
+    }.sort { (it.name as String)?.toLowerCase() }
 }
 
 /** Per-node Z-Wave JS state. Returns null when stack is not JS or fetch fails. */
@@ -2236,7 +2246,7 @@ Map fetchSecurityInfo(Map prefetchedHubData = null) {
     String subnets = (String) hubRequest(ALLOW_SUBNETS_PATH, "allowed subnets", "text", 5)
     String dnsFb = (String) hubRequest(DNS_FALLBACK_PATH, "DNS fallback", "text", 5)
     Map hubData = prefetchedHubData
-    if (!hubData) { Map r = hubMapRequest(HUB_DATA_PATH, "hub data (cloud controller flag)", 10); hubData = r.ok ? r.data : null }
+    if (!hubData) hubData = fetchHubData()
     // null laRaw/subnets means the fetch itself failed — distinguish from a successfully-fetched "no restriction"
     // so the UI can render "Unknown" instead of a falsely reassuring "Off".
     Map limitedAccess = null
@@ -3223,7 +3233,7 @@ Map classifyDevice(Map device, Map appLookup, Set communityDrivers) {
 // Primary signal: parentApp from fullJson (appType.name) — runs the same algorithm-primary logic as
 //   classifyDevice: integration = cleanIntegrationName(appType.name), connectionType derived from
 //   the controllerType signal (NET/LAN ⇒ lan_direct, else cloud); INTEGRATION_OVERRIDES supplies a conn exception.
-// Fallback signal: controllerType from fullJson top level (actual values: ZGB, MAT, LNK, etc.).
+// Fallback signal: controllerType from fullJson.device (actual values: ZGB, MAT, LNK, etc.).
 // Results cached in state.controllerTypeCache — keyed by device ID string, value is compact
 // JSON of [parentAppTypeName, controllerType] since parentApp is also stable for a device's lifetime.
 // Returns Map<String deviceId, Map [connectionType, integration]> for devices that improve.
@@ -3246,6 +3256,8 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
             try { cachedEntry = (Map) new groovy.json.JsonSlurper().parseText((String) cachedVal) }
             catch (Exception ignored) { /* stale/invalid format — re-fetch */ }
         }
+        // Entries written before controllerType was read from fullJson.device hold a blank value; re-fetch.
+        if (cachedEntry != null && cachedEntry.ctSrc != "device") cachedEntry = null
 
         String parentAppTypeName = cachedEntry?.parentAppTypeName
         String ct = cachedEntry?.controllerType
@@ -3262,7 +3274,7 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
                     parentAppTypeName = safeToString(appTypeObj.name ?: parentApp.name, "")
                     isBuiltin = !(appTypeObj.user == true)
                 }
-                ct = safeToString(full?.controllerType, "").toUpperCase()
+                ct = fullJsonControllerType(full)
                 // Check for community driver classification hint: updateDataValue("hubdiag:conn", "cloud|lan_direct|lan_bridge|homekit")
                 try {
                     String dataJson = safeToString(full?.device?.dataJson, "")
@@ -3275,6 +3287,7 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
                 cacheUpdates[idStr] = [
                     parentAppTypeName: parentAppTypeName ?: "",
                     controllerType: ct ?: "",
+                    ctSrc: "device",
                     connHint: connHint ?: "",
                     builtin: isBuiltin == null ? "" : (isBuiltin ? "true" : "false")
                 ]
@@ -3345,7 +3358,11 @@ boolean createCheckpoint() {
     }
 }
 
-// v5.33.0: scheduled-only async entry point. The Hubitat cron handler calls this and
+void checkpointTick() {
+    runIn(jitterDelaySec(), "scheduledCheckpoint")
+}
+
+// v5.33.0: scheduled-only async entry point. checkpointTick() schedules this and it
 // returns immediately after firing the first asynchttpGet; the chain callbacks finalize
 // off the app thread. Keeps user-triggered apiCreateCheckpoint sync so the HTTP caller
 // gets a real success/fail response.
@@ -3570,6 +3587,22 @@ void clearAllCheckpoints() {
 
 // ===== SNAPSHOT SYSTEM =====
 
+// Daily cron entry point; skips until snapshotInterval days have passed. One hour of
+// slack so a run that fires slightly early is not pushed back a whole day.
+void scheduledSnapshot() {
+    int days = (settings.snapshotInterval ?: 1).toInteger()
+    Long last = state.lastScheduledSnapshotMs as Long
+    if (last != null && now() - last < days * 86400000L - 3600000L) return
+    state.lastScheduledSnapshotMs = now()
+    runIn(jitterDelaySec(), "createSnapshot")
+}
+
+// Scheduled jobs fire on a fixed cron slot, then wait a fresh random delay each run
+// so they stay off the :00 jobs and do not land on the same second every time.
+private int jitterDelaySec() {
+    return 1 + new Random().nextInt(JITTER_MAX_S)
+}
+
 void createSnapshot() {
     logInfo "Creating config snapshot..."
 
@@ -3701,7 +3734,7 @@ Map getHubInfo(Map prefetchedHubData = null) {
     }
     // Fetch model from hubData for accurate hardware name (e.g. "C-7", "C-8 Pro")
     Map hubData = prefetchedHubData
-    if (!hubData) { Map r = hubMapRequest(HUB_DATA_PATH, "hub data", 10); hubData = r.ok ? r.data : null }
+    if (!hubData) hubData = fetchHubData()
     if (hubData && hubData.model) {
         info.hardware = hubData.model
     }
@@ -3810,17 +3843,7 @@ boolean isNewer(String v1, String v2) {
 }
 
 private String getAppTypeId() {
-    String typeId = null
-    try {
-        httpGet([uri: HUB_BASE, path: "/hub2/userAppTypes", timeout: 15]) { resp ->
-            List apps = resp.data instanceof List ? (List) resp.data : []
-            Map match = apps.find { it.name == "Hub Diagnostics" }
-            if (match) typeId = match.id?.toString()
-        }
-    } catch (e) {
-        logDebug "Failed to fetch user app types: ${e.message}"
-    }
-    return typeId
+    return app.getAppTypeId()?.toString()
 }
 
 private String getAppEditorPath() {
@@ -3834,7 +3857,7 @@ private boolean autoEnableOAuth() {
     // 1. Find our app type ID
     String typeId = getAppTypeId()
     if (!typeId) {
-        logError "Could not find Hub Diagnostics in user app types."
+        logError "Could not determine this app's type id."
         return false
     }
 
@@ -4107,7 +4130,7 @@ private Map extractAuditFields(Map fj, Long did) {
             // pair, so distinct products sharing one numeric manufacturer id (e.g. ZOOZ = 634) don't collapse
             // into a single group and get flagged as false firmware drift.
             model        = firstDataValue(dv, ['model', 'deviceModel'])
-            if (!model && safeToString(fj?.controllerType, "").trim().equalsIgnoreCase("ZWV")) {
+            if (!model && fullJsonControllerType(fj) == "ZWV") {
                 String dt = firstDataValue(dv, ['deviceType']), di = firstDataValue(dv, ['deviceId'])
                 if (dt && di) model = "${dt}:${di}"
             }
@@ -4131,7 +4154,7 @@ private Map extractAuditFields(Map fj, Long did) {
             }
         }
     } catch (Exception ignored) { /* malformed dataJson — leave inventory fields blank */ }
-    String protocol = controllerTypeLabel(safeToString(fj?.controllerType, ""))
+    String protocol = controllerTypeLabel(fullJsonControllerType(fj))
 
     // Section A — cross-reference core
     List appsUsing = ((fj?.appsUsing ?: []) as List).collect { Map a ->
@@ -4231,6 +4254,15 @@ private String firstDataValue(Map dv, List<String> keys) {
         }
     }
     return null
+}
+
+/**
+ * controllerType from a /device/fullJson response. It lives under `device` (ZGB, ZWV, MAT, LNK…;
+ * null for LAN, cloud, and virtual devices); the top-level key is kept as a fallback.
+ */
+private String fullJsonControllerType(Map fj) {
+    Map dev = fj?.device instanceof Map ? (Map) fj.device : null
+    return safeToString(dev?.controllerType ?: fj?.controllerType, "").trim().toUpperCase()
 }
 
 /**
@@ -4886,33 +4918,25 @@ void initialize() {
 
     if (settings.autoSnapshot) {
         int days = (settings.snapshotInterval ?: 1).toInteger()
-        String cron = days == 1 ? "0 0 0 * * ?" : "0 0 0 */${days} * ?"
-        schedule(cron, "createSnapshot")
-        logInfo "Automatic config snapshots scheduled every ${days} day(s)"
+        // A day-of-month step (*/N) restarts on the 1st, so it only means "every N days"
+        // when N divides the month. Run daily and let scheduledSnapshot() count the days.
+        schedule("0 ${JITTER_BASE_MIN} 0 * * ?", "scheduledSnapshot")
+        logInfo "Automatic config snapshots scheduled every ${days} day(s), 00:0${JITTER_BASE_MIN}–00:0${JITTER_BASE_MIN + 4}"
     }
+    state.remove('snapshotOffsetSeconds')
+    state.remove('checkpointOffsetSeconds')
 
     if (settings.autoCheckpoint) {
         int interval = (settings.checkpointInterval ?: "60").toInteger()
-        int offsetSec = (state.checkpointOffsetSeconds ?: -1) as int
-        if (offsetSec < 180 || offsetSec > 420) {
-            offsetSec = 180 + new Random().nextInt(241)
-            state.checkpointOffsetSeconds = offsetSec
-        }
-        int sec = offsetSec % 60
-        int min = offsetSec.intdiv(60)
         String cron
         if (interval < 60) {
-            cron = "${sec} ${min}/${interval} * * * ?"
+            cron = "0 ${JITTER_BASE_MIN}/${interval} * * * ?"
         } else {
             int hours = (interval / 60).toInteger()
-            cron = hours >= 24 ? "${sec} ${min} 0 * * ?" : "${sec} ${min} */${hours} * * ?"
+            cron = hours >= 24 ? "0 ${JITTER_BASE_MIN} 0 * * ?" : "0 ${JITTER_BASE_MIN} */${hours} * * ?"
         }
-        // v5.33.0: scheduledCheckpoint fires the async chain and returns immediately,
-        // so the platform scheduler is never blocked on radio/file work.
-        schedule(cron, "scheduledCheckpoint")
-        String mm = min.toString().padLeft(2, '0')
-        String ss = sec.toString().padLeft(2, '0')
-        logInfo "Automatic perf checkpoints scheduled every ${interval} minute(s) at :${mm}:${ss} past the hour"
+        schedule(cron, "checkpointTick")
+        logInfo "Automatic perf checkpoints scheduled every ${interval} minute(s), :0${JITTER_BASE_MIN}–:0${JITTER_BASE_MIN + 4} past the slot"
     }
 
     armTemperatureSampling()

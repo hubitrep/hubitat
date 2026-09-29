@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 A comprehensive diagnostic dashboard for Hubitat Elevation hubs. Provides real-time and historical visibility into devices, apps, network health, performance, and configuration — all in a single web UI served directly from your hub.
 
 <!-- AUTO:hubdiag-version -->
-**Current version:** 5.83.6
+**Current version:** 5.86.7
 <!-- /AUTO -->
 
 ---
@@ -361,7 +361,7 @@ Lists devices visible to the hub via mDNS / Bonjour / Avahi (`/hub/mdnsDevices/j
 
 **System Resources** — Free OS memory, CPU load (5-min avg), **Processors** (count, from `/hub/cpuInfo`), **Load Avg (1m)** (from `/hub/cpuInfo`), **Hub Load Threshold** (% from `/hub/advanced/getExcessiveLoadThreshold` — the level Hubitat itself considers "excessive"), Java heap usage (total/free/direct), temperature (°C and °F), and database size. Free memory, CPU load and temperature each get a bar showing the current reading against the range since the last restart and the warning and critical thresholds; temperature also lists its 30-day range. The other readings share one line, with the database size's 30-day range. Values are color-coded against configured thresholds. This card **auto-refreshes** in the background on a configurable interval (default 30 s); the last refresh time is shown in the card header.
 
-**Resource History** — Time-series chart of free OS memory and CPU load since the last hub restart. Horizontal reference lines mark the warning and critical memory thresholds. Below it, a hub temperature chart covers the same period. The app samples temperature every 5 minutes and keeps hourly min/average/max summaries, along with the database size, for 30 days in File Manager (`hub_diagnostics_hourly.json`), so the chart fills in with hourly averages after a code update. Re-renders on browser resize.
+**Resource History** — Time-series chart of free OS memory, CPU load and hub temperature since the last hub restart, each on its own axis. Horizontal reference lines mark the warning and critical memory thresholds. Hover for the values at any point; drag to zoom. The app samples temperature every 5 minutes and keeps hourly min/average/max summaries, along with the database size, for 30 days in File Manager (`hub_diagnostics_hourly.json`), so the temperature line fills in with hourly averages after a code update. Re-renders on browser resize.
 
 **Database & Storage** — Database size, state compression status, max events per device, max event age (days), max state age (days). A separate **File Manager** sub-section shows the total number of files stored in the hub's File Manager, total bytes used, and free storage space.
 
@@ -468,7 +468,7 @@ Generates a one-time, per-device cross-reference report covering:
 - **Stuck scheduled jobs** — `nextRunTime` in the past, with a "Last run" (`prevRunTime`) column to disambiguate "never ran" vs "ran once and lingered".
 - **Manually-tuned devices** — devices with non-default `spammyThreshold`, `maxStates`, or `maxEvents` values. The audit detects the fleet's mode value for each setting and highlights divergent devices in bold.
 - **Critical devices** — top 20 by combined apps + dashboards reference count.
-- **Devices by Room** — devices grouped by their assigned room (sourced from `/hub2/roomsList`). Surfaces empty rooms (cleanup targets) and high-density rooms (split candidates). Hubitat provides a synthetic "Unassigned" room for devices not assigned anywhere.
+- **Devices by Room** — devices grouped by their assigned room, child devices included. Surfaces empty rooms (cleanup targets) and high-density rooms (split candidates). Devices not assigned anywhere are listed under "Unassigned".
 - **Z-Wave JS Mesh Health** (Z-Wave JS hubs only) — per-Z-Wave-device row from `/hub/zwave2/getNodeState?node=N`: state, status, interview stage, RTT, RSSI, PER %, TX/RX command counts, last-seen timestamp.
 - **Hub Mesh Linked Devices** — for each device this hub consumes from another hub via Hub Mesh, source hub + source device ID + status from `/hubMesh/localLinkedDevice/<id>`.
 - **Apps → devices** and **Dashboards → devices reverse indices** — disabled app subscribers are rendered with strikethrough so "ghost references" stand out.
