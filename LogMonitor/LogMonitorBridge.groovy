@@ -14,7 +14,7 @@ import groovy.transform.Field
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String CODE_VERSION = "1.0.2"
+@Field static final String CODE_VERSION = "1.0.3"
 @Field static final int STARTUP_DELAY_SECS = 60
 // Keyed by device id: @Field static is shared by every bridge device of this type.
 @Field static final ConcurrentHashMap<String, AtomicInteger> LOGS_RECEIVED = new ConcurrentHashMap<>()
@@ -46,8 +46,10 @@ metadata {
         input name: "pingInterval", type: "number",
             title: "WebSocket ping interval (seconds)",
             defaultValue: 30, range: "10..300"
+        input name: "txtEnable", type: "bool",
+            title: "Enable info logging", defaultValue: true
         input name: "enableDebug", type: "bool",
-            title: "Enable debug logging", defaultValue: false
+            title: "Enable debug logging", defaultValue: false, submitOnChange: true
         input name: "enableTrace", type: "bool",
             title: "Enable trace logging (very verbose)", defaultValue: false
     }
@@ -59,7 +61,6 @@ metadata {
 
 void installed() {
     logDebug "installed()"
-    state.codeVersion = CODE_VERSION
     initialize()
 }
 
@@ -68,6 +69,13 @@ void updated() {
     disconnect()
     unschedule()
     initialize()
+    if (enableDebug || enableTrace) runIn(1800, "logsOff")
+}
+
+void logsOff() {
+    device.updateSetting("enableDebug", [value: "false", type: "bool"])
+    device.updateSetting("enableTrace", [value: "false", type: "bool"])
+    logWarn "Debug/trace logging auto-disabled"
 }
 
 void uninstalled() {
@@ -75,7 +83,12 @@ void uninstalled() {
     disconnect()
 }
 
+void deviceTypeUpdated() {
+    logDebug "driver change detected"
+}
+
 void initialize() {
+    checkVersion(false)
     logDebug "initialize()"
 
     atomicState.intentionalDisconnect = false
@@ -90,12 +103,20 @@ void initialize() {
     runIn(location.hub.uptime < STARTUP_DELAY_SECS ? STARTUP_DELAY_SECS : 2, "connect")
 }
 
+private void checkVersion(boolean reinit = true) {
+    if (state.version == CODE_VERSION) return
+    logVer "New version: ${CODE_VERSION} (was: ${state.version})"
+    state.version = CODE_VERSION
+    state.remove('codeVersion')
+    if (reinit) runIn(1, "updated")
+}
+
 // ============================================================================
 // WebSocket Connection Management
 // ============================================================================
 
 void connect() {
-    logDebug "Connecting to logsocket..."
+    logNet "Connecting to logsocket..."
     unschedule("connect")
 
     try {
@@ -108,7 +129,7 @@ void connect() {
             uri,
             pingInterval: (pingInterval ?: 30).toInteger()
         )
-        logDebug "WebSocket connect initiated"
+        logNet "WebSocket connect initiated"
     } catch (Exception e) {
         state.wsConnected = false
         sendEvent(name: "connectionStatus", value: "error")
@@ -121,7 +142,7 @@ void connect() {
 }
 
 void disconnect() {
-    logDebug "Disconnecting WebSocket..."
+    logNet "Disconnecting WebSocket..."
     atomicState.intentionalDisconnect = true
     unschedule("connect")
 
@@ -136,7 +157,7 @@ void disconnect() {
 }
 
 void reconnect() {
-    logDebug "Manual reconnect triggered"
+    logNet "Manual reconnect triggered"
     disconnect()
     runIn(2, "connect")
 }
@@ -156,6 +177,7 @@ private void scheduleReconnect() {
 // ============================================================================
 
 void webSocketStatus(String message) {
+    checkVersion()
     logTrace "WebSocket status: ${message}"
 
     if (message.contains("failure") || message.contains("error")) {
@@ -183,6 +205,7 @@ void webSocketStatus(String message) {
 }
 
 void parse(String message) {
+    checkVersion()
     logsReceived().incrementAndGet()
 
     try {
@@ -232,26 +255,20 @@ private AtomicInteger logsReceived() {
     return LOGS_RECEIVED.get(key)
 }
 
-// ============================================================================
-// Logging
-// ============================================================================
+// ── Logging ───────────────────────────────────────────────────────────
+//   ⬇️ Rx  ⬆️ Cmd  🔧 Cfg  🌐 Net  ⏰ Sched  📦 Ota  🏷️ Ver  ·  ⚠️ Warn  🛑 Error  🔬 Trace
+private String logp(String e) { "${e} ${device.displayName}: " }
 
-private void logDebug(String msg) {
-    if (enableDebug) log.debug "${device.displayName}: ${msg}"
-}
+void logRx   (String m) { if (enableDebug) log.debug logp('⬇️') + m }
+void logCmd  (String m) { if (txtEnable != false) log.info  logp('⬆️') + m }
+void logCfg  (String m) { if (txtEnable != false) log.info  logp('🔧') + m }
+void logNet  (String m) { if (enableDebug) log.debug logp('🌐') + m }
+void logSched(String m) { if (enableDebug) log.debug logp('⏰') + m }
+void logOta  (String m) { if (txtEnable != false) log.info  logp('📦') + m }
+void logVer  (String m) { log.warn  logp('🏷️') + m }
 
-private void logTrace(String msg) {
-    if (enableTrace) log.trace "${device.displayName}: ${msg}"
-}
-
-private void logInfo(String msg) {
-    log.info "${device.displayName}: ${msg}"
-}
-
-private void logWarn(String msg) {
-    log.warn "${device.displayName}: ${msg}"
-}
-
-private void logError(String msg) {
-    log.error "${device.displayName}: ${msg}"
-}
+void logWarn (String m) { log.warn  logp('⚠️') + m }
+void logError(String m) { log.error logp('🛑') + m }
+void logTrace(String m) { if (enableTrace) log.trace logp('🔬') + m }
+void logInfo (String m) { if (txtEnable != false) log.info  "${device.displayName}: ${m}" }
+void logDebug(String m) { if (enableDebug) log.debug "${device.displayName}: ${m}" }

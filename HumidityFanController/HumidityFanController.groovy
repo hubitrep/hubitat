@@ -86,9 +86,10 @@
  */
 import groovy.transform.CompileStatic
 import groovy.transform.Field
+import com.hubitat.app.DeviceWrapper
 
 @Field static final String APP_NAME = "Humidity-Based Fan Controller"
-@Field static final String CODE_VERSION = "0.9.5"
+@Field static final String CODE_VERSION = "0.9.6"
 
 // Humidity state machine states
 @Field static final String HUMIDITY_NORMAL = "NORMAL"
@@ -224,7 +225,7 @@ Map mainPage() {
         }
 
         section("Logging", hideable: true, hidden: true) {
-            input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
+            input name: "txtEnable", type: "bool", title: "Enable info logging", defaultValue: true
             input name: "debugEnable", type: "bool", title: "Enable debug logging", defaultValue: false, submitOnChange: true
             if (debugEnable) {
                 input name: "traceEnable", type: "bool", title: "Enable trace logging", defaultValue: false
@@ -250,6 +251,7 @@ void updated() {
 }
 
 void initialize() {
+    checkVersion(false)
     logDebug("Initializing...")
 
     // Migrate legacy `enableDebug` pref to the standard `debugEnable` name
@@ -338,13 +340,21 @@ void initialize() {
     // Initial evaluation to sync state
     evaluateHumidityStateMachine()
 
-    logInfo("${APP_NAME} initialized. Humidity: ${state.humidityState}, Fan controlled by app: ${state.fanTurnedOnByApp}")
+    logCfg("${APP_NAME} initialized. Humidity: ${state.humidityState}, Fan controlled by app: ${state.fanTurnedOnByApp}")
+}
+
+private void checkVersion(boolean reinit = true) {
+    if (state.version == CODE_VERSION) return
+    logVer "New version: ${CODE_VERSION} (was: ${state.version})"
+    state.version = CODE_VERSION
+    if (reinit) runIn(1, "updated")
 }
 
 // ==================== Event Handlers ====================
 
 void bathroomHumidityHandler(evt) {
-    logDebug("Bathroom humidity event from ${evt.device}: ${evt.value}%")
+    checkVersion()
+    logEvt("Bathroom humidity event from ${evt.device}: ${evt.value}%")
     state.lastHumidityEventTime = now()
     recordBathroomSample(evt.value as BigDecimal)
 
@@ -389,13 +399,15 @@ private static List appendSample(List samples, long nowMs, BigDecimal value, lon
 }
 
 void referenceHumidityHandler(evt) {
-    logDebug("Reference humidity event from ${evt.device}: ${evt.value}%")
+    checkVersion()
+    logEvt("Reference humidity event from ${evt.device}: ${evt.value}%")
     // Reference sensor events don't reset the max fan timer, but we still evaluate
     evaluateHumidityStateMachine(evt.device)
 }
 
 void fanSwitchHandler(evt) {
-    logDebug("Fan switch changed to ${evt.value}")
+    checkVersion()
+    logEvt("Fan switch changed to ${evt.value}")
 
     // Any switch event resolves a pending verification — the verifyFan*
     // timer is only a fallback for missed events. Unschedule both timers
@@ -442,12 +454,14 @@ void fanSwitchHandler(evt) {
 }
 
 void occupancyHandler(evt) {
-    logDebug("Occupancy motion event from ${evt.device}: ${evt.value}")
+    checkVersion()
+    logEvt("Occupancy motion event from ${evt.device}: ${evt.value}")
     state.lastMotionActiveTime = now()
 }
 
 void restrictionSwitchHandler(evt) {
-    logDebug("Restriction switch ${evt.device} changed to ${evt.value}")
+    checkVersion()
+    logEvt("Restriction switch ${evt.device} changed to ${evt.value}")
 
     Boolean nowRestricted = isRestricted()
 
@@ -464,7 +478,7 @@ void restrictionSwitchHandler(evt) {
 
 // ==================== Humidity State Machine ====================
 
-private void evaluateHumidityStateMachine(reportingDevice = null) {
+private void evaluateHumidityStateMachine(DeviceWrapper reportingDevice = null) {
     servicePhysicalRunFloor()
     // bathroomHumidity / referenceHumidity are the comparison metric for the
     // current mode — %RH in default mode, °C dew point when useDewPoint is on.
@@ -596,6 +610,7 @@ private void evaluatePendingHighState(BigDecimal bathroomHumidity, BigDecimal re
 }
 
 void delayedTransitionToHigh() {
+    checkVersion()
     if (state.humidityState != HUMIDITY_PENDING_HIGH) {
         logDebug("delayedTransitionToHigh called but state is ${state.humidityState}, ignoring")
         return
@@ -644,6 +659,7 @@ private void evaluatePendingNormalState(BigDecimal bathroomHumidity, BigDecimal 
 }
 
 void delayedTransitionToNormal() {
+    checkVersion()
     if (state.humidityState != HUMIDITY_PENDING_NORMAL) {
         logDebug("delayedTransitionToNormal called but state is ${state.humidityState}, ignoring")
         return
@@ -692,10 +708,10 @@ private void servicePendingTransition() {
             Long remainingMs = activationDelayMs - elapsedMs
             if (remainingMs > 0) {
                 Integer remainingSeconds = (remainingMs / 1000).toInteger() + 1  // Round up
-                logDebug("Servicing activation timer: ${remainingSeconds}s remaining")
+                logSched("Servicing activation timer: ${remainingSeconds}s remaining")
                 runIn(remainingSeconds, "delayedTransitionToHigh")
             } else {
-                logDebug("Activation delay elapsed - triggering transition now")
+                logSched("Activation delay elapsed - triggering transition now")
                 runIn(1, "delayedTransitionToHigh")
             }
             break
@@ -705,10 +721,10 @@ private void servicePendingTransition() {
             Long remainingMsDeact = deactivationDelayMs - elapsedMs
             if (remainingMsDeact > 0) {
                 Integer remainingSeconds = (remainingMsDeact / 1000).toInteger() + 1  // Round up
-                logDebug("Servicing deactivation timer: ${remainingSeconds}s remaining")
+                logSched("Servicing deactivation timer: ${remainingSeconds}s remaining")
                 runIn(remainingSeconds, "delayedTransitionToNormal")
             } else {
-                logDebug("Deactivation delay elapsed - triggering transition now")
+                logSched("Deactivation delay elapsed - triggering transition now")
                 runIn(1, "delayedTransitionToNormal")
             }
             break
@@ -919,7 +935,7 @@ private void onHumidityBecameNormal() {
 }
 
 private void turnOnFan() {
-    logInfo("Turning on fan")
+    logCmd("Turning on fan")
 
     state.fanTurnedOnByApp = true
     state.pendingCommand = "on"
@@ -934,6 +950,7 @@ private void turnOnFan() {
 }
 
 void verifyFanOn() {
+    checkVersion()
     // Fires only when no switch event arrived within the verification
     // window (fanSwitchHandler unschedules this on any event). If the
     // device's current value is "on" anyway, the event was missed or
@@ -952,7 +969,7 @@ void verifyFanOn() {
 }
 
 private void turnOffFan() {
-    logInfo("Turning off fan")
+    logCmd("Turning off fan")
 
     state.pendingCommand = "off"
     fanSwitch.off()
@@ -965,6 +982,7 @@ private void turnOffFan() {
 }
 
 void verifyFanOff() {
+    checkVersion()
     // Same pattern as verifyFanOn — only fires when no switch event arrived
     // within the verification window.
     String switchState = fanSwitch.currentValue("switch")
@@ -991,7 +1009,7 @@ private void scheduleMaxFanRunTimer() {
 
     Integer delaySeconds = (maxFanRunTime as Integer) * 60
     runIn(delaySeconds, "maxFanRunTimeExpired")
-    logDebug("Max fan run timer scheduled for ${maxFanRunTime} minutes")
+    logSched("Max fan run timer scheduled for ${maxFanRunTime} minutes")
 }
 
 private void resetMaxFanRunTimer() {
@@ -999,7 +1017,7 @@ private void resetMaxFanRunTimer() {
 
     unschedule("maxFanRunTimeExpired")
     scheduleMaxFanRunTimer()
-    logDebug("Max fan run timer reset")
+    logSched("Max fan run timer reset")
 }
 
 private void rescheduleMaxFanRunTimer() {
@@ -1017,7 +1035,7 @@ private void rescheduleMaxFanRunTimer() {
     if (remainingMs > 0) {
         Integer remainingSeconds = (remainingMs / 1000).toInteger() + 1
         runIn(remainingSeconds, "maxFanRunTimeExpired")
-        logDebug("Max fan run timer rescheduled: ${remainingSeconds}s remaining")
+        logSched("Max fan run timer rescheduled: ${remainingSeconds}s remaining")
     } else {
         // Should have already expired - trigger now
         runIn(1, "maxFanRunTimeExpired")
@@ -1025,6 +1043,7 @@ private void rescheduleMaxFanRunTimer() {
 }
 
 void maxFanRunTimeExpired() {
+    checkVersion()
     if (!state.fanTurnedOnByApp) {
         logDebug("Max fan run time expired but fan not controlled by app - ignoring")
         return
@@ -1144,6 +1163,7 @@ private void servicePhysicalRunFloor() {
 }
 
 void physicalRunFloorReached() {
+    checkVersion()
     String deferred = state.deferredOffReason
     state.physicalRunStartedAt = null
     state.deferredOffReason = null
@@ -1326,7 +1346,7 @@ private String getStatusText() {
 
 // ==================== Sensor Aggregation ====================
 
-private List getActiveSensors(List sensors, reportingDevice = null) {
+private List getActiveSensors(List sensors, DeviceWrapper reportingDevice = null) {
     if (!sensors) {
         return []
     }
@@ -1363,7 +1383,7 @@ private List getActiveSensors(List sensors, reportingDevice = null) {
     return activeSensors
 }
 
-private BigDecimal computeMedianHumidity(List sensors, reportingDevice = null) {
+private BigDecimal computeMedianHumidity(List sensors, DeviceWrapper reportingDevice = null) {
     List activeSensors = getActiveSensors(sensors, reportingDevice)
 
     if (activeSensors.size() == 0) {
@@ -1397,16 +1417,16 @@ private static BigDecimal computeDewPoint(BigDecimal humidityPct, BigDecimal tem
 
 // Median dew point across a sensor list, pairing each sensor's own (humidity, temperature).
 // Sensors lacking either attribute are skipped. Null if no usable pair.
-private BigDecimal computeMedianDewPoint(List sensors, reportingDevice = null) {
+private BigDecimal computeMedianDewPoint(List sensors, DeviceWrapper reportingDevice = null) {
     List activeSensors = getActiveSensors(sensors, reportingDevice)
     if (activeSensors.size() == 0) return null
 
     List<BigDecimal> dewPoints = []
     activeSensors.each { sensor ->
-        def h = sensor.currentValue("humidity")
-        def t = sensor.currentValue("temperature")
+        BigDecimal h = sensor.currentValue("humidity") as BigDecimal
+        BigDecimal t = sensor.currentValue("temperature") as BigDecimal
         if (h != null && t != null) {
-            BigDecimal dp = computeDewPoint(h as BigDecimal, t as BigDecimal)
+            BigDecimal dp = computeDewPoint(h, t)
             if (dp != null) dewPoints.add(dp)
         }
     }
@@ -1421,13 +1441,13 @@ private BigDecimal computeMedianDewPoint(List sensors, reportingDevice = null) {
 
 private Boolean useDewPointMode() { return settings.useDewPoint as Boolean }
 
-private BigDecimal computeBathroomMetric(reportingDevice = null) {
+private BigDecimal computeBathroomMetric(DeviceWrapper reportingDevice = null) {
     return useDewPointMode()
         ? computeMedianDewPoint(bathroomHumiditySensors, reportingDevice)
         : computeMedianHumidity(bathroomHumiditySensors, reportingDevice)
 }
 
-private BigDecimal computeReferenceMetric(reportingDevice = null) {
+private BigDecimal computeReferenceMetric(DeviceWrapper reportingDevice = null) {
     return useDewPointMode()
         ? computeMedianDewPoint(referenceHumiditySensors, reportingDevice)
         : computeMedianHumidity(referenceHumiditySensors, reportingDevice)
@@ -1493,14 +1513,25 @@ private void sendNotification(String message) {
     }
 }
 
-private void logTrace(String message) { if (traceEnable) log.trace(message) }
-private void logDebug(String message) { if (debugEnable) log.debug(message) }
-private void logInfo(String message)  { if (txtEnable)   log.info(message) }
-private void logWarn(String message)  { log.warn(message) }
-private void logError(String message) { log.error(message) }
-
 void logsOff() {
-    log.warn "Debug/trace logging auto-disabled"
     app.updateSetting("debugEnable", [value: "false", type: "bool"])
     app.updateSetting("traceEnable", [value: "false", type: "bool"])
+    logWarn("Debug/trace logging auto-disabled")
 }
+
+// ── Logging (app) ─────────────────────────────────────────────────────
+//   ⬇️ Evt  ⬆️ Cmd  🔧 Cfg  🌐 Net  ⏰ Sched  🏷️ Ver  ·  ⚠️ Warn  🛑 Error  🔬 Trace
+private String logp(String e) { "${e} ${app.getLabel()}: " }
+
+void logEvt  (String m) { if (debugEnable) log.debug logp('⬇️') + m }
+void logCmd  (String m) { if (txtEnable != false) log.info  logp('⬆️') + m }
+void logCfg  (String m) { if (txtEnable != false) log.info  logp('🔧') + m }
+void logNet  (String m) { if (debugEnable) log.debug logp('🌐') + m }
+void logSched(String m) { if (debugEnable) log.debug logp('⏰') + m }
+void logVer  (String m) { log.warn  logp('🏷️') + m }
+
+void logWarn (String m) { log.warn  logp('⚠️') + m }
+void logError(String m) { log.error logp('🛑') + m }
+void logTrace(String m) { if (traceEnable) log.trace logp('🔬') + m }
+void logInfo (String m) { if (txtEnable != false) log.info  "${app.getLabel()}: ${m}" }
+void logDebug(String m) { if (debugEnable) log.debug "${app.getLabel()}: ${m}" }
