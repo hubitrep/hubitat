@@ -1,7 +1,7 @@
 {
     "packageName": "Hub Diagnostics",
     "author": "hubitrep",
-    "version": "5.86.11",
+    "version": "5.86.12",
     "dateReleased": "2026-10-01",
     "minimumHEVersion": "2.5.0",
     "apps": [
