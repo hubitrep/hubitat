@@ -1,9 +1,9 @@
 {
     "packageName": "Xfinity / Visonic / UEI Contact Sensor",
     "author": "hubitrep",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-07-24",
+    "dateReleased": "2026-10-01",
     "releaseNotes": "Driver for Universal Electronics / Visonic / Xfinity Zigbee contact sensors — contact, temperature, tamper, and battery with configurable reporting intervals.",
     "drivers": [
         {
