@@ -1,15 +1,15 @@
 {
-    "packageName": "Hub Diagnostics",
+    "packageName": "Hub Inspector",
     "author": "hubitrep",
-    "version": "5.86.12",
-    "dateReleased": "2026-10-01",
+    "version": "6.0.0",
+    "dateReleased": "2026-10-04",
     "minimumHEVersion": "2.5.0",
     "apps": [
         {
             "id": "57716640-a6fb-4e9a-9186-c6bb6d3509b3",
-            "name": "Hub Diagnostics",
+            "name": "Hub Inspector",
             "namespace": "hubitrep",
-            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubDiagnostics/HubDiagnostics.groovy",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubInspector/HubInspector.groovy",
             "required": true,
             "oauth": true,
             "primary": true
