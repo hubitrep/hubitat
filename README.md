@@ -7,8 +7,8 @@ install from a single Groovy file in the **Drivers Code** editor.
 <!-- AUTO:packages -->
 ## Apps
 
-- [Hub Diagnostics](HubDiagnostics/) — Diagnostic dashboard for a Hubitat hub: real-time and historical visibility into devices, apps, network, performance, and configuration, served as a web UI from the hub. Also exposes a read-only audit API.
-- [Multi-Hub Inventory](MultiHubInventory/) — Read-only cross-hub aggregator that consumes the Hub Diagnostics audit API from every hub in your fleet for unified device, firmware-drift, and maintenance reports.
+- [Hub Inspector](HubInspector/) — Diagnostic dashboard for a Hubitat hub: real-time and historical visibility into devices, apps, network, performance, and configuration, served as a web UI from the hub. Also exposes a read-only audit API.
+- [Multi-Hub Inventory](MultiHubInventory/) — Read-only cross-hub aggregator that consumes the Hub Inspector audit API from every hub in your fleet for unified device, firmware-drift, and maintenance reports.
 - [Humidity Fan Controller](HumidityFanController/) — Bathroom-fan automation that runs while humidity stays above a reference baseline and stops once it returns, with debounced state transitions and multi-sensor median input.
 - [Switch Monitor](SwitchMonitor/) — Watches groups of switches that must stay on (or off): auto-corrects deviations after a grace period, retries to a configurable limit, and notifies on under-watt drops for power-metered loads.
 - [Log Monitor](LogMonitor/) — Hub log aggregator: WebSocket bridges to one or more hubs with independent filter configs that route matched lines to notifications, files, or HTTP endpoints.
