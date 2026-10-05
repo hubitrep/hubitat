@@ -15,6 +15,7 @@ install from a single Groovy file in the **Drivers Code** editor.
 - [Startup and Shutdown Monitor](StartupShutdownMonitor/) — Drives a virtual contact sensor from hub lifecycle events — opens on manualReboot/manualShutdown/update, closes on systemStart — so rules can gate on restart state.
 - [Location Event Mapper](LocationEventMapper/) — Parent/child app that maps selected location events (sunrise/sunset, hub lifecycle, radio state, etc.) onto virtual contact sensor states, so rules can gate on them as triggers or conditions.
 - [Mirror Switch](MirrorSwitch/) — Keeps a group of on/off devices in sync: whichever member changes state drives the rest to match, with no ping-pong by construction.
+- [Device Swap Helper](DeviceSwapHelper/) — Replaces a device in every app that uses it: lists the apps the hub reports, then swaps through the hub's own Swap Apps Device or, for devices it won't swap, input by input with undo and an audit log.
 
 ## Drivers
 
@@ -25,6 +26,10 @@ install from a single Groovy file in the **Drivers Code** editor.
 - [Third Reality Dual Smart Plug](thirdreality/) — Zigbee driver for the Third Reality 3RDP01072Z dual-outlet smart plug with per-outlet power monitoring, plus its outlet component child driver.
 - [Third Reality Smart Plug](thirdreality/) — Zigbee on/off plug with power monitoring — the 3RSP02028BZ and behavior-compatible single-outlet Third Reality SKUs.
 - [Third Reality Presence Sensor R3](thirdreality/) — Zigbee 3.0 60 GHz mmWave presence sensor with RGB night light, illuminance, and TVOC air-quality sensing — the 3RPL01084Z.
+
+## Browser userscripts
+
+- [Hub Global Search](HubGlobalSearch/) — Userscript that adds one search box (Ctrl+K) to the hub admin UI for devices, rooms, dashboards, apps, rules and code.
 <!-- /AUTO -->
 
 ## Installing
