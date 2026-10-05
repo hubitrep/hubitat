@@ -14,7 +14,6 @@ install from a single Groovy file in the **Drivers Code** editor.
 - [Log Monitor](LogMonitor/) — Hub log aggregator: WebSocket bridges to one or more hubs with independent filter configs that route matched lines to notifications, files, or HTTP endpoints.
 - [Startup and Shutdown Monitor](StartupShutdownMonitor/) — Drives a virtual contact sensor from hub lifecycle events — opens on manualReboot/manualShutdown/update, closes on systemStart — so rules can gate on restart state.
 - [Location Event Mapper](LocationEventMapper/) — Parent/child app that maps selected location events (sunrise/sunset, hub lifecycle, radio state, etc.) onto virtual contact sensor states, so rules can gate on them as triggers or conditions.
-- [HVAC Season Manager](HvacSeasonManager/) — Publishes the heating and cooling season on a device, from date windows computed from the hub's local climate and the outdoor temperature, with a manual override that expires.
 - [Mirror Switch](MirrorSwitch/) — Keeps a group of on/off devices in sync: whichever member changes state drives the rest to match, with no ping-pong by construction.
 
 ## Drivers
