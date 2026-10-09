@@ -4,6 +4,14 @@
     "payPalUrl": "",
     "packages": [
         {
+            "id": "c9f26998-9303-409e-987c-72b43c6d9d0c",
+            "name": "Hub Inspector",
+            "category": "Utility",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/HubInspector/packageManifest.json",
+            "description": "A diagnostics dashboard that runs on your hub: resources, app and device CPU use, configuration snapshots you can compare, device usage, and Zigbee, Z-Wave and Matter activity.",
+            "tags": ["Tools & Utilities", "Monitoring"]
+        },
+        {
             "id": "8a4ad471-ce79-46aa-8d66-6ca1602c8b62",
             "name": "ThirdReality Zigbee Drivers",
             "category": "Control",
