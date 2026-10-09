@@ -16,6 +16,7 @@ install from a single Groovy file in the **Drivers Code** editor.
 - [Location Event Mapper](LocationEventMapper/) — Parent/child app that maps selected location events (sunrise/sunset, hub lifecycle, radio state, etc.) onto virtual contact sensor states, so rules can gate on them as triggers or conditions.
 - [Mirror Switch](MirrorSwitch/) — Keeps a group of on/off devices in sync: whichever member changes state drives the rest to match, with no ping-pong by construction.
 - [Device Swap Helper](DeviceSwapHelper/) — Replaces a device in every app that uses it: lists the apps the hub reports, then swaps through the hub's own Swap Apps Device or, for devices it won't swap, input by input with undo and an audit log.
+- [Switched Heater Thermostat](SwitchedHeaterThermostat/) — Turns plain switches feeding resistive heaters into a thermostat: a Virtual Thermostat decides, the app drives the switches, with frost protection, power-draw checks and alerts when a heater or sensor fails.
 
 ## Drivers
 
