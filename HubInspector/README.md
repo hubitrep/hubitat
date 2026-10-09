@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 A comprehensive diagnostic dashboard for Hubitat Elevation hubs. Provides real-time and historical visibility into devices, apps, network health, performance, and configuration — all in a single web UI served directly from your hub.
 
 <!-- AUTO:hubinspector-version -->
-**Current version:** 6.1.6
+**Current version:** 6.1.8
 <!-- /AUTO -->
 
 ---
@@ -389,6 +389,8 @@ Renders only when the Z-Wave JS stack is detected (via `/hub/zwave2/status`). So
 - "Rebuilding routes" warning when active
 - **Statistics chips:** TX, RX, dropped TX/RX, CAN, NAK, timeout ACK/Callback/Response — non-zero error counters are colored warn
 - **Background RSSI** per channel (channel0–3): current dBm with average in parentheses, colored by quietness (lower RSSI = quieter, better)
+
+Some Z-Wave JS hubs return no controller state at all (the endpoint answers `null`, through reboots, with Z-Wave working normally). The card then shows an info note that the hub doesn't report these statistics; there is nothing for the user to fix.
 
 #### Z-Wave Topology
 
