@@ -22,7 +22,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/androidtv/tests/AndroidTVRemoteTester.groovy",
             "required": false,
-            "oauth": true,
+            "oauth": false,
             "primary": false,
             "version": "0.3.0"
         }
