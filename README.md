@@ -22,6 +22,7 @@ install from a single Groovy file in the **Drivers Code** editor.
 
 - [Aqara Drivers](aqara/) — Zigbee drivers for Aqara / Xiaomi (LUMI) devices: the WSDCGQ11LM temperature/humidity/pressure sensor, the MCCGQ11LM door/window contact sensor, and the WS-USC01 no-neutral wall switch.
 - [Xfinity Contact Sensor](XfinityContactSensor/) — Zigbee driver for the Xfinity / Visonic door/window contact sensor with battery reporting.
+- [Android TV Remote](androidtv/) — Google TV / Android TV control over the LAN with no bridge: pairing, keys, power, app launch by deep link and the current app. An optional tester app reports how a TV differs from what the driver expects.
 - [IKEA Window Blinds](IKEA-Blinds/) — Zigbee driver for IKEA window blind (FYRTUR / KADRILJ family).
 - [Sinopé Switch + Dimmer + Water Valve](sinope/) — Zigbee drivers for the Sinopé SW2500ZB switch, DM2500ZB dimmer, and VA422xZB water valve (with optional FS422x flow sensor).
 - [Third Reality Dual Smart Plug](thirdreality/) — Zigbee driver for the Third Reality 3RDP01072Z dual-outlet smart plug with per-outlet power monitoring, plus its outlet component child driver.
