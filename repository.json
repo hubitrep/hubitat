@@ -26,6 +26,14 @@
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/XfinityContactSensor/packageManifest.json",
             "description": "Driver for Universal Electronics / Visonic / Xfinity Zigbee contact sensors — contact, temperature, tamper, and battery with configurable reporting intervals.",
             "tags": ["Zigbee", "Doors & Windows", "Temperature & Humidity"]
+        },
+        {
+            "id": "118e71c2-286f-418d-8966-45934dbd0584",
+            "name": "Android TV Remote",
+            "category": "Integrations",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/androidtv/packageManifest.json",
+            "description": "Google TV / Android TV control over the LAN with no bridge (beta), with an optional tester app.",
+            "tags": ["LAN", "Multimedia"]
         }
     ]
 }
