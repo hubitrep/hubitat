@@ -4,7 +4,7 @@
     "version": "0.1.4",
     "minimumHEVersion": "2.5.2",
     "dateReleased": "2026-10-15",
-    "releaseNotes": "Beta. Google TV / Android TV control over the LAN with no bridge: pairing, keys, power, app launch by deep link, and the current app. The optional tester app runs the driver against your TV and writes a report to paste in the forum thread.",
+    "releaseNotes": "0.1.4 (beta): driver 0.1.2 logs pings only when something is unusual. Tester 0.3.2 runs without pressing Done first, ignores extra Run presses, ends a stalled run cleanly, separates 'box differs' (your model) from 'driver differs' (a bug), and leaves OAuth off unless you turn on Script access.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
