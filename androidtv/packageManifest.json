@@ -4,7 +4,7 @@
     "version": "0.1.6",
     "minimumHEVersion": "2.5.2",
     "dateReleased": "2026-10-15",
-    "releaseNotes": "0.1.5 (beta): driver 0.1.3 logs app changes correctly on TVs whose home app has a long package name, such as Google TV. Tester 0.3.3 reads the app reached by HOME correctly on those TVs and shows progress as 'step n of m'.",
+    "releaseNotes": "0.1.6 (beta): driver 0.1.4 reconnects to the TV by itself within about 30 s after an update; before, it stayed disconnected while showing online. Package names no longer launch apps since a Google Play update in August 2026; use a link the app handles, such as https://www.youtube.com (the README lists links for common apps). Tester 0.3.4 expects the TV to refuse a launch by package name.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
