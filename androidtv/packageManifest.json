@@ -1,7 +1,7 @@
 {
     "packageName": "Android TV Remote",
     "author": "hubitrep",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "minimumHEVersion": "2.5.2",
     "dateReleased": "2026-10-15",
     "releaseNotes": "0.1.5 (beta): driver 0.1.3 logs app changes correctly on TVs whose home app has a long package name, such as Google TV. Tester 0.3.3 reads the app reached by HOME correctly on those TVs and shows progress as 'step n of m'.",
@@ -12,7 +12,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/androidtv/AndroidTVRemote.groovy",
             "required": true,
-            "version": "0.1.3"
+            "version": "0.1.4"
         }
     ],
     "apps": [
@@ -24,7 +24,7 @@
             "required": false,
             "oauth": false,
             "primary": false,
-            "version": "0.3.3"
+            "version": "0.3.4"
         }
     ]
 }
