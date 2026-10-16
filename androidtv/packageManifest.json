@@ -4,7 +4,7 @@
     "version": "0.1.5",
     "minimumHEVersion": "2.5.2",
     "dateReleased": "2026-10-15",
-    "releaseNotes": "0.1.4 (beta): driver 0.1.2 logs pings only when something is unusual. Tester 0.3.2 runs without pressing Done first, ignores extra Run presses, ends a stalled run cleanly, separates 'box differs' (your model) from 'driver differs' (a bug), and leaves OAuth off unless you turn on Script access.",
+    "releaseNotes": "0.1.5 (beta): driver 0.1.3 logs app changes correctly on TVs whose home app has a long package name, such as Google TV. Tester 0.3.3 reads the app reached by HOME correctly on those TVs and shows progress as 'step n of m'.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
