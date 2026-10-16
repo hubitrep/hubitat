@@ -1,8 +1,8 @@
 {
     "packageName": "Hub Inspector",
     "author": "hubitrep",
-    "version": "6.1.10",
-    "dateReleased": "2026-10-09",
+    "version": "6.1.11",
+    "dateReleased": "2026-10-16",
     "minimumHEVersion": "2.5.0",
     "apps": [
         {
