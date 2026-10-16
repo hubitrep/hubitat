@@ -34,6 +34,14 @@
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/androidtv/packageManifest.json",
             "description": "Google TV / Android TV control over the LAN with no bridge (beta), with an optional tester app.",
             "tags": ["LAN", "Multimedia"]
+        },
+        {
+            "id": "a5e63ecd-7ba3-418a-8c62-552f225b8510",
+            "name": "Samsung TV Remote (hubitrep)",
+            "category": "Integrations",
+            "location": "https://raw.githubusercontent.com/hubitrep/SamsungTvRemote/main/packageManifest.json",
+            "description": "Samsung Tizen TVs (2016 and later) over the LAN (beta): power, keys, apps, presets, Frame art mode and optional SmartThings, with an optional tester app. Based on Dave Gutheinz's driver.",
+            "tags": ["LAN", "Multimedia"]
         }
     ]
 }
