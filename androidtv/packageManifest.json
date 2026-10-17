@@ -6,7 +6,7 @@
     "dateReleased": "2026-10-17",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
     "communityLink": "https://community.hubitat.com/t/beta-android-tv-remote-google-tv-and-android-tv-local-control/166822",
-    "releaseNotes": "0.1.8 (beta): driver 0.3.0 adds Send Text (experimental): it types into the text field that has focus on the TV, such as a search box, for a dashboard text tile. Close the on-screen keyboard first. Tester 0.5.0 adds a Text input test that tries it on the search screen; please post its report with whether the word appeared.",
+    "releaseNotes": "0.1.9 (beta): driver 0.3.1 has tidier logging.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
