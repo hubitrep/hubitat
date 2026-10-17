@@ -4,6 +4,7 @@
     "version": "1.0.0",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-10-17",
+    "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/aqara",
     "drivers": [
         {
             "id": "fa5cb20e-378a-4fa1-95cc-db681ca3bb1e",

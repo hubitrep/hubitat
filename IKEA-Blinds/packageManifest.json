@@ -4,6 +4,7 @@
     "version": "0.1.0",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-10-17",
+    "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/IKEA-Blinds",
     "drivers": [
         {
             "id": "2c20d4ac-0b81-4329-a2d5-93c985ee523f",

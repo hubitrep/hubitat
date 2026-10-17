@@ -4,6 +4,7 @@
     "version": "0.1.6",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-10-01",
+    "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/XfinityContactSensor",
     "releaseNotes": "Driver for Universal Electronics / Visonic / Xfinity Zigbee contact sensors — contact, temperature, tamper, and battery with configurable reporting intervals.",
     "drivers": [
         {

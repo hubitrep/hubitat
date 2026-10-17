@@ -4,6 +4,7 @@
     "version": "0.2.6",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-10-09",
+    "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/thirdreality",
     "releaseNotes": "Choose the drivers for the devices you own. The outlet component driver is always installed — the dual smart plug creates its child devices with it.",
     "drivers": [
         {

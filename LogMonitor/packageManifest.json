@@ -4,6 +4,7 @@
     "version": "1.1.8",
     "minimumHEVersion": "2.5.0",
     "dateReleased": "2026-10-17",
+    "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/LogMonitor",
     "apps": [
         {
             "id": "047eade9-1f3c-4945-a94e-a38301fd1ba7",
