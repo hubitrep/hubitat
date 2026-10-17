@@ -12,6 +12,14 @@
             "tags": ["Tools & Utilities", "Monitoring"]
         },
         {
+            "id": "def8f260-cdb5-40c2-9226-000c38272e6a",
+            "name": "Log Monitor",
+            "category": "Utility",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/LogMonitor/packageManifest.json",
+            "description": "Watches hub logs, on this hub and others, and sends matching lines to notification devices, a File Manager log file or an HTTP endpoint.",
+            "tags": ["Tools & Utilities", "Monitoring", "Notifications"]
+        },
+        {
             "id": "8a4ad471-ce79-46aa-8d66-6ca1602c8b62",
             "name": "ThirdReality Zigbee Drivers",
             "category": "Control",

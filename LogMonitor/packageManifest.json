@@ -1,0 +1,29 @@
+{
+    "packageName": "Log Monitor",
+    "author": "hubitrep",
+    "version": "1.1.8",
+    "minimumHEVersion": "2.5.0",
+    "dateReleased": "2026-10-17",
+    "apps": [
+        {
+            "id": "047eade9-1f3c-4945-a94e-a38301fd1ba7",
+            "name": "Log Monitor",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/LogMonitor/LogMonitor.groovy",
+            "required": true,
+            "oauth": false,
+            "primary": true,
+            "version": "1.1.8"
+        }
+    ],
+    "drivers": [
+        {
+            "id": "09c9e0a7-9f8d-4b33-9b85-d32a1b5e0793",
+            "name": "Log Monitor Bridge",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/LogMonitor/LogMonitorBridge.groovy",
+            "required": true,
+            "version": "1.0.4"
+        }
+    ]
+}
