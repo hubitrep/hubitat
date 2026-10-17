@@ -26,7 +26,7 @@ import groovy.transform.Field
 import hubitat.zigbee.zcl.DataType
 import com.hubitat.hub.domain.Event
 
-@Field static final String CODE_VERSION = "0.0.6"
+@Field static final String CODE_VERSION = "0.1.0"
 
 metadata {
     definition(
@@ -65,6 +65,8 @@ metadata {
             description: "Threshold beyond which shade is considered open (%)"
         input name: "closedThreshold", type: "number", defaultValue: 3, range: "0..5", title: "Shade Closed Threshold",
             description: "Threshold beyond which shade is considered closed (%)"
+        input name: "openMargin", type: "number", defaultValue: 0, range: "0..10", title: "Open Margin",
+            description: "Stop this far short of fully retracted to spare the mechanism; still reported as 100% (%)"
 
         input name: "txtEnable", type: "bool", title: "Enable info logging", defaultValue: true
         input name: "debugEnable", type: "bool", title: "Enable debug logging info", defaultValue: false, required: true, submitOnChange: true
@@ -85,6 +87,12 @@ metadata {
 
 @Field static final Integer POWER_CONFIG_CLUSTER = 0x0001
 @Field static final Integer BATTERY_PERCENTAGE_ATTR = 0x0021
+
+// an upward move this driver did not send (the remote is bound to the blind) is caught in this
+// last stretch of travel and redirected to the open margin
+@Field static final Integer INTERCEPT_ZONE_PCT = 20
+// a move target older than this is treated as lost (full travel takes well under a minute)
+@Field static final Long TARGET_TTL_MS = 90000L
 
 // capabilities
 
@@ -137,7 +145,13 @@ void deviceTypeUpdated() {
 
 void open() {
     logTrace "open()"
-    sendZigbeeCommands(zigbee.command(WINDOW_COVERING_CLUSTER, WC_OPEN_COMMAND))
+    if (openMarginPct() > 0) {
+        // the Up/Open command runs to the end stop, so open to the margin instead
+        setLevel(100)
+    } else {
+        noteTarget(0)
+        sendZigbeeCommands(zigbee.command(WINDOW_COVERING_CLUSTER, WC_OPEN_COMMAND))
+    }
 }
 
 void on() {
@@ -146,6 +160,7 @@ void on() {
 
 void close() {
     logTrace "close()"
+    noteTarget(100)
     sendZigbeeCommands(zigbee.command(WINDOW_COVERING_CLUSTER, WC_CLOSE_COMMAND))
 }
 
@@ -159,7 +174,9 @@ void setLevel(BigDecimal level, Integer rate = 0xFFFF) {
 
 void setLevel(Integer level, Integer rate = 0xFFFF) {
     logTrace "setLevel(${level})"
-    sendZigbeeCommands(zigbee.command(WINDOW_COVERING_CLUSTER, WC_SET_POSITION_COMMAND, zigbee.convertToHexString(100 - (level), 2)))
+    Integer lift = Math.max(100 - Math.min(Math.max(level, 0), 100), openMarginPct())
+    noteTarget(lift)
+    sendZigbeeCommands(zigbee.command(WINDOW_COVERING_CLUSTER, WC_SET_POSITION_COMMAND, zigbee.convertToHexString(lift, 2)))
 }
 
 void setPosition(BigDecimal value){
@@ -189,6 +206,7 @@ void startPositionChange(String direction) {
 
 void stopPositionChange() {
     logTrace "stopPositionChange()"
+    noteTarget(null)
     sendZigbeeCommands(zigbee.command(WINDOW_COVERING_CLUSTER, WC_STOP_COMMAND))
 }
 
@@ -294,11 +312,16 @@ private void parseAttributeReport(Map descMap){
 }
 
 private void handleLiftPositionEvent(Map descMap) {
-    int currentLevel = 100 - zigbee.convertHexToInt(descMap.value)
+    // lift percentage 0 is fully retracted; anything within the open margin reads as fully open
+    int lift = zigbee.convertHexToInt(descMap.value)
+    int currentLevel = (lift <= openMarginPct()) ? 100 : 100 - lift
+    Integer lastLift = state.lastLift as Integer
+    state.lastLift = lift
+    interceptForeignOpen(lift, lastLift)
     Integer lastLevel = device.currentValue("level") as Integer
     boolean moved = (lastLevel != null && lastLevel != currentLevel)
 
-    logRx "handleLiftPositionEvent - currentLevel: ${currentLevel} lastLevel: ${lastLevel} moved: ${moved}"
+    logRx "handleLiftPositionEvent - lift: ${lift} currentLevel: ${currentLevel} lastLevel: ${lastLevel} moved: ${moved}"
 
     updateDeviceAttribute(name: "level", value: currentLevel)
     updateDeviceAttribute(name: "position", value: currentLevel)
@@ -348,6 +371,30 @@ private void updateFinalState() {
 
 
 // private methods
+
+private int openMarginPct() {
+    return (openMargin != null) ? Math.min(Math.max(openMargin as int, 0), 10) : 0
+}
+
+private void noteTarget(Integer lift) {
+    state.targetLift = lift
+    state.targetAt = (lift != null) ? now() : null
+}
+
+// Catch an upward move this driver did not command (the remote talks to the blind directly)
+// before it reaches the end stop: a Go To Lift Percentage replaces the move's target.
+private void interceptForeignOpen(int lift, Integer lastLift) {
+    int margin = openMarginPct()
+    if (margin == 0 || lastLift == null || lift >= lastLift) return   // not opening
+    if (lift > INTERCEPT_ZONE_PCT || lift < margin) return            // not yet, or too late
+
+    Integer target = state.targetLift as Integer
+    boolean targetLive = target != null && state.targetAt != null && (now() - (state.targetAt as Long)) < TARGET_TTL_MS
+    if (targetLive && lift >= target) return                          // our own move, still on course
+
+    logInfo "opening past ${100 - lift}% without a command from this driver; stopping at the open margin"
+    setLevel(100)
+}
 
 private void autoConfigure() {
     logVer "Detected driver version change"
