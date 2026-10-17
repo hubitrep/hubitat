@@ -1,9 +1,9 @@
 {
     "packageName": "Android TV Remote",
     "author": "hubitrep",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "minimumHEVersion": "2.5.2",
-    "dateReleased": "2026-10-15",
+    "dateReleased": "2026-10-17",
     "releaseNotes": "0.1.6 (beta): driver 0.1.4 reconnects to the TV by itself within about 30 s after an update; before, it stayed disconnected while showing online. Package names no longer launch apps since a Google Play update in August 2026; use a link the app handles, such as https://www.youtube.com (the README lists links for common apps). Tester 0.3.4 expects the TV to refuse a launch by package name.",
     "drivers": [
         {
@@ -12,7 +12,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/androidtv/AndroidTVRemote.groovy",
             "required": true,
-            "version": "0.1.4"
+            "version": "0.2.0"
         }
     ],
     "apps": [
@@ -24,7 +24,7 @@
             "required": false,
             "oauth": false,
             "primary": false,
-            "version": "0.3.4"
+            "version": "0.4.0"
         }
     ]
 }

@@ -27,6 +27,7 @@ metadata {
         command "startPairing"
         command "submitPairingCode", [[name: "code", type: "STRING", description: "6 characters shown on the TV"]]
         command "forgetPairing"
+        command "findTvs"
         command "connect"
         command "disconnect"
         command "sendKey", [[name: "key", type: "STRING", description: "Key name (HOME, BACK, DPAD_UP, MEDIA_PLAY_PAUSE...) or Android key code number"]]
@@ -38,7 +39,10 @@ metadata {
     }
 
     preferences {
-        input "tvIP", "string", title: "TV IP address", required: true
+        input "tvIP", "string", title: "TV IP address (leave blank to find the TV on the network)", required: false
+        if ((state?.foundTvs as Map)?.size() > 1) {
+            input name: "tvChoice", type: "enum", title: "TV", options: state.foundTvs
+        }
         input name: "txtEnable", type: "bool", title: "Enable info logging", defaultValue: true
         input name: "debugEnable", type: "bool", title: "Enable debug logging", defaultValue: false
         if (debugEnable) {
@@ -49,15 +53,20 @@ metadata {
 
 import groovy.transform.Field
 import hubitat.helper.HexUtils
+import hubitat.helper.NetworkUtils
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.Signature
 import java.security.cert.CertificateFactory
 import java.util.concurrent.ConcurrentHashMap
 
-@Field static final String CODE_VERSION = "0.1.4"
+@Field static final String CODE_VERSION = "0.2.0"
 @Field static final int DEBUG_LOG_TIMEOUT = 1800
 @Field static final int PAIRING_PORT = 6467
+@Field static final String MDNS_SERVICE = "_androidtvremote2._tcp"
+@Field static final int SEARCH_TIMEOUT_MS = 5000
+@Field static final long REPAIR_SEARCH_MS = 300000L     // at most one search per 5 minutes while the TV is unreachable
+@Field static final long ID_SEARCH_MS = 86400000L       // at most one search a day to learn the TV of a typed address
 @Field static final int REMOTE_PORT = 6466
 @Field static final int WATCHDOG_SECONDS = 30
 @Field static final long IDLE_LIMIT_MS = 20000      // the TV pings every 5 s
@@ -112,8 +121,47 @@ void installed() {
 void updated() {
     logCfg "Preferences saved (version ${CODE_VERSION})"
     if (debugEnable || traceEnable) runIn(DEBUG_LOG_TIMEOUT, "logsOff")
+    // Before the TV settings: a pick schedules its own connect, which disconnect() would cancel
     disconnect()
+    applyTvSettings()
     initialize()
+}
+
+// A TV picked from the list, a typed IP, or a blank IP (search).
+private void applyTvSettings() {
+    if (tvChoice) {
+        Map e = (state.foundTvEntries as List)?.find { it.id == tvChoice }
+        device.removeSetting("tvChoice")
+        clearFoundTvs()
+        if (!e) { logWarn "That TV is no longer in the list; run Find TVs"; return }
+        String address = addressFor(e, tvIP as String)
+        logInfo "Using ${e.name} at ${address}"
+        takeTv(e, address, false)
+        return
+    }
+    if (tvIP) {
+        clearFoundTvs()
+        // A typed address may be another TV: learn which one again on the next connection
+        if (tvIP != state.lastTvIP) {
+            state.remove("tvId")
+            state.remove("tvName")
+            state.lastTvIP = tvIP
+        }
+    } else {
+        runIn(1, "runSetupSearch", [data: [pair: false]])
+    }
+}
+
+// Points the device at this TV. A paired device that switches to another TV forgets the pairing.
+// connect reads tvIP in its own execution, after the setting written here is saved.
+private void takeTv(Map e, String address, boolean pair) {
+    if (state.paired && differentTv(e, state.tvId as String, tvIP as String)) {
+        forgetPairing()
+        logInfo "${e.name} is a different TV; pair it with Start Pairing"
+    }
+    applyTv(e, address)
+    if (state.paired) runIn(2, "connect")
+    else if (pair) runIn(1, "startPairing")
 }
 
 void initialize() {
@@ -129,10 +177,122 @@ void logsOff() {
 }
 
 
+// ── TV discovery ──────────────────────────────────────────────────────
+
+// One TV from an mDNS result: its id is the `bt` TXT record, which stays the same when the IP changes.
+// Addresses come as a List (getMDNSServiceResults) or a comma-separated String (getMDNSEntries).
+Map tvEntry(Map r) {
+    String id = (r?.textRecords instanceof Map ? r.textRecords.bt : null)?.toString()?.trim()?.toUpperCase()
+    def v4 = r?.ip4Addresses
+    List<String> ips = (v4 instanceof Collection ? v4 : v4?.toString()?.split(",") as List)
+        ?.collect { it?.toString()?.trim() }?.findAll { it } ?: []
+    if (!id || !ips) return null
+    String name = r.name?.toString() ?: id
+    return [id: id, name: name, ips: ips, label: "${name} (${ips[0]})".toString()]
+}
+
+List<Map> tvEntries(List results) {
+    Map<String, Map> byId = [:]
+    (results ?: []).each { r ->
+        Map e = tvEntry(r as Map)
+        if (!e) return
+        Map seen = byId[e.id]
+        if (seen) seen.ips = (seen.ips + e.ips).unique()
+        else byId[e.id] = e
+    }
+    return byId.values() as List
+}
+
+Map entryWithId(List<Map> entries, String id) {
+    entries?.find { it.id == id?.toUpperCase() }
+}
+
+// The one TV advertising this address; null when none does, or several do (some TVs advertise others' addresses).
+Map entryWithAddress(List<Map> entries, String ip) {
+    List<Map> m = entries?.findAll { ip in it.ips } ?: []
+    m.size() == 1 ? m[0] : null
+}
+
+String addressFor(Map entry, String current) {
+    current in entry.ips ? current : entry.ips[0]
+}
+
+// The TV's new address, or null when it isn't found or still advertises the current one.
+String repairAddress(List<Map> entries, String id, String current) {
+    Map e = entryWithId(entries, id)
+    if (!e || current in e.ips) return null
+    return addressFor(e, current)
+}
+
+boolean searchDue(Long last, long nowMs, long minMs) {
+    last == null || nowMs - last >= minMs
+}
+
+// Whether this entry is another TV than the device's: by id when known, else by the current address.
+boolean differentTv(Map entry, String tvId, String current) {
+    if (tvId) return entry.id != tvId.toUpperCase()
+    return current ? !(current in entry.ips) : false
+}
+
+// Blocks for SEARCH_TIMEOUT_MS: call it from a scheduled method, never from a command or updated().
+List<Map> searchTvs() {
+    state.lastSearch = now()
+    long t0 = now()
+    List results
+    try {
+        results = NetworkUtils.getMDNSServiceResults(MDNS_SERVICE, SEARCH_TIMEOUT_MS)
+    } catch (e) {
+        logDebug "mDNS search failed: ${e.class.simpleName}: ${e.message}"
+        return []
+    }
+    List<Map> found = tvEntries(results)
+    logDebug "mDNS search took ${now() - t0} ms: ${found*.label}"
+    return found
+}
+
+private void applyTv(Map e, String address) {
+    device.updateSetting("tvIP", [type: "string", value: address])
+    state.lastTvIP = address
+    state.tvId = e.id
+    state.tvName = e.name
+}
+
+private void clearFoundTvs() {
+    state.remove("foundTvs")
+    state.remove("foundTvEntries")
+}
+
+void findTvs() {
+    runIn(1, "runSetupSearch", [data: [pair: false]])
+}
+
+// Takes the only TV found when no address is set, or lists several under TV.
+void runSetupSearch(Map data) {
+    boolean pair = data?.pair as boolean
+    List<Map> found = searchTvs()
+    if (!found) {
+        logWarn "No Android TV or Google TV found. Check that the TV is on and on the hub's network " +
+                "(mDNS doesn't cross VLANs or subnets), or enter its IP address"
+        return
+    }
+    if (found.size() == 1) {
+        Map e = found[0]
+        clearFoundTvs()
+        logInfo "Found ${e.name} at ${e.ips[0]}" +
+                (tvIP && differentTv(e, state.tvId as String, tvIP as String) ? "; to use it, clear the IP address and save" : "")
+        if (!tvIP) takeTv(e, e.ips[0], pair)
+        return
+    }
+    state.foundTvs = found.collectEntries { [(it.id): it.label] }
+    state.foundTvEntries = found
+    logInfo "Found ${found.size()} TVs: choose one under TV and save" + (pair ? ", then Start Pairing" : "")
+}
+
+
 // ── Pairing ───────────────────────────────────────────────────────────
 
 void startPairing() {
-    if (!tvIP) { logWarn "Set the TV IP address first"; return }
+    if (!tvIP) { runIn(1, "runSetupSearch", [data: [pair: true]]); return }
     disconnect()
     if (!state.cert || !(state.keyEnc || state.key)) generateIdentity()
     sendEvent(name: "pairing", value: "pairing")
@@ -307,6 +467,7 @@ void connect() {
 void disconnect() {
     unschedule("watchdog")
     unschedule("connect")
+    unschedule("repairSearch")
     closeSocket()
     rt().mode = null
 }
@@ -337,7 +498,37 @@ private void scheduleReconnect() {
     int delay = Math.min(MAX_BACKOFF_SECONDS, 5 * (1 << Math.min(n, 6)))
     state.retry = n + 1
     logSched "Reconnecting in ${delay} s"
-    runIn(delay, "connect")
+    if (state.paired && state.tvId && searchDue(state.lastSearch as Long, now(), REPAIR_SEARCH_MS)) {
+        // The search schedules the connect: a connect queued behind a running search would run twice
+        runIn(1, "repairSearch", [data: [delay: delay]])
+    } else {
+        runIn(delay, "connect")
+    }
+}
+
+// The TV may have a new address: find it by its id and connect there, else retry after the backoff.
+void repairSearch(Map data) {
+    List<Map> found = searchTvs()
+    String ip = repairAddress(found, state.tvId as String, tvIP as String)
+    if (!ip) {
+        runIn((data?.delay ?: 5) as int, "connect")
+        return
+    }
+    logInfo "${state.tvName ?: 'The TV'} moved from ${tvIP} to ${ip}"
+    applyTv(entryWithId(found, state.tvId as String), ip)
+    state.retry = 0
+    runIn(1, "connect")
+}
+
+// A device set up with a typed address: find which TV answers there.
+void learnTvId() {
+    state.lastIdSearch = now()
+    Map e = entryWithAddress(searchTvs(), tvIP as String)
+    if (!e) return
+    state.tvId = e.id
+    state.tvName = e.name
+    state.lastTvIP = tvIP
+    logDebug "The TV at ${tvIP} is ${e.name} (${e.id})"
 }
 
 private void handleRemoteMessage(String hex) {
@@ -347,6 +538,7 @@ private void handleRemoteMessage(String hex) {
         r.gotMessage = true
         state.retry = 0
         sendEvent(name: "networkStatus", value: "online")
+        if (!state.tvId && searchDue(state.lastIdSearch as Long, now(), ID_SEARCH_MS)) runIn(5, "learnTvId")
     }
     if (m.containsKey(8)) {                                     // remote_ping_request
         Long val1 = pFirst(pDecode(pFirst(m, 8) as String), 1) as Long
