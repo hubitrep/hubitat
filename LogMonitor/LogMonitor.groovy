@@ -15,7 +15,7 @@ import groovy.transform.Field
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String CODE_VERSION = "1.1.7"
+@Field static final String CODE_VERSION = "1.1.8"
 @Field static final int MAX_BRIDGES = 5
 @Field static final int MAX_FILTERS = 10
 @Field static final int MAX_DEDUPE_HISTORY = 100
@@ -850,8 +850,9 @@ private static String redactUrl(String url) {
 private void appendToFile(String fileName, String data) {
     String existing = ""
     try {
+        // A missing file throws up to 2.5.2 and returns null from 2.5.3.
         byte[] bytes = downloadHubFile(fileName)
-        existing = new String(bytes)
+        if (bytes != null) existing = new String(bytes)
     } catch (Exception e) {
         // File doesn't exist yet
     }
