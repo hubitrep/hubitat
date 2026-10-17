@@ -1,7 +1,7 @@
 {
     "packageName": "Android TV Remote",
     "author": "hubitrep",
-    "version": "0.1.7",
+    "version": "0.1.8",
     "minimumHEVersion": "2.5.2",
     "dateReleased": "2026-10-17",
     "releaseNotes": "0.1.7 (beta): driver 0.2.0 finds the TV on the network: add the device and save with the IP address blank; with several TVs, pick one from the TV list. The driver remembers the TV and follows it to a new IP address after a failed connection; Find TVs searches again. After a power cut the hub may not find the TV again until it restarts, so a DHCP reservation is still the safe choice. The search needs firmware 2.5.2 or later. Tester 0.4.0 adds a Discovery test: whether the box announces itself on the network, also while off.",
@@ -12,7 +12,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/androidtv/AndroidTVRemote.groovy",
             "required": true,
-            "version": "0.2.0"
+            "version": "0.3.0"
         }
     ],
     "apps": [
@@ -24,7 +24,7 @@
             "required": false,
             "oauth": false,
             "primary": false,
-            "version": "0.4.0"
+            "version": "0.5.0"
         }
     ]
 }
