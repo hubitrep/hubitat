@@ -4,7 +4,7 @@
     "version": "0.1.7",
     "minimumHEVersion": "2.5.2",
     "dateReleased": "2026-10-17",
-    "releaseNotes": "0.1.6 (beta): driver 0.1.4 reconnects to the TV by itself within about 30 s after an update; before, it stayed disconnected while showing online. Package names no longer launch apps since a Google Play update in August 2026; use a link the app handles, such as https://www.youtube.com (the README lists links for common apps). Tester 0.3.4 expects the TV to refuse a launch by package name.",
+    "releaseNotes": "0.1.7 (beta): driver 0.2.0 finds the TV on the network: add the device and save with the IP address blank; with several TVs, pick one from the TV list. The driver remembers the TV and follows it to a new IP address after a failed connection; Find TVs searches again. After a power cut the hub may not find the TV again until it restarts, so a DHCP reservation is still the safe choice. The search needs firmware 2.5.2 or later. Tester 0.4.0 adds a Discovery test: whether the box announces itself on the network, also while off.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
