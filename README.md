@@ -24,7 +24,7 @@ install from a single Groovy file in the **Drivers Code** editor.
 - [Xfinity Contact Sensor](XfinityContactSensor/) — Zigbee driver for the Xfinity / Visonic door/window contact sensor with battery reporting.
 - [Android TV Remote](androidtv/) — Google TV / Android TV control over the LAN with no bridge: pairing, keys, power, app launch by deep link and the current app. An optional tester app reports how a TV differs from what the driver expects.
 - [IKEA Window Blinds](IKEA-Blinds/) — Zigbee driver for IKEA window blind (FYRTUR / KADRILJ family).
-- [Sinopé Switch + Dimmer + Water Valve](sinope/) — Zigbee drivers for the Sinopé SW2500ZB switch, DM2500ZB dimmer, and VA422xZB water valve (with optional FS422x flow sensor).
+- [Sinopé Switch + Dimmer + Floor Thermostat + Water Valve](sinope/) — Zigbee drivers for the Sinopé SW2500ZB switch, DM2500ZB dimmer, TH1300ZB / TH1320ZB-04 floor thermostat, and VA422xZB water valve (with optional FS422x flow sensor).
 - [Third Reality Dual Smart Plug](thirdreality/) — Zigbee driver for the Third Reality 3RDP01072Z dual-outlet smart plug with per-outlet power monitoring, plus its outlet component child driver.
 - [Third Reality Smart Plug](thirdreality/) — Zigbee on/off plug with power monitoring — the 3RSP02028BZ and behavior-compatible single-outlet Third Reality SKUs.
 - [Third Reality Presence Sensor R3](thirdreality/) — Zigbee 3.0 60 GHz mmWave presence sensor with RGB night light, illuminance, and TVOC air-quality sensing — the 3RPL01084Z.
