@@ -36,6 +36,22 @@
             "tags": ["Zigbee", "Doors & Windows", "Temperature & Humidity"]
         },
         {
+            "id": "a255e79a-86ca-4285-8210-cb143d940dfb",
+            "name": "Aqara Drivers",
+            "category": "Control",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/aqara/packageManifest.json",
+            "description": "Zigbee drivers for Aqara devices; pick the ones you need: WSDCGQ11LM temperature, humidity and pressure sensor, MCCGQ11LM door/window sensor, WS-USC01 no-neutral wall switch.",
+            "tags": ["Zigbee", "Temperature & Humidity", "Doors & Windows", "Lights & Switches"]
+        },
+        {
+            "id": "cf9f2ede-129b-471d-ba1d-ed3844b45be4",
+            "name": "IKEA Window Blinds",
+            "category": "Control",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/IKEA-Blinds/packageManifest.json",
+            "description": "Zigbee driver for IKEA window blinds (FYRTUR / KADRILJ family).",
+            "tags": ["Zigbee", "Window Coverings"]
+        },
+        {
             "id": "118e71c2-286f-418d-8966-45934dbd0584",
             "name": "Android TV Remote",
             "category": "Integrations",

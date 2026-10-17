@@ -1,0 +1,33 @@
+{
+    "packageName": "Aqara Drivers",
+    "author": "hubitrep",
+    "version": "1.0.0",
+    "minimumHEVersion": "2.3.0",
+    "dateReleased": "2026-10-17",
+    "drivers": [
+        {
+            "id": "fa5cb20e-378a-4fa1-95cc-db681ca3bb1e",
+            "name": "Aqara Weather Sensor WSDCGQ11LM",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/aqara/Aqara_WSDCGQ11LM.groovy",
+            "required": false,
+            "version": "2.15.6"
+        },
+        {
+            "id": "9570473f-5ebd-41cd-abf3-54a67df72fb5",
+            "name": "Aqara Contact Sensor MCCGQ11LM",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/aqara/Aqara_MCCGQ11LM.groovy",
+            "required": false,
+            "version": "1.1.4"
+        },
+        {
+            "id": "d628c89d-9375-46a9-b639-e4c142c4cc55",
+            "name": "Aqara Wall Switch WS-USC01 (No Neutral)",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/aqara/Aqara_WS_USC01.groovy",
+            "required": false,
+            "version": "1.5.4"
+        }
+    ]
+}

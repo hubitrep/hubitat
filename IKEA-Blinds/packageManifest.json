@@ -1,0 +1,17 @@
+{
+    "packageName": "IKEA Window Blinds",
+    "author": "hubitrep",
+    "version": "0.1.0",
+    "minimumHEVersion": "2.3.0",
+    "dateReleased": "2026-10-17",
+    "drivers": [
+        {
+            "id": "2c20d4ac-0b81-4329-a2d5-93c985ee523f",
+            "name": "IKEA Window Blinds",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/IKEA-Blinds/IKEA-Blinds.groovy",
+            "required": true,
+            "version": "0.1.0"
+        }
+    ]
+}
