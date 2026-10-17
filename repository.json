@@ -52,6 +52,14 @@
             "tags": ["Zigbee", "Window Coverings"]
         },
         {
+            "id": "ff853417-274c-437b-90fd-c1169a92f43b",
+            "name": "Sinopé Drivers",
+            "category": "Control",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/sinope/packageManifest.json",
+            "description": "Zigbee drivers for Sinopé devices; pick the ones you need: SW2500ZB switch, DM2500ZB dimmer, TH1300ZB / TH1320ZB-04 floor thermostat, VA422xZB water valve with optional flow sensor.",
+            "tags": ["Zigbee", "Lights & Switches", "Climate Control", "Valves"]
+        },
+        {
             "id": "118e71c2-286f-418d-8966-45934dbd0584",
             "name": "Android TV Remote",
             "category": "Integrations",
