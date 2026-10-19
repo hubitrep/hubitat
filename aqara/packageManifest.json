@@ -1,9 +1,9 @@
 {
     "packageName": "Aqara Drivers",
     "author": "hubitrep",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-10-17",
+    "dateReleased": "2026-10-18",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/aqara",
     "drivers": [
         {
@@ -12,7 +12,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/aqara/Aqara_WSDCGQ11LM.groovy",
             "required": false,
-            "version": "2.15.6"
+            "version": "2.15.7"
         },
         {
             "id": "9570473f-5ebd-41cd-abf3-54a67df72fb5",
