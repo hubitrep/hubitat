@@ -6,7 +6,7 @@
     "dateReleased": "2026-10-21",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
     "communityLink": "https://community.hubitat.com/t/beta-android-tv-remote-google-tv-and-android-tv-local-control/166822",
-    "releaseNotes": "0.1.9 (beta): driver 0.3.1 has tidier logging.",
+    "releaseNotes": "0.1.10 (beta): driver 0.3.2 keeps retrying after a failed reconnect; before, it could stay offline until Connect was pressed. Tester 0.5.1: the Text input test closes the on-screen keyboard before typing.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
