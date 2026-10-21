@@ -6,7 +6,7 @@
     "dateReleased": "2026-10-21",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
     "communityLink": "https://community.hubitat.com/t/beta-android-tv-remote-google-tv-and-android-tv-local-control/166822",
-    "releaseNotes": "0.1.11 (beta): driver 0.3.3: sendText works with the on-screen keyboard up; BACK before typing is no longer needed. Tester 0.5.2: the Text input test no longer presses BACK and reports whether the box echoed the text.",
+    "releaseNotes": "0.1.12 (beta): driver 0.3.4: sendKey and sendText accept numbers from rules. YouTube search drops accented letters sent with sendText (documented).",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
