@@ -61,7 +61,7 @@ import java.security.Signature
 import java.security.cert.CertificateFactory
 import java.util.concurrent.ConcurrentHashMap
 
-@Field static final String CODE_VERSION = "0.3.3"
+@Field static final String CODE_VERSION = "0.3.4"
 @Field static final int DEBUG_LOG_TIMEOUT = 1800
 @Field static final int PAIRING_PORT = 6467
 @Field static final String MDNS_SERVICE = "_androidtvremote2._tcp"
@@ -691,8 +691,9 @@ void setVolume(volumelevel) {
     Math.min(Math.abs(steps), 50L).times { sendKeyCode(key) }
 }
 
-void sendKey(String key) {
-    key = key?.trim()?.toUpperCase()?.replaceFirst(/^KEYCODE_/, "")
+// Untyped: a rule or a script may pass the key code as a number.
+void sendKey(keyArg) {
+    String key = keyArg?.toString()?.trim()?.toUpperCase()?.replaceFirst(/^KEYCODE_/, "")
     Integer code = KEYCODES[key] ?: (key ==~ /\d+/ ? key as Integer : null)
     if (code == null) { logWarn "Unknown key ${key}"; return }
     sendKeyCode(code)
@@ -712,7 +713,8 @@ void launchApp(String appLink) {
 // The box drops an edit whose field counter is ahead of its own or far behind it, without an error. It
 // takes the counter it last reported (a cursor move or two behind is fine), and it takes 0/0 at any time.
 // The counters in the box's message 21 (1/1 while the keyboard is up) are not the field's and get dropped.
-void sendText(String text) {
+void sendText(textArg) {
+    String text = textArg?.toString()
     if (!text) return
     Map r = rt()
     logCmd "Text ${text}"
@@ -732,7 +734,7 @@ private void noteTextField(Map r, Map<Integer, List> status) {
     }
     String value = utf8(pFirst(status, 2) as String) ?: ""
     r.textField = [counter: (pFirst(status, 1) ?: 0L) as Long, value: value]
-    logDebug "Text field: \"${value}\""
+    logTrace "Text field: \"${value}\""
 }
 
 private void sendKeyCode(int code) {
