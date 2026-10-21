@@ -1,7 +1,7 @@
 {
     "packageName": "Android TV Remote",
     "author": "hubitrep",
-    "version": "0.1.10",
+    "version": "0.1.11",
     "minimumHEVersion": "2.5.2",
     "dateReleased": "2026-10-21",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
@@ -14,7 +14,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/androidtv/AndroidTVRemote.groovy",
             "required": true,
-            "version": "0.3.2"
+            "version": "0.3.3"
         }
     ],
     "apps": [
@@ -26,7 +26,7 @@
             "required": false,
             "oauth": false,
             "primary": false,
-            "version": "0.5.1"
+            "version": "0.5.2"
         }
     ]
 }
