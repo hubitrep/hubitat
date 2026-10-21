@@ -1,8 +1,8 @@
 {
     "packageName": "Hub Inspector",
     "author": "hubitrep",
-    "version": "6.1.12",
-    "dateReleased": "2026-10-16",
+    "version": "6.1.13",
+    "dateReleased": "2026-10-20",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/HubInspector",
     "communityLink": "https://community.hubitat.com/t/beta-hub-inspector-a-diagnostics-dashboard-that-runs-on-your-hub/166689",
     "minimumHEVersion": "2.5.0",
