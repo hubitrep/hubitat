@@ -5,7 +5,7 @@
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-10-21",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/sinope",
-    "releaseNotes": "1.0.1: Breaking: SW2500ZB 0.0.30 and DM2500ZB 0.0.32: a paddle tap raises pushed only, no longer released; rules triggered by released must use pushed. Each paddle gesture raises one event.",
+    "releaseNotes": "1.0.2: SW2500ZB 0.0.31 and DM2500ZB 0.0.33: Configure reads the device temperature. TH13X0ZB 0.0.24: invalid heating setpoint reports are ignored and logged as a warning. VA422xZB 0.0.14: leak and battery alarms in the short zone status form are processed.",
     "drivers": [
         {
             "id": "d23826c0-95fa-4cb4-b8b5-6f7315cc4e08",
