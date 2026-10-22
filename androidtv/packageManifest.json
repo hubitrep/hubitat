@@ -6,7 +6,7 @@
     "dateReleased": "2026-10-22",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
     "communityLink": "https://community.hubitat.com/t/beta-android-tv-remote-google-tv-and-android-tv-local-control/166822",
-    "releaseNotes": "0.1.14 (beta): driver 0.4.0: play, pause and stop commands (MediaTransport capability). Tester 0.6.0: Media keys test.",
+    "releaseNotes": "0.1.15 (beta): driver 0.5.0: new preference Use the TV keyboard link; turn it off on TVs that show \"use your mobile device's keyboard\" instead of their on-screen keyboard. Send Text no longer writes the typed text to the info log.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
