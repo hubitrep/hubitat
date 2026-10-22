@@ -16,5 +16,6 @@
             "oauth": true,
             "primary": true
         }
-    ]
+    ],
+    "releaseNotes": "6.1.14 (beta): Zigbee spectrum card: the channel scan no longer counts the hub's own network; WiFi channels that overlap the hub's channel are hatched instead of red; green marks the recommended pairing, Zigbee 15/20/25 with WiFi 1/6/11; strength colours apply only to the hub's channel, other channels are listed in neutral."
 }
