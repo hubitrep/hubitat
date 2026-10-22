@@ -6,7 +6,7 @@
     "dateReleased": "2026-10-22",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
     "communityLink": "https://community.hubitat.com/t/beta-android-tv-remote-google-tv-and-android-tv-local-control/166822",
-    "releaseNotes": "0.1.13 (beta): driver 0.3.5: pairs with TVs that allow only TLS 1.3, on hub firmware 2.5.3 and later.",
+    "releaseNotes": "0.1.14 (beta): driver 0.4.0: play, pause and stop commands (MediaTransport capability). Tester 0.6.0: Media keys test.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
