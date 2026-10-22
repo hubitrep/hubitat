@@ -1,9 +1,9 @@
 {
     "packageName": "Sinopé Drivers",
     "author": "hubitrep",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-10-17",
+    "dateReleased": "2026-10-21",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/sinope",
     "releaseNotes": "1.0.1: Breaking: SW2500ZB 0.0.30 and DM2500ZB 0.0.32: a paddle tap raises pushed only, no longer released; rules triggered by released must use pushed. Each paddle gesture raises one event.",
     "drivers": [
@@ -13,7 +13,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/sinope/Sinope_SW2500ZB.groovy",
             "required": false,
-            "version": "0.0.30"
+            "version": "0.0.31"
         },
         {
             "id": "6a965e50-574f-4fa1-a146-d128f17533d4",
@@ -21,7 +21,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/sinope/Sinope_DM2500ZB.groovy",
             "required": false,
-            "version": "0.0.32"
+            "version": "0.0.33"
         },
         {
             "id": "2505b5d0-56fb-4235-bfa5-50b01fc8f810",
@@ -29,7 +29,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/sinope/Sinope_TH13X0ZB.groovy",
             "required": false,
-            "version": "0.0.23"
+            "version": "0.0.24"
         },
         {
             "id": "ccc5da28-43ff-4cce-8cc0-8e1f84fe9403",
@@ -37,7 +37,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/sinope/Sinope_VA422xZB.groovy",
             "required": false,
-            "version": "0.0.13"
+            "version": "0.0.14"
         }
     ]
 }
