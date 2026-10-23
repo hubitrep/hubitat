@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.1.14 (beta): Zigbee spectrum card: the channel scan no longer counts the hub's own network; WiFi channels that overlap the hub's channel are hatched instead of red; green marks the recommended pairing, Zigbee 15/20/25 with WiFi 1/6/11; strength colours apply only to the hub's channel, other channels are listed in neutral."
+    "releaseNotes": "6.2.0 (beta): Z-Wave Topology card: equal-size squares with a legend; pairs that only one node lists are outlined; dots mark relay links; hovering a square shows the pair and the row node's route to the hub with its speed, LWR RSSI, PER, RTT, neighbour count, nodes it repeats for and warnings; tiles for nodes direct to the hub, most repeaters, nodes at 9.6 kbps and the busiest repeater; a route table, worst first, under the matrix. The app page no longer shows its title twice."
 }
