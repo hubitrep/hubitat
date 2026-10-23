@@ -1,7 +1,7 @@
 {
     "packageName": "Android TV Remote",
     "author": "hubitrep",
-    "version": "0.1.16",
+    "version": "0.1.17",
     "minimumHEVersion": "2.5.2",
     "dateReleased": "2026-10-22",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
@@ -26,7 +26,7 @@
             "required": false,
             "oauth": false,
             "primary": false,
-            "version": "0.6.0"
+            "version": "0.6.1"
         }
     ]
 }
