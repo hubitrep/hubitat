@@ -6,7 +6,7 @@
     "dateReleased": "2026-10-23",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
     "communityLink": "https://community.hubitat.com/t/beta-android-tv-remote-google-tv-and-android-tv-local-control/166822",
-    "releaseNotes": "0.1.17 (beta): Tester 0.6.1: with several TVs found, Discovery reports whether one is at the device's address (ipFound).",
+    "releaseNotes": "0.1.18 (beta): driver 0.6.0: KEYCODE_0 to KEYCODE_9 now send the digit keys (codes 7 to 16) instead of codes 0 to 9; sendKey takes every Android key name, such as LAST_CHANNEL or TV_INPUT_HDMI_1.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
