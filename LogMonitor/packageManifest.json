@@ -27,5 +27,5 @@
             "version": "1.0.4"
         }
     ],
-    "releaseNotes": "1.1.9: the help icon on the app page opens the README."
+    "releaseNotes": "1.1.10: POST URLs are stored encrypted and shown masked; edit links open the right filter or bridge. After restoring onto another hub, re-enter POST URLs."
 }
