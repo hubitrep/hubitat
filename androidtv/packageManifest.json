@@ -1,9 +1,9 @@
 {
     "packageName": "Android TV Remote",
     "author": "hubitrep",
-    "version": "0.1.17",
+    "version": "0.1.18",
     "minimumHEVersion": "2.5.2",
-    "dateReleased": "2026-10-22",
+    "dateReleased": "2026-10-23",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
     "communityLink": "https://community.hubitat.com/t/beta-android-tv-remote-google-tv-and-android-tv-local-control/166822",
     "releaseNotes": "0.1.17 (beta): Tester 0.6.1: with several TVs found, Discovery reports whether one is at the device's address (ipFound).",
@@ -14,7 +14,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/androidtv/AndroidTVRemote.groovy",
             "required": true,
-            "version": "0.5.1"
+            "version": "0.6.0"
         }
     ],
     "apps": [
