@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.2.0 (beta): Z-Wave Topology card: equal-size squares with a legend; pairs that only one node lists are outlined; dots mark relay links; hovering a square shows the pair and the row node's route to the hub with its speed, LWR RSSI, PER, RTT, neighbour count, nodes it repeats for and warnings; tiles for nodes direct to the hub, most repeaters, nodes at 9.6 kbps and the busiest repeater; a route table, worst first, under the matrix. The app page no longer shows its title twice."
+    "releaseNotes": "6.2.1 (beta): Network card: the Z-Wave Stack line shows \"ZWaveJS available\" on hubs that can switch to Z-Wave JS, and \"download needed\" when Z-Wave JS is not downloaded yet."
 }
