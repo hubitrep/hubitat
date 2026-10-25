@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.2.1 (beta): Network card: the Z-Wave Stack line shows \"ZWaveJS available\" on hubs that can switch to Z-Wave JS, and \"download needed\" when Z-Wave JS is not downloaded yet."
+    "releaseNotes": "6.2.2 (beta): Network card: Limited Access shows the right entry count and lists each allowed IP and subnet, separated by commas; Allowed Subnets is now Extra Allowed Subnets and reads \"None (private ranges always allowed)\" when empty."
 }
