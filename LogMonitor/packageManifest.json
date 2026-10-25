@@ -1,7 +1,7 @@
 {
     "packageName": "Log Monitor",
     "author": "hubitrep",
-    "version": "1.1.11",
+    "version": "1.2.0",
     "minimumHEVersion": "2.5.0",
     "dateReleased": "2026-10-25",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/LogMonitor",
@@ -27,5 +27,5 @@
             "version": "1.0.4"
         }
     ],
-    "releaseNotes": "1.1.10: POST URLs are stored encrypted and shown masked; edit links open the right filter or bridge. After restoring onto another hub, re-enter POST URLs."
+    "releaseNotes": "1.2.0: passwords, tokens, keys and webhook keys in log lines are masked in notifications, files, POSTs and the app's own logs. New filter setting Hide private details replaces device, app, room and hub names with aliases and masks IP and MAC addresses, emails, phone numbers, coordinates and serial numbers. Reloading a Deleted page no longer deletes another filter or bridge."
 }
