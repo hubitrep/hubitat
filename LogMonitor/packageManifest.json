@@ -27,5 +27,5 @@
             "version": "1.0.5"
         }
     ],
-    "releaseNotes": "1.2.0: passwords, tokens, keys and webhook keys in log lines are masked in notifications, files, POSTs and the app's own logs. New filter setting Hide private details replaces device, app, room and hub names with aliases and masks IP and MAC addresses, emails, phone numbers, coordinates and serial numbers. Reloading a Deleted page no longer deletes another filter or bridge."
+    "releaseNotes": "1.2.1: bridge 1.0.5: new Hub username and Hub password settings log in to a hub with hub security (password stored encrypted); new setting reconnects after 30 minutes without a log line; reconnect waits now grow to 5 minutes; the main page shows each bridge's log count; Initialize on a connected bridge no longer starts a reconnect loop."
 }
