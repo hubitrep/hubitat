@@ -1,9 +1,9 @@
 {
     "packageName": "Sinopé Drivers",
     "author": "hubitrep",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-10-21",
+    "dateReleased": "2026-10-27",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/sinope",
     "releaseNotes": "1.0.2: SW2500ZB 0.0.31 and DM2500ZB 0.0.33: Configure reads the device temperature. TH13X0ZB 0.0.24: invalid heating setpoint reports are ignored and logged as a warning. VA422xZB 0.0.14: leak and battery alarms in the short zone status form are processed.",
     "drivers": [
@@ -29,7 +29,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/sinope/Sinope_TH13X0ZB.groovy",
             "required": false,
-            "version": "0.0.24"
+            "version": "0.0.25"
         },
         {
             "id": "ccc5da28-43ff-4cce-8cc0-8e1f84fe9403",
