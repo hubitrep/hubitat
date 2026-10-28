@@ -60,7 +60,6 @@ metadata {
         namespace: "hubitrep",
         author: "hubitrep",
         description: "60 GHz mmWave presence sensor with RGB night light, illuminance, and TVOC air quality (Zigbee 3.0)",
-        singleThreaded: true,
         importUrl: "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/thirdreality/ThirdReality_3RPL01084Z.groovy"
     ) {
         capability "Configuration"
