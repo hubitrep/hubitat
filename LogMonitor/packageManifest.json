@@ -1,9 +1,9 @@
 {
     "packageName": "Log Monitor",
     "author": "hubitrep",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "minimumHEVersion": "2.5.0",
-    "dateReleased": "2026-10-26",
+    "dateReleased": "2026-10-27",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/LogMonitor",
     "apps": [
         {
@@ -14,7 +14,7 @@
             "required": true,
             "oauth": false,
             "primary": true,
-            "version": "1.2.0"
+            "version": "1.2.1"
         }
     ],
     "drivers": [
@@ -24,7 +24,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/LogMonitor/LogMonitorBridge.groovy",
             "required": true,
-            "version": "1.0.5"
+            "version": "1.0.6"
         }
     ],
     "releaseNotes": "1.2.1: bridge 1.0.5: new Hub username and Hub password settings log in to a hub with hub security (password stored encrypted); new setting reconnects after 30 minutes without a log line; reconnect waits now grow to 5 minutes; the main page shows each bridge's log count; Initialize on a connected bridge no longer starts a reconnect loop."
