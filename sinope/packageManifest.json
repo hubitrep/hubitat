@@ -5,7 +5,7 @@
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-10-27",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/sinope",
-    "releaseNotes": "1.0.2: SW2500ZB 0.0.31 and DM2500ZB 0.0.33: Configure reads the device temperature. TH13X0ZB 0.0.24: invalid heating setpoint reports are ignored and logged as a warning. VA422xZB 0.0.14: leak and battery alarms in the short zone status form are processed.",
+    "releaseNotes": "1.0.3: TH13X0ZB 0.0.25: removed the voltage attribute (VoltageMeasurement capability); update any rule or dashboard that reads it.",
     "drivers": [
         {
             "id": "d23826c0-95fa-4cb4-b8b5-6f7315cc4e08",
