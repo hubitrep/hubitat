@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.2.3 (beta): Copy for Forum replaces device, app and hub names with aliases by default, including names inside alert text and the CPU and Hub Mesh tables; turn off the new \"Obfuscate device/app names in the forum export\" setting to post real names. Aliases are now unique to each hub, so they can't be worked out from guessed names. The dashboard's obfuscation setting now applies to the dashboard only."
+    "releaseNotes": "6.2.4 (beta): Scheduled perf checkpoints no longer fail on a large hub under evening load. Config snapshots no longer record a failed library read as no libraries, so Compare no longer reports every library removed."
 }
