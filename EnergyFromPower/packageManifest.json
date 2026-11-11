@@ -1,0 +1,21 @@
+{
+    "packageName": "Energy From Power",
+    "author": "hubitrep",
+    "version": "0.1.0",
+    "minimumHEVersion": "2.5.0",
+    "dateReleased": "2026-11-11",
+    "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/EnergyFromPower",
+    "apps": [
+        {
+            "id": "0122b5ba-5c6c-4143-867f-e7e31e2a30cd",
+            "name": "Energy From Power",
+            "namespace": "hubitrep",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/EnergyFromPower/EnergyFromPower.groovy",
+            "required": true,
+            "oauth": false,
+            "primary": true,
+            "version": "0.1.0"
+        }
+    ],
+    "releaseNotes": "0.1.0: first release."
+}

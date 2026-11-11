@@ -74,6 +74,14 @@
             "location": "https://raw.githubusercontent.com/hubitrep/SamsungTvRemote/main/packageManifest.json",
             "description": "Samsung Tizen TVs (2016 and later) over the LAN: power, keys, apps, presets, Frame art mode and optional SmartThings, with an optional tester app. Based on Dave Gutheinz's driver.",
             "tags": ["LAN", "Multimedia"]
+        },
+        {
+            "id": "23874948-4c53-47e6-937c-505e817522db",
+            "name": "Energy From Power",
+            "category": "Utility",
+            "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/EnergyFromPower/packageManifest.json",
+            "description": "Builds an energy total (kWh) from a meter that reports only power and publishes it on an energy meter device, so the Power and Energy Tracker can chart it.",
+            "tags": ["Energy Monitoring", "Tools & Utilities"]
         }
     ]
 }
