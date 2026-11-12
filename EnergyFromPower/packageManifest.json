@@ -17,5 +17,5 @@
             "version": "0.1.1"
         }
     ],
-    "releaseNotes": "0.1.0: first release."
+    "releaseNotes": "0.1.1: Removed the Publish at the end of each hour setting. The total is published at the power reading where it has grown by the step, at its value then, and by an hourly check when the power meter has sent nothing for over an hour."
 }
