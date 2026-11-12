@@ -1,9 +1,9 @@
 {
     "packageName": "Energy From Power",
     "author": "hubitrep",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "minimumHEVersion": "2.5.0",
-    "dateReleased": "2026-11-11",
+    "dateReleased": "2026-11-12",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/EnergyFromPower",
     "apps": [
         {
@@ -14,7 +14,7 @@
             "required": true,
             "oauth": false,
             "primary": true,
-            "version": "0.1.0"
+            "version": "0.1.1"
         }
     ],
     "releaseNotes": "0.1.0: first release."
