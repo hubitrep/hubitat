@@ -36,5 +36,6 @@
             "required": true,
             "version": "0.1.1"
         }
-    ]
+    ],
+    "releaseNotes": "0.2.7: dual plug 0.0.5: resetEnergy zeroes both outlets on every reset."
 }
