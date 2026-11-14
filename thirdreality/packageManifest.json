@@ -1,9 +1,9 @@
 {
     "packageName": "ThirdReality Zigbee Drivers",
     "author": "hubitrep",
-    "version": "0.2.6",
+    "version": "0.2.7",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-10-09",
+    "dateReleased": "2026-11-14",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/thirdreality",
     "drivers": [
         {
@@ -26,7 +26,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/thirdreality/ThirdReality_3RDP01072Z.groovy",
             "required": false,
-            "version": "0.0.4"
+            "version": "0.0.5"
         },
         {
             "id": "b5d7c4be-ebd7-48bd-bc20-afb4f1d26b70",
