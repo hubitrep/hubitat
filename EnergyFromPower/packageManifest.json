@@ -1,9 +1,9 @@
 {
     "packageName": "Energy From Power",
     "author": "hubitrep",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "minimumHEVersion": "2.5.0",
-    "dateReleased": "2026-11-12",
+    "dateReleased": "2026-11-14",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/EnergyFromPower",
     "apps": [
         {
@@ -14,7 +14,7 @@
             "required": true,
             "oauth": false,
             "primary": true,
-            "version": "0.1.1"
+            "version": "0.1.2"
         }
     ],
     "releaseNotes": "0.1.1: Removed the Publish at the end of each hour setting. The total is published at the power reading where it has grown by the step, at its value then, and by an hourly check when the power meter has sent nothing for over an hour."
