@@ -1,12 +1,12 @@
 {
     "packageName": "Android TV Remote",
     "author": "hubitrep",
-    "version": "0.1.19",
+    "version": "0.1.18",
     "minimumHEVersion": "2.5.2",
-    "dateReleased": "2026-11-14",
+    "dateReleased": "2026-10-23",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/androidtv",
     "communityLink": "https://community.hubitat.com/t/release-android-tv-remote-google-tv-and-android-tv-local-control/166822",
-    "releaseNotes": "0.1.19: driver 0.6.1: the pairing attribute returns to paired or unpaired when the connection drops during pairing, including a TV that closes it before pairing starts; volume level is reset when the device is pointed at another TV. Tester 0.7.0: runs on its own page with live progress and on-page prompts; typed text is masked in the report.",
+    "releaseNotes": "0.1.18: driver 0.6.0: KEYCODE_0 to KEYCODE_9 now send the digit keys (codes 7 to 16) instead of codes 0 to 9; sendKey takes every Android key name, such as LAST_CHANNEL or TV_INPUT_HDMI_1.",
     "drivers": [
         {
             "id": "a08d528a-c929-4ad8-8829-eddd1aecd124",
@@ -14,7 +14,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/androidtv/AndroidTVRemote.groovy",
             "required": true,
-            "version": "0.6.1"
+            "version": "0.6.0"
         }
     ],
     "apps": [
@@ -26,7 +26,7 @@
             "required": false,
             "oauth": false,
             "primary": false,
-            "version": "0.7.0"
+            "version": "0.6.1"
         }
     ]
 }
