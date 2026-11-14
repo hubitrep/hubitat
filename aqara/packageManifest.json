@@ -1,9 +1,9 @@
 {
     "packageName": "Aqara Drivers",
     "author": "hubitrep",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-10-18",
+    "dateReleased": "2026-11-14",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/aqara",
     "releaseNotes": "1.0.1: Weather Sensor WSDCGQ11LM driver 2.15.7: pressure is reported at 0.1 hPa resolution, one pressure event per report; pressureDirection no longer flips on the hourly check-in.",
     "drivers": [
@@ -13,7 +13,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/aqara/Aqara_WSDCGQ11LM.groovy",
             "required": false,
-            "version": "2.15.7"
+            "version": "2.15.8"
         },
         {
             "id": "9570473f-5ebd-41cd-abf3-54a67df72fb5",
@@ -21,7 +21,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/aqara/Aqara_MCCGQ11LM.groovy",
             "required": false,
-            "version": "1.1.4"
+            "version": "1.1.5"
         },
         {
             "id": "d628c89d-9375-46a9-b639-e4c142c4cc55",
