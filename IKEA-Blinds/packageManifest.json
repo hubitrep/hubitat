@@ -1,9 +1,9 @@
 {
     "packageName": "IKEA Window Blinds",
     "author": "hubitrep",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-10-17",
+    "dateReleased": "2026-11-14",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/IKEA-Blinds",
     "drivers": [
         {

@@ -6,14 +6,13 @@ import groovy.transform.Field
 import java.util.concurrent.ConcurrentHashMap
 import java.nio.file.NoSuchFileException
 
-@Field static final String CODE_VERSION = "0.9.0"
+@Field static final String CODE_VERSION = "0.9.1"
 @Field static final String UI_FILE = "multi_hub_inventory_ui.html"
 @Field static final String IMPORT_URL_APP = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/MultiHubInventory/MultiHubInventory.groovy"
 @Field static final String IMPORT_URL_WEB = "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/MultiHubInventory/multi_hub_inventory_ui.html"
 // updateSelfFromUrl() first appears in this build; older hubs keep the Apps Code Import link.
 @Field static final String SELF_UPDATE_MIN_FW = "2.5.3.103"
 @Field static volatile String uiVersionCache = null
-@Field static volatile boolean githubVersionRefreshPending = false
 // Peer probe results, keyed "${app.id}:${pid}" -> [baseUrl, reachable]. Kept out of state.peerList so
 // probe callbacks never rewrite the list initialize() owns. In memory only: the result is transient
 // and re-probed by initialize(); after a reboot the config page triggers a fresh probe.
@@ -194,6 +193,13 @@ void uninstalled() {
     TOKEN_CACHE.keySet().removeIf { String k -> k.startsWith(keyPrefix) }
 }
 void updated()   { uiVersionCache = null; runIn(1, 'syncUIForced'); initialize() }
+// True when webBase (scheme://host[:port]) names hubIp exactly. A substring test would take
+// 192.168.1.80 for hub 192.168.1.8 and route the peer's calls to this hub with the peer's token.
+static boolean isSelfHost(String webBase, String hubIp) {
+    if (!hubIp || !webBase) return false
+    String host = webBase.replaceFirst(/^https?:\/\//, '').replaceFirst(/[:\/].*$/, '')
+    return host == hubIp
+}
 void initialize() {
     checkVersion(false)
     if (!state.accessToken) checkOAuth()
@@ -226,7 +232,7 @@ void initialize() {
         // A loopback URL is this hub too; give the browser its LAN address so device links and
         // Hub Mesh source matching (remote URLs carry the LAN IP) resolve.
         if (hubIp && webBase ==~ /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/) webBase = "http://${hubIp}"
-        boolean isSelf = (hubIp && webBase.contains(hubIp))
+        boolean isSelf = isSelfHost(webBase, hubIp)
         String callBase = isSelf ? parsed.baseUrl.replaceFirst(/^https?:\/\/[^\/]+/, 'http://127.0.0.1:8080') : parsed.baseUrl
         if (isSelf) logCfg "peer ${p} is this hub — routing API calls via loopback"
         peerList << [pid: p, label: label, baseUrl: callBase, webBase: webBase, self: isSelf]
@@ -259,26 +265,22 @@ void logsOff() {
     logWarn "Debug/trace logging auto-disabled"
 }
 
-// ===== OAUTH + HELPERS =====
-// Self-enabling OAuth: try createAccessToken(); if OAuth isn't enabled on the app type yet,
-// enable it via the hub loopback API and retry — so no manual code-editor toggle is needed.
+// Creates the access token, turning OAuth on first when the token can't be created yet.
 private boolean checkOAuth() {
     if (state.accessToken) return true
     try {
         createAccessToken()
-        return (state.accessToken != null)
+        return state.accessToken != null
     } catch (Exception e) {
-        logNet "OAuth not enabled yet, attempting auto-enable..."
-        if (autoEnableOAuth()) {
-            try {
-                createAccessToken()
-                return (state.accessToken != null)
-            } catch (Exception e2) {
-                logError "OAuth enabled but token creation failed: ${e2.message}"
-                return false
-            }
+        logDebug "OAuth is not enabled yet, turning it on"
+        if (!autoEnableOAuth()) return false
+        try {
+            createAccessToken()
+            return state.accessToken != null
+        } catch (Exception e2) {
+            logError "OAuth is on but token creation failed: ${e2.message}"
+            return false
         }
-        return false
     }
 }
 
@@ -291,31 +293,30 @@ private String getAppEditorPath() {
     return typeId ? "/app/editor/${typeId}" : null
 }
 
-// Enable OAuth on this app type via the hub loopback API (loopback is trusted, no session needed).
+// Turns OAuth on for this app type through the hub's loopback API, which needs no login.
+// The save needs the code's current version number, read first.
 private boolean autoEnableOAuth() {
-    String typeId = getAppTypeId()
-    if (!typeId) { logError "Could not find app type ID."; return false }
+    String base = "http://127.0.0.1:8080"
+    String typeId = app.getAppTypeId()?.toString()
+    if (!typeId) { logError "Could not find this app's type id"; return false }
     String internalVer = null
     try {
-        httpGet([uri: "http://127.0.0.1:8080", path: "/app/ajax/code", query: [id: typeId], timeout: 15]) { resp ->
+        httpGet([uri: base, path: "/app/ajax/code", query: [id: typeId], timeout: 15]) { resp ->
             internalVer = resp.data?.version?.toString()
         }
-    } catch (e) {
-        logError "Failed to fetch app code version: ${e.message}"
+    } catch (Exception e) {
+        logError "Could not read the app code version: ${e.message}"
         return false
     }
-    if (!internalVer) { logError "Could not determine app code version."; return false }
+    if (!internalVer) { logError "Could not determine the app code version"; return false }
     boolean success = false
     try {
-        httpPost([
-            uri: "http://127.0.0.1:8080",
-            path: "/app/edit/update",
-            requestContentType: "application/x-www-form-urlencoded",
-            body: [id: typeId, version: internalVer, oauthEnabled: "true", _action_update: "Update"],
-            timeout: 20
-        ]) { resp -> success = true }
-    } catch (e) {
-        logError "Failed to enable OAuth: ${e.message}"
+        httpPost([uri: base, path: "/app/edit/update", requestContentType: "application/x-www-form-urlencoded",
+                  body: [id: typeId, version: internalVer, oauthEnabled: "true", _action_update: "Update"], timeout: 20]) { resp ->
+            success = true
+        }
+    } catch (Exception e) {
+        logError "Could not enable OAuth: ${e.message}"
     }
     return success
 }
@@ -382,24 +383,28 @@ private String getUIVersion() {
     return "Unknown"
 }
 
-// Stale-while-revalidate GitHub version check: returns the last-known latest version immediately and
-// kicks off an async refresh at most hourly. The config page compares it against CODE_VERSION.
+// Returns the last version seen on GitHub at once, and asks GitHub again at most once an hour.
+// The hour counts from the request, so a failed request or a lost callback waits for the next
+// hour instead of retrying on every call, and no in-flight flag can stay stuck.
 String checkGithubVersion() {
-    if (now() - (state.lastGithubVersionCheck ?: 0) >= 3600000 && !githubVersionRefreshPending) {
-        githubVersionRefreshPending = true
-        state.lastGithubVersionCheck = now()   // throttle to hourly regardless of outcome
+    long last = (state.lastGithubVersionCheck ?: 0L) as long
+    if (now() - last >= 3600000L) {
+        state.lastGithubVersionCheck = now()
         asynchttpGet('githubVersionCallback', [uri: IMPORT_URL_APP, contentType: "text/plain", timeout: 10])
     }
-    return state.lastGithubVersion
+    return state.lastGithubVersion as String
 }
 
 void githubVersionCallback(resp, data) {
-    githubVersionRefreshPending = false
-    if (resp.hasError() || resp.status != 200) { logNet "GitHub version check failed: HTTP ${resp?.status}"; return }
-    try {
-        java.util.regex.Matcher m = ((resp.data?.toString() ?: '') =~ /CODE_VERSION = "([^"]+)"/)
-        if (m.find()) { state.lastGithubVersion = m.group(1); refreshUpdateLabel() }
-    } catch (Exception e) { logDebug "GitHub version parse failed: ${e.message}" }
+    if (resp.hasError() || resp.status != 200) {
+        logNet "GitHub version check failed: HTTP ${resp.status}"
+        return
+    }
+    java.util.regex.Matcher m = ((resp.data?.toString() ?: '') =~ /CODE_VERSION\s*=\s*"([^"]+)"/)
+    if (m.find()) {
+        state.lastGithubVersion = m.group(1)
+        refreshUpdateLabel()
+    }
 }
 
 // Reflect GitHub update status in the app label so the Apps list shows a green "update available"

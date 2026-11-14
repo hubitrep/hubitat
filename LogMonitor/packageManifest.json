@@ -1,9 +1,9 @@
 {
     "packageName": "Log Monitor",
     "author": "hubitrep",
-    "version": "1.2.3",
+    "version": "1.2.4",
     "minimumHEVersion": "2.5.0",
-    "dateReleased": "2026-11-09",
+    "dateReleased": "2026-11-14",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/LogMonitor",
     "apps": [
         {
@@ -14,7 +14,7 @@
             "required": true,
             "oauth": false,
             "primary": true,
-            "version": "1.2.2"
+            "version": "1.2.3"
         }
     ],
     "drivers": [
@@ -24,7 +24,7 @@
             "namespace": "hubitrep",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/LogMonitor/LogMonitorBridge.groovy",
             "required": true,
-            "version": "1.0.7"
+            "version": "1.0.8"
         }
     ],
     "releaseNotes": "1.2.2: app 1.2.1: lines from several bridges are filtered at the same time instead of one after another, and the log-file rows of a burst are written together; a dedupe window of 0 now turns dedupe off. Bridge 1.0.6: a bridge no longer keeps reconnecting after its socket closes during a reconnect."

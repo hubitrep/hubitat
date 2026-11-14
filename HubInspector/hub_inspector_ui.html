@@ -120,6 +120,7 @@ tr:nth-child(even){background:var(--alt)} tr:hover{background:var(--hover)}
 .b-builtin{background:var(--tag-builtin-bg);color:var(--tag-builtin)} .b-community{background:var(--tag-community-bg);color:var(--tag-community)} .b-platform{background:var(--tag-platform-bg);color:var(--tag-platform)}
 
 .alert{padding:8px 12px;border-radius:6px;margin-bottom:6px;font-size:13px;display:flex;align-items:center;gap:6px}
+.alert.rel-row{display:block}.rel-row a{white-space:nowrap}
 .a-crit{background:var(--crit-bg);border-left:4px solid var(--crit);color:var(--crit)}
 .a-warn{background:var(--warn-bg);border-left:4px solid var(--warn);color:var(--warn-text)}
 .a-ok{background:var(--ok-bg);border-left:4px solid var(--ok);color:var(--ok)}
@@ -213,7 +214,7 @@ table[data-sortable] th[data-dir] .arr{opacity:1}
 </div>
 <script>
 // ===== VERSION =====
-const CODE_VERSION = "6.2.4";
+const CODE_VERSION = "6.3.0";
 
 // ===== CONFIG & MOCKS =====
 const WORKBENCH = false; // Set to true for local development without a hub
@@ -229,7 +230,7 @@ const MOCK_DATA = {
   'reports': {"lastReport":"hub_diagnostics_report_20260328_142000.html","reports":[{"name":"hub_diagnostics_report_20260328_142000.html","size":"498717","date":"1774722000536"}]}
 };
 
-const T='${access_token}', B='${api_base}', REPORT=window.REPORT_DATA||null, cache={};
+const T='${access_token}', B='${api_base}', REPORT=window.REPORT_DATA||null, cache={}, inflight={};
 // Token in the Authorization header, not the URL — keeps it out of hub and proxy
 // access logs. The platform matches the scheme case-sensitively: exactly "Bearer".
 const AUTH=(x)=>Object.assign({'Authorization':'Bearer '+T},x||{});
@@ -245,25 +246,40 @@ const DIAG_TOOL_URL=HUB_ORIGIN?'http://'+new URL(HUB_ORIGIN).hostname+':8081/':'
 let curTab = localStorage.getItem('hub_diag_tab') || 'dashboard';
 let activePerfComp = null;
 let liveIntervalSec = ${live_refresh_sec} || 30;
+let liveTimer = null; // declared here: the Settings save handler runs outside the startup block
 
 // ===== API =====
 const CACHE_TTL_MS=120000;
 async function api(ep){
   if(WORKBENCH && MOCK_DATA[ep]) return MOCK_DATA[ep];
   if(REPORT&&REPORT[ep])return REPORT[ep];
-  // snapshot/view is keyed by a positional index that shifts whenever a
-  // snapshot is created (prepended) or deleted; caching it by position serves
-  // stale data after a mutation (the list cache is dropped, these were not).
+  // snapshot/view is not cached: a view must never serve an entry that was
+  // deleted or replaced since the list cache was filled.
   const noCache=ep.startsWith('snapshot/view');
   const hit=noCache?null:cache[ep];if(hit&&(Date.now()-hit.ts<CACHE_TTL_MS))return hit.d;
-  const r=await fetch(B+'/api/'+ep,{headers:AUTH()});
-  if(!r.ok)throw new Error('API '+r.status);
-  const d=await r.json();
-  if(!noCache)cache[ep]={d,ts:Date.now()};
-  return d
+  // Concurrent callers share one request: startup and the first tab render both ask for 'dashboard',
+  // and the hub builds each payload at full cost. A rejection is not kept, so the next call retries.
+  if(!noCache&&inflight[ep])return inflight[ep];
+  // drop() removes the slot, so a response that was in flight across a write is not cached.
+  const p=apiFetch(ep).then(d=>{if(!noCache&&inflight[ep]===p)cache[ep]={d,ts:Date.now()};return d}).finally(()=>{if(inflight[ep]===p)delete inflight[ep]});
+  if(!noCache)inflight[ep]=p;
+  return p
+}
+// A stalled hub request would otherwise leave its panel on "Loading..." forever.
+const API_TIMEOUT_MS=90000;
+async function apiFetch(ep){
+  const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),API_TIMEOUT_MS);
+  try{
+    const r=await fetch(B+'/api/'+ep,{headers:AUTH(),signal:ac.signal});
+    if(!r.ok)throw new Error('API '+r.status);
+    return await r.json()
+  }catch(e){
+    if(e&&e.name==='AbortError')throw new Error('API timeout');
+    throw e
+  }finally{clearTimeout(tm)}
 }
 async function post(ep,p){if(REPORT)return{};const q=new URLSearchParams(p||{});const qs=q.toString();const r=await fetch(B+'/api/'+ep+(qs?'?'+qs:''),{method:'POST',headers:AUTH()});if(!r.ok)throw new Error('API '+r.status);return r.json()}
-function drop(ep){if(ep)delete cache[ep];else Object.keys(cache).forEach(k=>delete cache[k])}
+function drop(ep){if(ep){delete cache[ep];delete inflight[ep]}else{Object.keys(cache).forEach(k=>delete cache[k]);Object.keys(inflight).forEach(k=>delete inflight[k])}}
 
 // ===== HELPERS =====
 function parseRuntimeMs(v){
@@ -411,7 +427,16 @@ function diffStats(base, comp) {
   }
   return res;
 }
-function h(s){const d=document.createElement('div');d.textContent=s??'';return d.innerHTML}
+// Embeds the report data as a JSON block before </head>. Every "<" in the JSON is written as
+// \u003c so no value can close the script tag or open a comment, whatever its case. The
+// replacement is a function because a string would expand $&, $` and $' inside the data.
+function embedReportData(html,reportData){
+  const dataJson=JSON.stringify(reportData).replace(/</g,'\\u003c');
+  const tag='<script type="application/json" id="report-data">'+dataJson+'<\/script>\n<script>window.REPORT_DATA=JSON.parse(document.getElementById(\'report-data\').textContent);document.documentElement.classList.add(\'report-mode\')<\/script>\n';
+  return html.replace('</head>',()=>tag+'</head>');
+}
+// Escapes quotes too: output is used inside attribute values (data-v, title, href).
+function h(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 // ===== Name obfuscation (UI + forum export) =====
 // Deterministic adjective-noun aliaser. Each distinct real name maps to a stable,
 // unique codename (e.g. "amber-otter"). Dependency-free so it's unit-testable via
@@ -1143,15 +1168,20 @@ function zbAttrName(cluster,attr){const cl=ZB_ATTRS[zb4(cluster)];const k=zb4(at
 function zbAttrLabel(cluster,attr){const cl=ZB_ATTRS[zb4(cluster)];const k=zb4(attr);const n=cl&&cl[k];return n?n+' (0x'+k+')':'0x'+k}
 
 // Format a typed value. valBytes are little-endian hex-string bytes (length prefix already stripped for strings).
+// A truncated or malformed value gives '?': the display rows are rebuilt from the whole recording
+// buffer on every render, so a throw here would break every render until the buffer is cleared.
 function rcZbFormatValue(kind,valBytes){
   if(!valBytes.length)return'';
+  try{return rcZbFormatValueUnsafe(kind,valBytes)}catch(e){return'?'}
+}
+function rcZbFormatValueUnsafe(kind,valBytes){
   let be='';for(let i=valBytes.length-1;i>=0;i--)be+=valBytes[i];   // LE -> BE hex
   switch(kind){
     case'bool':{const v=parseInt(valBytes[0],16);return v===0?'false':v===1?'true':'0x'+valBytes[0]}
     case'uint':return BigInt('0x'+be).toString();
     case'int':{const bits=valBytes.length*8;let v=BigInt('0x'+be);const half=1n<<BigInt(bits-1);if(v>=half)v-=(1n<<BigInt(bits));return v.toString()}
     case'enum':case'map':case'hex':return'0x'+be;
-    case'float':{const buf=new ArrayBuffer(valBytes.length),dv=new DataView(buf);for(let i=0;i<valBytes.length;i++)dv.setUint8(i,parseInt(valBytes[i],16));return String(valBytes.length===4?dv.getFloat32(0,true):dv.getFloat64(0,true))}
+    case'float':{if(valBytes.length!==4&&valBytes.length!==8)return'?';const buf=new ArrayBuffer(valBytes.length),dv=new DataView(buf);for(let i=0;i<valBytes.length;i++)dv.setUint8(i,parseInt(valBytes[i],16));return String(valBytes.length===4?dv.getFloat32(0,true):dv.getFloat64(0,true))}
     case'string':{let s='';for(const x of valBytes){const c=parseInt(x,16);s+=(c>=32&&c<127)?String.fromCharCode(c):'.'}return JSON.stringify(s)}
     case'octstr':return'0x'+valBytes.join('');
     default:return'0x'+be;
@@ -1345,6 +1375,67 @@ function alertRow(a,text){
   const sev=(a.severity==='critical')?'crit':((a.severity==='info')?'info':'warn');const icon=(a.severity==='critical')?'\u26D4':((a.severity==='info')?'\u2139':'\u26A0');
   const body=a.href?'<a class="live-only" href="'+a.href+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">'+h(text)+' ↗</a><span class="report-only">'+h(text)+'</span>':h(text);
   return'<div class="alert a-'+sev+'">'+icon+' '+body+'</div>'}
+// Troubleshooting Center (firmware 2.5.3+): pure summary of the raw payload. null = absent, {available:false} = read failed.
+const REL_T={silentDevice:'Silent device',lowBattery:'Low battery',offline:'Offline',missingIp:'No IP address',networkOffline:'Network offline',matterSubscription:'Matter subscription',hubLoad:'Hub load',hubMemory:'Hub memory',hubScheduler:'Hub scheduler',hubCloud:'Hub cloud connection',hubThread:'Thread network',zwaveRadioUnhealthy:'Z-Wave radio',zigbeeRadioUnhealthy:'Zigbee radio',zwaveFailed:'Failed Z-Wave node',zwaveWeakSignal:'Weak Z-Wave signal',zwaveRouteChanges:'Z-Wave route changes',zigbeeInactive:'Inactive Zigbee device',zigbeeWeakLink:'Weak Zigbee link',missingSubscriptions:'Rule with no trigger',overdueSchedule:'Overdue rule schedule'};
+function relLabel(t){return REL_T[t]||t}
+// Hub Inspector targets per finding type (keys of REL_GO). Hub-page links come first in relLinks; unknown types get those only.
+const REL_GO={dev:['Devices','devices','devTbl',1],rcz:['Radio capture','radio-capture','','zigbee'],rcw:['Radio capture','radio-capture','','zwave'],rcm:['Radio capture','radio-capture','','matter'],nzb:['Zigbee network','network','nc-zigbee'],nzw:['Z-Wave mesh','network','zwMeshTbl',1],nmt:['Matter devices','network','matterDevTbl',1],nmd:['mDNS','network','mdnsTbl'],perf:['Performance','performance'],mem:['Resource history','health','memChart'],cc:['Cloud calls','performance','cloudCallsTbl'],app:['App runtime','performance','appStatsTbl',1]};
+const REL_TG={silentDevice:'dev,rc',lowBattery:'dev',offline:'dev',zigbeeWeakLink:'rcz,nzb',zigbeeInactive:'nzb',zigbeeRadioUnhealthy:'nzb',zwaveFailed:'nzw',zwaveWeakSignal:'nzw',zwaveRouteChanges:'nzw',zwaveRadioUnhealthy:'nzw',matterSubscription:'nmt,rcm',hubThread:'nmt,rcm',missingIp:'nmd',networkOffline:'nmd',hubLoad:'perf,mem',hubMemory:'perf,mem',hubCloud:'cc',missingSubscriptions:'app',overdueSchedule:'app'};
+// One finding -> its links: {label,href} for hub pages, {label,go:{tab,id,q,sub}} for Hub Inspector targets (q=1: filter fills with the name).
+function relLinks(f){const l=[];if(f.deviceId!=null)l.push({label:'Device page',href:'/device/edit/'+f.deviceId});
+  if(f.appId!=null){const a=String(f.appId).replace(/^APP-/,'');l.push({label:'App page',href:'/installedapp/configure/'+a},{label:'App status',href:'/installedapp/status/'+a})}
+  if(/^hub/.test(f.type||''))l.push({label:'Hub alerts',href:'/alerts'});
+  const zw=/z-?wave/i.test(f.proto||'');
+  (REL_TG[f.type]||'').split(',').filter(Boolean).forEach(k=>{if(k==='rc')k=zw?'rcw':'rcz';const g=REL_GO[k];if(g)l.push({label:g[0],go:{tab:g[1],id:g[2]||'',q:g[3]===1?1:0,sub:typeof g[3]==='string'?g[3]:''}})});
+  return l}
+// Name to fill into a filter: the Devices row for a device id (generalFindings carry only a title), else the finding's own name.
+function relName(f,rows){const r=f.deviceId!=null&&(rows||[]).find(x=>x.id==f.deviceId);return r?(r.label||r.name||''):(f.name||'')}
+// Row title: app findings show the app name (hub title as tooltip); with obfuscation on a device finding shows the Devices-tab alias plus its key metric, never the hub's title.
+function relTitle(f,rows){const nm=relName(f,rows);
+  if(f.appId!=null&&f.name)return{text:Obf.nm(f.name),tip:Obf.enabled||f.title===f.name?'':f.title};
+  if(Obf.enabled&&f.deviceId!=null&&nm&&f.title!==f.name)return{text:Obf.nm(nm),meta:f.metric,tip:''};
+  return{text:Obf.nm(f.title),tip:''}}
+function relSub(f){return f.hrs!=null?'last heard '+fago(Date.now()-f.hrs*3600000):f.sub}
+const REL_RCF={zigbee:'rc-zb-f-q',zwave:'rc-zw-f-q',matter:'rc-m-f-q'};
+let relFilled=null;   // the one filter relGo filled last: {el,v}
+function relFill(el,v){el.value=v;el.dispatchEvent(new Event('input'));relFilled={el,v}}
+async function relGo(g,f){
+  // Undo the previous deep link's filter, unless the user has typed in it since.
+  if(relFilled){const o=relFilled;relFilled=null;if(o.el.isConnected&&o.el.value===o.v){o.el.value='';o.el.dispatchEvent(new Event('input'))}}
+  const wait=async id=>{for(let i=0;i<150&&!document.getElementById(id);i++)await new Promise(r=>setTimeout(r,100));return document.getElementById(id)};
+  await go(g.tab);let q='';
+  if(g.sub||g.q){let rows=[];if(f.deviceId!=null){try{rows=(await api('devices')).deviceRows}catch(e){}}q=relName(f,rows)}
+  if(g.sub){await wait('rc-subtabs');const b=document.querySelector('#rc-subtabs [data-rcsub="'+g.sub+'"]');if(b)b.click();
+    // Radio Capture filters match real names; with obfuscation on, leave the box empty rather than show one.
+    const fi=document.getElementById(REL_RCF[g.sub]);if(fi&&q&&!Obf.enabled)relFill(fi,q);return}
+  const fi=g.q&&q?await wait('flt_'+g.id):null;
+  if(fi){const dt=fi.closest('details');if(dt)dt.open=true;relFill(fi,Obf.nm(q))}
+  const el=g.id&&await wait(g.id);if(el)el.scrollIntoView({block:'start'})}
+function relSummary(rel){
+  if(!rel)return null;if(rel.unavailable)return{available:false};
+  const L=x=>Array.isArray(x)?x:[],byType={};let critical=0,warning=0;
+  const all=[...L(rel.findings),...L(rel.generalFindings),...L(rel.appFindings)].map(f=>{
+    const sev=f.severity==='critical'?'critical':'warning',t=f.findingType||'other',m=L(f.metrics).find(x=>x&&!/threshold/i.test(x.label));
+    if(sev==='critical')critical++;else warning++;byType[t]=(byType[t]||0)+1;
+    return{severity:sev,type:t,title:f.title||f.deviceName||f.appName||relLabel(t),sub:f.subtitle||f.protocol||'',hrs:f.hoursSilent,metric:m?m.label+': '+m.value:'',deviceId:f.deviceId,appId:f.appId,name:f.deviceName||f.appName||'',proto:f.protocol||f.subtitle||''}});
+  all.sort((a,b)=>(a.severity==='critical'?0:1)-(b.severity==='critical'?0:1));
+  return{available:true,critical,warning,total:all.length,byType,top:all.slice(0,10),monitored:rel.monitoredDeviceCount,generatedAt:rel.generatedAtMs}}
+let relQ=[];   // Hub Inspector link targets of the rendered card, indexed by data-rg
+function relCard(rs,rows){
+  relQ=[];
+  const lk=hp('/hub/reliability','Open Troubleshooting Center'),n=rs.monitored,dv=n==1?'device':'devices';
+  if(!rs.available)return'<div class="card"><div class="card-h">Troubleshooting Center'+lk+'</div><div class="card-b muted">Could not read the Troubleshooting Center.</div></div>';
+  if(!rs.total)return'<div class="alert a-ok">\u2705 Troubleshooting Center: no findings'+(n!=null?' ('+n+' '+dv+' monitored)':'')+'. '+lk+'</div>';
+  const ty=Object.keys(rs.byType);
+  let o='<div class="card"><div class="card-h">Troubleshooting Center'+lk+'</div><div class="card-b"><div class="metrics">'+mc('Critical',rs.critical,rs.critical?'var(--crit)':'')+mc('Warning',rs.warning,rs.warning?'var(--warn)':'')+(n!=null?mc(n==1?'Device monitored':'Devices monitored',n):'')+'</div>';
+  o+='<div class="muted" style="margin:8px 0">'+(ty.length>1||rs.total>1?h(ty.map(t=>relLabel(t)+': '+rs.byType[t]).join(' \u00b7 '))+'. ':'')+'These are the hub\u2019s own findings and are not counted in Alerts.</div>';
+  o+='<div role="list" aria-label="Troubleshooting Center findings">';
+  rs.top.forEach(f=>{const c=f.severity==='critical',t=relTitle(f,rows),sb=[t.meta,relSub(f)].filter(Boolean).join(' \u00b7 '),an=Obf.nm(relName(f,rows))||Obf.scrub(f.title);
+    o+='<div role="listitem" class="alert rel-row a-'+(c?'crit':'warn')+'">'+(c?'\u26D4':'\u26A0')+' <b>'+h(relLabel(f.type))+':</b> <span'+(t.tip?' title="'+h(t.tip)+'"':'')+'>'+h(t.text)+'</span>'+(sb?' <span class="muted">('+h(Obf.scrub(sb))+')</span>':'')
+      +' '+relLinks(f).map(x=>{const al=' aria-label="'+h(x.label+': '+an)+'"';return x.go?'<a href="#" class="live-only"'+al+' data-rg="'+(relQ.push({g:x.go,f})-1)+'">'+x.label+'</a>':'<a href="'+x.href+'" target="_blank" rel="noopener"'+al+'>'+x.label+' \u2197</a>'}).join(' \u00b7 ')+'</div>'});
+  o+='</div>';if(rs.total>rs.top.length)o+='<div class="muted">and '+(rs.total-rs.top.length)+' more on the hub\u2019s page</div>';
+  if(rs.generatedAt)o+='<div class="muted" style="font-size:12px;margin-top:6px">Scanned '+fdt(rs.generatedAt)+' ('+fago(rs.generatedAt)+')</div>';
+  return o+'</div></div>'}
 function composeAlerts(d){
   const out=[];
   const sig=d.alertSignals||{};
@@ -1433,6 +1524,7 @@ function assembleForumData(r){
     eventStateLimits: hlth.eventStateLimits||null,
     alertSignals: hlth.alertSignals||dash.alertSignals||{},
     firmwareUpdate: hlth.firmwareUpdate||dash.firmwareUpdate||null,
+    reliability: hlth.reliability||null,
     deviceStats: {
       totalDevices: ds.totalDevices, activeDevices: ds.activeDevices,
       inactiveDevices: ds.inactiveDevices, disabledDevices: ds.disabledDevices,
@@ -1519,7 +1611,6 @@ function forumMarkdownBody(d){
   const dnsList=networkConfig.dnsServers||[];
   if(dnsList.length)                 L(`| DNS        | ${dnsList.join(', ')} |`);
   if(networkConfig.hasWiFi&&networkConfig.wifiNetwork) L(`| WiFi SSID  | ${networkConfig.wifiNetwork} |`);
-  if(bothActive){L('');L('**Warning:** Both Ethernet and WiFi are active. This is known to cause connectivity issues. Disable WiFi when using Ethernet.');L('');}
   L(`| CPU Load (5m) | ${resources?Number(resources.cpuAvg5min).toFixed(2):'N/A'} |`);
   L(`| Free OS Memory | ${resources?fmem(resources.freeOSMemory):'N/A'} |`);
   if(resources&&resources.freeJavaMemory)  L(`| Free Java Heap  | ${fmem(resources.freeJavaMemory)} |`);
@@ -1533,6 +1624,8 @@ function forumMarkdownBody(d){
     if(esl.maxEventAgeDays)  L(`| Max Event Age | ${esl.maxEventAgeDays} days |`);
     if(esl.maxStateAgeDays)  L(`| Max State Age | ${esl.maxStateAgeDays} days |`);
   }
+  // After the last table row: a blank line inside the table would end it.
+  if(bothActive){L('');L('**Warning:** Both Ethernet and WiFi are active. This is known to cause connectivity issues. Disable WiFi when using Ethernet.');L('');}
 
   // Alerts
   if(alerts&&alerts.length){
@@ -1541,6 +1634,8 @@ function forumMarkdownBody(d){
   }else{
     L('');L('No active alerts.');
   }
+  const rel=relSummary(d.reliability);
+  if(rel&&rel.total){L('');L(`Troubleshooting Center: ${rel.critical} critical, ${rel.warning} warning (${Object.keys(rel.byType).map(t=>relLabel(t)+' '+rel.byType[t]).join(', ')})`)}
 
   // ── 2. Device Inventory ──
   L('');L('### Devices');
@@ -2510,10 +2605,7 @@ async function rDashboard(){const P='p-dashboard';loading(P);try{
       const pad=n=>String(n).padStart(2,'0');
       const generated=ts.getFullYear()+'-'+pad(ts.getMonth()+1)+'-'+pad(ts.getDate())+' '+pad(ts.getHours())+':'+pad(ts.getMinutes())+':'+pad(ts.getSeconds());
       const reportData={_generated:generated,dashboard,devices,apps,code,network,health,'health/history':healthHistory,performance,snapshots,reports:{lastReport:null,reports:[]}};
-      // Script-close sequences below are written with an escaped slash. The HTML parser ends
-      // a script tag at the first such sequence it sees, even inside JS strings or comments.
-      const dataJson=JSON.stringify(reportData).replace(/<\/script>/g,'<\\/script>');
-      html=html.replace('</head>','<script type="application/json" id="report-data">'+dataJson+'<\/script>\n<script>window.REPORT_DATA=JSON.parse(document.getElementById(\'report-data\').textContent);document.documentElement.classList.add(\'report-mode\')<\/script>\n</head>');
+      html=embedReportData(html,reportData);
       // Strip the hub's runtime placeholders. The placeholder strings are assembled at
       // runtime so the hub's own serve-time substitution does not rewrite them in this source.
       const PH_TOK='$'+'{access_token}', PH_BASE='$'+'{api_base}', PH_REFRESH='$'+'{live_refresh_sec}';
@@ -3187,7 +3279,7 @@ async function rNetwork(){const P='p-network';loading(P);try{
       {l:'Msgs',f:'msgCount',t:'n'},{l:'Msgs/Min',f:'msgPerMin',t:'n',r:rateCell},
       {l:'Driver',f:'driverType',r:r=>r.driverType==='usr'?'<span style="color:var(--link)">User</span>':r.driverType==='sys'?'Built-in':'\u2014'},
       {l:'State',f:'state',r:r=>'<span style="color:'+(r.state==='OK'?'var(--ok)':'var(--crit)')+'">'+h(r.state)+'</span>'}
-    ],d.zwave.mesh.nodes,{sc:0,sd:'asc',collapse:1,collapseLabel:'Z-Wave Mesh Nodes'});
+    ],d.zwave.mesh.nodes,{sc:0,sd:'asc',filter:true,collapse:1,collapseLabel:'Z-Wave Mesh Nodes'});
   // Zigbee neighbor detail table
   if(d.zigbee&&d.zigbee.mesh&&d.zigbee.mesh.neighborDetails&&d.zigbee.mesh.neighborDetails.length)
     tbl('zbNeighborTbl',[
@@ -3228,6 +3320,7 @@ async function rHealth(){const P='p-health';loading(P);try{
   if(allAlerts.length){o+='<div class="card"><div class="card-h">Alerts ('+allAlerts.length+')</div><div class="card-b" role="status" aria-live="polite" aria-label="Active alerts">';
     allAlerts.forEach(a=>{o+=alertRow(a,a.message)});o+='</div></div>'}
   else o+='<div class="alert a-ok">\u2705 No active alerts</div>';
+  const rs=relSummary(d.reliability);if(rs){let rr=[];if(Obf.enabled&&rs.available){try{rr=(await api('devices')).deviceRows}catch(e){}}o+=relCard(rs,rr)}
   // Resources
   if(d.resources){const r=d.resources;
     o+='<div class="card"><div class="card-h">System Resources<span id="res-health-ts" style="float:right;font-size:11px;font-weight:normal;opacity:.6"></span></div><div class="card-b"><div id="res-health">'+renderHealthRes(r,d)+'</div></div></div>'}
@@ -3313,16 +3406,16 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
   // Comparison controls + checkpoint list (top — affects all cards below)
   if(d.checkpointCount>0){
     o+='<div class="live-only"><div class="card"><div class="card-h">Compare Performance</div><div class="card-b">';
-    o+='<div style="margin-bottom:10px"><label>Baseline: </label><select id="selBase"><option value="startup" '+(activePerfComp?.baseIdx==='startup'?'selected':'')+'>Since Startup</option>';
+    o+='<div style="margin-bottom:10px"><label>Baseline: </label><select id="selBase"><option value="startup" '+(activePerfComp?.baseKey==='startup'?'selected':'')+'>Since Startup</option>';
     d.checkpoints.forEach((cp,i)=>{
-      const sel = activePerfComp?.baseIdx == i ? 'selected' : '';
-      o+='<option value="'+i+'" '+sel+'>#'+(i+1)+': '+h(cp.timestamp)+'</option>';
+      const sel = activePerfComp?.baseKey == cp.key ? 'selected' : '';
+      o+='<option value="'+cp.key+'" '+sel+'>#'+(i+1)+': '+h(cp.timestamp)+'</option>';
     });
     o+='</select><label>Compare to: </label><select id="selCp">';
-    o+='<option value="now" '+(activePerfComp?.compIdx==='now'?'selected':'')+'>Now</option>';
+    o+='<option value="now" '+(activePerfComp?.compKey==='now'?'selected':'')+'>Now</option>';
     d.checkpoints.forEach((cp,i)=>{
-      const sel = activePerfComp?.compIdx == i ? 'selected' : '';
-      o+='<option value="'+i+'" '+sel+'>#'+(i+1)+': '+h(cp.timestamp)+'</option>';
+      const sel = activePerfComp?.compKey == cp.key ? 'selected' : '';
+      o+='<option value="'+cp.key+'" '+sel+'>#'+(i+1)+': '+h(cp.timestamp)+'</option>';
     });
     o+='</select><button class="btn btn-p" id="btnCompare" style="margin-left:8px">Compare</button></div>';
     o+='<div id="compResult"></div></div></div></div>';
@@ -3421,12 +3514,12 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
   if(d.checkpoints&&d.checkpoints.length){
     const cpRows=d.checkpoints.map((cp,i)=>({idx:i+1,timestamp:cp.timestamp,
       uptime:cp.stats?.uptime||'N/A',devRuntime:cp.stats?.totalDevicesRuntime||'N/A',appRuntime:cp.stats?.totalAppsRuntime||'N/A',
-      temp:cp.temperature!=null?ftemp(cp.temperature):'—',db:cp.databaseSize!=null?cp.databaseSize+' MB':'—',_idx:i}));
+      temp:cp.temperature!=null?ftemp(cp.temperature):'—',db:cp.databaseSize!=null?cp.databaseSize+' MB':'—',_idx:i,_key:cp.key}));
     tbl('cpTbl',[
       {l:'#',f:'idx',t:'n'},{l:'Timestamp',f:'timestamp'},{l:'Uptime',f:'uptime'},
       {l:'Dev Runtime',f:'devRuntime'},{l:'App Runtime',f:'appRuntime'},
       {l:'Temp',f:'temp'},{l:'DB',f:'db'},
-      {l:'',f:'_idx',r:r=>'<button class="btn btn-d btn-s" title="Delete" onclick="delCp('+r._idx+')">\u{1F5D1}</button>'}
+      {l:'',f:'_idx',r:r=>'<button class="btn btn-d btn-s" title="Delete" onclick="delCp('+r._key+')">\u{1F5D1}</button>'}
     ],cpRows,{sc:0,sd:'asc'})}
 
   // CPU by device type chart — v5.20.0 (R-7 B2): id→type map now ships in /api/performance
@@ -3491,9 +3584,9 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
   const btnComp=document.getElementById('btnCompare');
   if(btnComp)btnComp.onclick=async()=>{btnComp.disabled=true;btnComp.textContent='Comparing...';
     const b=document.getElementById('selBase').value,c=document.getElementById('selCp').value;
-    // Validate temporal order when both sides are checkpoint indices
+    // Validate temporal order when both sides are checkpoints (the option value is the timestampMs key)
     if(b!=='startup'&&c!=='now'){
-      const bTs=d.checkpoints[parseInt(b)]?.timestampMs,cTs=d.checkpoints[parseInt(c)]?.timestampMs;
+      const bTs=Number(b),cTs=Number(c);
       if(bTs!=null&&cTs!=null&&bTs>=cTs){
         document.getElementById('compResult').innerHTML='<div class="alert a-warn">Baseline must be older than the comparison point. Swap the selections.</div>';
         btnComp.disabled=false;btnComp.textContent='Compare';return;}}
@@ -3503,8 +3596,8 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
         // Startup baseline arrives as null + baselineMode:"startup"; synthesize the zeroed mirror client-side.
         const baseStats = r.baselineStats || (r.baselineMode==='startup' ? zeroBaseline(r.checkpointStats) : null);
         activePerfComp = {
-          baseIdx: b === 'startup' ? 'startup' : parseInt(b),
-          compIdx: c === 'now' ? 'now' : parseInt(c),
+          baseKey: b,
+          compKey: c,
           baselineLabel: r.baselineLabel,
           checkpointLabel: r.checkpointLabel,
           diff: diffStats(baseStats, r.checkpointStats),
@@ -3521,7 +3614,9 @@ async function rPerf(){if(_perfInFlight)return;_perfInFlight=true;const P='p-per
     btnComp.disabled=false;btnComp.textContent='Compare'};
 }catch(e){err(P,e,rPerf)}finally{_perfInFlight=false}}
 
-async function delCp(idx){if(!confirm('Delete performance checkpoint '+(idx+1)+'?'))return;await post('checkpoint/delete','index='+idx);drop('performance');rPerf()}
+// Row label for a confirm text: the timestamp the table row shows, the key when the row is gone.
+function entryLabel(list,key){const r=(list||[]).find(x=>x.key===key);return r?r.timestamp:String(key)}
+async function delCp(key){if(!confirm('Delete performance checkpoint '+entryLabel(((cache['performance']||{}).d||{}).checkpoints,key)+'?'))return;const r=await post('checkpoint/delete','key='+key);drop('performance');if(r&&r.success===false)alert('Delete failed: '+r.error);rPerf()}
 
 function renderComparison(data,elId){
   const el=document.getElementById(elId);if(!el)return;
@@ -3543,15 +3638,15 @@ function renderComparison(data,elId){
 // ===== TAB: SNAPSHOTS =====
 function renderSnapTable(snaps){
   const rows=snaps.map((s,i)=>({idx:i+1,timestamp:s.timestamp,firmware:s.hubInfo?.firmware||'N/A',
-    devices:s.devices.totalDevices,apps:s.apps.totalApps,memory:s.memory!=null?fmem(s.memory):'N/A',_idx:i}));
+    devices:s.devices.totalDevices,apps:s.apps.totalApps,memory:s.memory!=null?fmem(s.memory):'N/A',_idx:i,_key:s.key}));
   tbl('snapTbl',[
-    {l:'#',f:'idx',t:'n'},{l:'Timestamp',f:'timestamp',r:r=>'<a href="#" class="live-only" onclick="viewSnap('+r._idx+');return false">'+h(r.timestamp)+'</a><span class="report-only">'+h(r.timestamp)+'</span>'},{l:'Firmware',f:'firmware'},
+    {l:'#',f:'idx',t:'n'},{l:'Timestamp',f:'timestamp',r:r=>'<a href="#" class="live-only" onclick="viewSnap('+r._key+');return false">'+h(r.timestamp)+'</a><span class="report-only">'+h(r.timestamp)+'</span>'},{l:'Firmware',f:'firmware'},
     {l:'Devices',f:'devices',t:'n'},{l:'Apps',f:'apps',t:'n'},{l:'Memory',f:'memory'},
-    {l:'',f:'_idx',r:r=>'<button class="btn btn-d btn-s" title="Delete" onclick="delSnap('+r._idx+')">\u{1F5D1}</button>'}
+    {l:'',f:'_idx',r:r=>'<button class="btn btn-d btn-s" title="Delete" onclick="delSnap('+r._key+')">\u{1F5D1}</button>'}
   ],rows,{sc:0,sd:'asc'});
 }
 // Open a snapshot from its table row in the View Snapshot card.
-function viewSnap(i){const sel=document.getElementById('selView');if(!sel)return;sel.value=String(i);sel.dispatchEvent(new Event('change'));sel.closest('.card').scrollIntoView({behavior:'smooth'})}
+function viewSnap(key){const sel=document.getElementById('selView');if(!sel)return;sel.value=String(key);sel.dispatchEvent(new Event('change'));sel.closest('.card').scrollIntoView({behavior:'smooth'})}
 async function rSnap(){const P='p-snapshots';loading(P);try{
   const d=await api('snapshots');let o='';
   o+='<div class="actions">';
@@ -3567,14 +3662,14 @@ async function rSnap(){const P='p-snapshots';loading(P);try{
   if(d.snapshotCount>0){
     o+='<div class="live-only"><div class="card"><div class="card-h">View Snapshot</div><div class="card-b">';
     o+='<select id="selView"><option value="">Select a config snapshot...</option>';
-    d.snapshots.forEach((s,i)=>{o+='<option value="'+i+'">'+h(s.timestamp)+' ('+s.devices.totalDevices+' devices, fw '+h(s.hubInfo?.firmware||'?')+')</option>'});
+    d.snapshots.forEach(s=>{o+='<option value="'+s.key+'">'+h(s.timestamp)+' ('+s.devices.totalDevices+' devices, fw '+h(s.hubInfo?.firmware||'?')+')</option>'});
     o+='</select><div id="snapView" style="margin-top:10px"></div></div></div>';
     // Compare
     o+='<div class="card"><div class="card-h">Compare Config Snapshots</div><div class="card-b">';
     o+='<label>Older: </label><select id="selOlder"><option value="">Select...</option>';
-    d.snapshots.forEach((s,i)=>{o+='<option value="'+i+'">'+h(s.timestamp)+'</option>'});
+    d.snapshots.forEach(s=>{o+='<option value="'+s.key+'">'+h(s.timestamp)+'</option>'});
     o+='</select><label style="margin-left:8px">Newer: </label><select id="selNewer"><option value="">Select...</option><option value="now">Now (create new)</option>';
-    d.snapshots.forEach((s,i)=>{o+='<option value="'+i+'">'+h(s.timestamp)+'</option>'});
+    d.snapshots.forEach(s=>{o+='<option value="'+s.key+'">'+h(s.timestamp)+'</option>'});
     o+='</select><button class="btn btn-p" id="btnDiff" style="margin-left:8px">Compare</button>';
     o+='<div id="diffResult" style="margin-top:10px"></div></div></div></div>'}
   document.getElementById(P).innerHTML=o;
@@ -3585,7 +3680,7 @@ async function rSnap(){const P='p-snapshots';loading(P);try{
   if(selView)selView.onchange=async()=>{
     const v=selView.value;if(!v){document.getElementById('snapView').innerHTML='';return}
     document.getElementById('snapView').innerHTML='<div class="loading"><div class="spinner"></div></div>';
-    try{const snap=await api('snapshot/view?index='+v);renderSnapshotView(snap,'snapView')}
+    try{const snap=await api('snapshot/view?key='+v);renderSnapshotView(snap,'snapView')}
     catch(e){document.getElementById('snapView').innerHTML='<div class="alert a-crit">Failed to load snapshot: '+h(e.message)+'</div>'}};
   // Buttons
   const btnSnap=document.getElementById('btnSnap');
@@ -3600,11 +3695,10 @@ async function rSnap(){const P='p-snapshots';loading(P);try{
     btnDiff.disabled=true;btnDiff.textContent='Comparing...';
     document.getElementById('diffResult').innerHTML='<div class="loading"><div class="spinner"></div></div>';
     try{
-    // Fetch older first (its index is stable; if "now" is selected, creating a new snapshot would shift the older index by 1).
-    const olderSnap=await api('snapshot/view?index='+o);
+    const olderSnap=await api('snapshot/view?key='+o);
     let newerSnap;
-    if(n==='now'){const cr=await post('snapshot/create');if(cr&&cr.success===false)throw new Error(cr.error||'Failed to create live snapshot');drop('snapshots');newerSnap=await api('snapshot/view?index=0')}
-    else{newerSnap=await api('snapshot/view?index='+n)}
+    if(n==='now'){const cr=await post('snapshot/create');if(cr&&cr.success===false)throw new Error(cr.error||'Failed to create live snapshot');drop('snapshots');if(cr.key==null)throw new Error('Live snapshot has no key');newerSnap=await api('snapshot/view?key='+cr.key)}
+    else{newerSnap=await api('snapshot/view?key='+n)}
     if(olderSnap.error||newerSnap.error)throw new Error(olderSnap.error||newerSnap.error);
     const r=computeSnapshotDiff(olderSnap,newerSnap);
     renderDiff(r,'diffResult');
@@ -3613,7 +3707,7 @@ async function rSnap(){const P='p-snapshots';loading(P);try{
       api('snapshots').then(fresh=>{
         const hdr=document.getElementById('snapListHdr');
         if(hdr)hdr.textContent='Config Snapshots ('+fresh.snapshotCount+' / '+fresh.maxSnapshots+')';
-        const mkOpts=snaps=>snaps.map((s,i)=>'<option value="'+i+'">'+h(s.timestamp)+'</option>').join('');
+        const mkOpts=snaps=>snaps.map(s=>'<option value="'+s.key+'">'+h(s.timestamp)+'</option>').join('');
         const so=document.getElementById('selOlder');
         if(so)so.innerHTML='<option value="">Select...</option>'+mkOpts(fresh.snapshots);
         const sn=document.getElementById('selNewer');
@@ -3624,7 +3718,7 @@ async function rSnap(){const P='p-snapshots';loading(P);try{
     btnDiff.disabled=false;btnDiff.textContent='Compare'};
 }catch(e){err(P,e,rSnap)}}
 
-async function delSnap(idx){if(!confirm('Delete config snapshot '+(idx+1)+'?'))return;await post('snapshot/delete','index='+idx);drop('snapshots');rSnap()}
+async function delSnap(key){if(!confirm('Delete config snapshot '+entryLabel(((cache['snapshots']||{}).d||{}).snapshots,key)+'?'))return;const r=await post('snapshot/delete','key='+key);drop('snapshots');if(r&&r.success===false)alert('Delete failed: '+r.error);rSnap()}
 
 function renderSnapshotView(s,elId){
   const el=document.getElementById(elId);if(!el)return;let o='';
@@ -3732,9 +3826,10 @@ function computeSnapshotDiff(older, newer){
     networkChanges.zwaveRegion={from:oNet.zwave&&oNet.zwave.region,to:nNet.zwave&&nNet.zwave.region};
   if((oNet.matter&&oNet.matter.enabled)!==(nNet.matter&&nNet.matter.enabled))
     networkChanges.matterEnabled={from:oNet.matter&&oNet.matter.enabled,to:nNet.matter&&nNet.matter.enabled};
-  const peerName=p=>p.name||p.ipAddress;
-  const oPeers=((oNet.hubMesh&&oNet.hubMesh.hubList)||[]).map(peerName);
-  const nPeers=((nNet.hubMesh&&nNet.hubMesh.hubList)||[]).map(peerName);
+  // The stored snapshot keeps peers as {name, ip} under hubMesh.peers (see createSnapshot).
+  const peerName=p=>p.name||p.ip;
+  const oPeers=((oNet.hubMesh&&oNet.hubMesh.peers)||[]).map(peerName);
+  const nPeers=((nNet.hubMesh&&nNet.hubMesh.peers)||[]).map(peerName);
   const oPeerSet=new Set(oPeers),nPeerSet=new Set(nPeers);
   const peersAdded=nPeers.filter(p=>!oPeerSet.has(p));
   const peersRemoved=oPeers.filter(p=>!nPeerSet.has(p));
@@ -4609,12 +4704,37 @@ const RC_SCROLL_SUPPRESS_MS = 80;   // window during which rcTailOnScroll ignore
 // added on top, existing rows unchanged in order (the 1 Hz ingest path). The table HTML is always rebuilt
 // wholesale, so the scroll correction relies on the height delta, not a DOM-level prepend. Any paint that can
 // reorder or drop existing rows (filter change) must pass { repin:true } instead, or the anchor math is wrong.
+// The tail renders only the newest RC_TAIL_MAX_ROWS rows; the recording buffer keeps (and downloads) everything.
+// Each tick used to parse the whole buffer and rebuild one table row per frame, so the cost grew with the capture.
+// Structured Matter parsing windows the source to the newest RC_MATTER_TAIL_LINES lines for the same reason.
+const RC_TAIL_MAX_ROWS=500;
+const RC_MATTER_TAIL_LINES=5000;
+
+// Newest-first rows for a buffer, at most RC_TAIL_MAX_ROWS. pick(line) returns the row or null (filtered out
+// or unparsable). Rows already built for a frame are reused from the previous tick, so a tick parses only the
+// frames that arrived since; key invalidates the reuse when the filter or the decoder changes. Sets z.displayCapped.
+function rcTailCollect(z, src, key, pick){
+  const prev=(z._rowCacheKey===key&&z._rowCache)?z._rowCache:null;
+  const next=new Map(),out=[];
+  for(let i=src.length-1;i>=0;i--){
+    if(out.length>=RC_TAIL_MAX_ROWS){z.displayCapped=true;break}
+    const fr=src[i];
+    let r=prev?prev.get(fr):undefined;
+    if(r===undefined)r=pick(fr.line);
+    if(!r)continue;
+    next.set(fr,r);out.push(r);
+  }
+  if(out.length<RC_TAIL_MAX_ROWS)z.displayCapped=false;
+  z._rowCache=next;z._rowCacheKey=key;
+  return out;
+}
+
 function rcTailPaint(cfg, opt){
   opt=opt||{};
   const z=cfg.z;
   const live=document.getElementById(cfg.liveId);if(!live)return;
   const n=z.displayBuf.length,u=cfg.unit||'frame';
-  const headerHtml='Live tail ('+n+' '+u+(n===1?'':'s')+') '
+  const headerHtml='Live tail ('+n+' '+u+(n===1?'':'s')+(z.displayCapped?', newest shown':'')+') '
     +'<span style="font-weight:normal;font-size:12px;opacity:.7">— click a row to expand; top is live, scroll down for history</span>';
   let tbl=document.getElementById(cfg.tblId);
   if(!tbl){
@@ -4677,15 +4797,11 @@ function rcTailJumpToLive(cfg){
 
 function rcZbRenderTail(opt){
   const z=RC.zigbee;
-  // Rebuild displayBuf from the entire recording buffer (filter-respecting). Newest first.
-  // Buffer accumulates without cap — the visible area is constrained by max-height + overflow-y on the wrapper.
+  // Rebuild displayBuf from the newest frames of the recording buffer (filter-respecting), newest first,
+  // at most RC_TAIL_MAX_ROWS rows. The buffer itself is uncapped by count; download still has every frame.
   const src=z.buf?z.buf.frames:[];
   const filters=z.filters;
-  z.displayBuf=[];
-  for(let i=src.length-1;i>=0;i--){
-    if(!rcZbFrameMatchesFilter(src[i].line,filters))continue;
-    const r=rcZbFrameToRow(src[i].line);if(r)z.displayBuf.push(r);
-  }
+  z.displayBuf=rcTailCollect(z,src,JSON.stringify(filters),line=>rcZbFrameMatchesFilter(line,filters)?rcZbFrameToRow(line):null);
   // If the selected row scrolled out (e.g., ring overflow dropped it), deselect.
   if(z.selectedRaw&&!z.displayBuf.some(r=>r._raw===z.selectedRaw))z.selectedRaw=null;
   rcTailPaint({liveId:'rc-zb-live',tblId:'rc-zb-tail-tbl',z:z,rowsHtml:rcZbRenderTailHtml(z.displayBuf,z.selectedRaw)},opt);
@@ -5031,15 +5147,13 @@ function rcZwRawFrameToRow(text){
 
 function rcZwRenderTail(opt){
   const z=RC.zwave;
-  // Rebuild displayBuf from the full recording buffer, newest first.
+  // Rebuild displayBuf from the newest frames of the recording buffer, newest first, at most RC_TAIL_MAX_ROWS rows.
   const src=z.buf?z.buf.frames:[];
   const filters=z.filters;
-  z.displayBuf=[];
-  for(let i=src.length-1;i>=0;i--){
-    const r=rcZwFrameToRow(src[i].line);if(!r)continue;
-    if(!rcZwRowMatchesFilter(r,filters))continue;
-    z.displayBuf.push(r);
-  }
+  const stack=z.stack||RC.zwaveStack||'unknown';
+  z.displayBuf=rcTailCollect(z,src,stack+'|'+JSON.stringify(filters),line=>{
+    const r=rcZwFrameToRow(line);return(r&&rcZwRowMatchesFilter(r,filters))?r:null;
+  });
   if(z.selectedRaw&&!z.displayBuf.some(r=>r._raw===z.selectedRaw))z.selectedRaw=null;
   rcTailPaint({liveId:'rc-zw-live',tblId:'rc-zw-tail-tbl',z:z,rowsHtml:rcZwRenderTailHtml(z.displayBuf,z.selectedRaw,z.stack)},opt);
 }
@@ -5888,7 +6002,8 @@ function rcMatterRenderTail(opt){
   if(m.viewMode==='raw'){
     // Newest-first to match the sibling sub-tabs.
     const lines=[];
-    for(let i=src.length-1;i>=0;i--)lines.push(src[i].line);
+    for(let i=src.length-1;i>=0&&lines.length<RC_TAIL_MAX_ROWS;i--)lines.push(src[i].line);
+    m.displayCapped=src.length>RC_TAIL_MAX_ROWS;
     // Update displayBuf to the (filtered) lines for pin-baseline arithmetic.
     m.displayBuf = lines;
     rcTailPaint({liveId:'rc-m-live',tblId:'rc-m-tail-tbl',unit:'line',z:m,rowsHtml:rcMatterRenderRawHtml(lines)},opt);
@@ -5896,7 +6011,8 @@ function rcMatterRenderTail(opt){
   }
   // Structured: group lines into entries, then map → rows. Buffer is line-ordered (oldest first),
   // so we group in-order and reverse the resulting entries to put newest first.
-  const rawLines=src.map(f=>f.line);
+  const winFrom=Math.max(0,src.length-RC_MATTER_TAIL_LINES);
+  const rawLines=src.slice(winFrom).map(f=>f.line);
   const entries=groupChipByExchange(rawLines);
   // Component-set maintenance (drives the filter dropdown).
   const compSet=new Set();
@@ -5913,7 +6029,9 @@ function rcMatterRenderTail(opt){
   // Apply filters before mapping → cheaper.
   const fComp=m.filters.component, fOp=m.filters.op, f=m.filters;
   const rows=[];
+  m.displayCapped=false;
   for(let i=entries.length-1;i>=0;i--){
+    if(rows.length>=RC_TAIL_MAX_ROWS){m.displayCapped=true;break}
     const e=entries[i];
     if(fComp && e.component !== fComp)continue;
     const newRows=rcMatterFrameToRow(e);
@@ -6000,8 +6118,9 @@ function go(t){
   document.querySelectorAll('.tab').forEach(e=>e.classList.toggle('active',e.dataset.tab===t));
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='p-'+t));
   const p=document.getElementById('p-'+t);
-  if(!p.children.length||p.querySelector('.loading')||p.querySelector('.err'))R[t]();
+  return(!p.children.length||p.querySelector('.loading')||p.querySelector('.err'))?R[t]():Promise.resolve();
 }
+document.getElementById('p-health').addEventListener('click',e=>{const a=e.target.closest('a[data-rg]');if(!a)return;e.preventDefault();const q=relQ[+a.dataset.rg];if(q)relGo(q.g,q.f)});
 document.getElementById('tabs').addEventListener('click',e=>{if(e.target.dataset.tab)go(e.target.dataset.tab)});
 
 async function refreshLive(){
@@ -6527,7 +6646,7 @@ const _inAuditMode = new URLSearchParams(window.location.search).has('audit');
 if (_inAuditMode) {
   renderAuditPage();
 } else {
-  let liveTimer=setInterval(refreshLive,liveIntervalSec*1000);
+  liveTimer=setInterval(refreshLive,liveIntervalSec*1000);
   document.addEventListener('visibilitychange',()=>{
     clearInterval(liveTimer);
     if(!document.hidden)liveTimer=setInterval(refreshLive,liveIntervalSec*1000)

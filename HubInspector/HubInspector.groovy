@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String CODE_VERSION = "6.2.4"
+@Field static final String CODE_VERSION = "6.3.0"
 
 // API endpoint paths (all relative to HUB_BASE)
 @Field static final String HUB_BASE = "http://127.0.0.1:8080"
@@ -34,6 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final String RUNTIME_STATS_PATH = "/logs/json"
 @Field static final String CLOUD_CALLS_PATH = "/logs/cloudCalls/json"   // 2.5.2.129+, 404 before
 @Field static final String CLOUD_CALLS_MIN_FW = "2.5.2.129"
+@Field static final String RELIABILITY_PATH = "/hub/reliability/checkins"   // 2.5.3+, 404 before
+@Field static final String RELIABILITY_MIN_FW = "2.5.3.104"
 @Field static final String DATABASE_SIZE_PATH = "/hub/advanced/databaseSize"
 @Field static final String INTERNAL_TEMP_PATH = "/hub/advanced/internalTempCelsius"
 @Field static final String ZIGBEE_CHILD_ROUTE_PATH = "/hub/zigbee/getChildAndRouteInfo"
@@ -81,6 +83,7 @@ import java.util.concurrent.atomic.AtomicInteger
 // updateSelfFromUrl() first appears in this build; older hubs keep the Apps Code Import link.
 @Field static final String SELF_UPDATE_MIN_FW = "2.5.3.103"
 @Field static final long   FW_UPDATE_CACHE_TTL_MS = 3600_000L
+@Field static final long   FW_UPDATE_FAIL_TTL_MS = 300_000L   // a failed firmware check is not repeated on every load
 
 // ===== Device Usage Audit constants =====
 @Field static final String FULL_JSON_PATH_PREFIX = "/device/fullJson/"
@@ -184,6 +187,9 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final long       HUB_LIST_CACHE_TTL_MS = 120_000L
 @Field static final long       HUB_DATA_CACHE_TTL_MS = 30_000L
 @Field static final long       SYSTEM_RESOURCES_CACHE_TTL_MS = 10_000L
+// /logs/json is the most expensive read the app makes. Tab loads (Network, Apps, Performance)
+// share one build per window; checkpoints and Compare -> Now read it fresh and refresh the slot.
+@Field static final long       RUNTIME_STATS_CACHE_TTL_MS = 30_000L
 // apiLive polls every 30s by default and fans out to 5 hub HTTP calls. The slow-changing ones
 // (temperature, databaseSize, cpuInfo, loadThreshold) carry longer TTLs to spare the hub.
 // cpuInfo also carries the 1-minute load average, so it stays on the 60 s tier.
@@ -202,7 +208,8 @@ import java.util.concurrent.atomic.AtomicInteger
 
 // Unified session-scoped TTL cache (Tier 2 — see ARCHITECTURE.md "Caching Strategy").
 // Key → [data: Object, at: Long]. Wiped on reboot/code push; cleared wholesale in updated().
-// Fetch closures MUST return null (not an empty map) on failure so misses are never cached.
+// Fetch closures MUST return null (not an empty map) on failure so misses are never cached
+// (one deliberate exception: fetchReliability, which caches its failure marker).
 @Field static final ConcurrentHashMap<String, Map> TTL_CACHE = new ConcurrentHashMap<>()
 
 private Object cachedFetch(String key, long ttlMs, Closure fetch) {
@@ -222,12 +229,6 @@ private void cachePut(String key, Object data) {
     if (data != null) TTL_CACHE[key] = [data: data, at: now()]
 }
 
-// Start time (epoch ms) of the in-flight GitHub version request, 0 when none. The request counts
-// as pending only for GITHUB_VERSION_PENDING_MS (2x its timeout), so a callback that never arrives
-// can't block version checks until the next push or reboot.
-@Field static volatile long githubVersionRefreshStartedMs = 0L
-@Field static final int    GITHUB_VERSION_TIMEOUT_S = 10
-@Field static final long   GITHUB_VERSION_PENDING_MS = 20_000L   // 2x GITHUB_VERSION_TIMEOUT_S
 // Green badge appended to the app label (visible in the Apps list) when a newer release is
 // published on GitHub. UPDATE_BADGE_RE strips any prior badge so re-applying is idempotent. The
 // span tags are optional and the match repeats so it also clears remnants when the "Assign a name"
@@ -640,34 +641,27 @@ Map serveUI() {
     }
 }
 
-// Returns the last-known GitHub version immediately (stale-while-revalidate).
-// State-backed so the cached value survives reboots; asynchttpGet handles the refresh.
+// Returns the last version seen on GitHub at once, and asks GitHub again at most once an hour.
+// The hour counts from the request, so a failed request or a lost callback waits for the next
+// hour instead of retrying on every call, and no in-flight flag can stay stuck.
 String checkGithubVersion() {
-    long lastCheck = state.lastGithubVersionCheck ?: 0
-    long t = now()
-    if (t - lastCheck >= 3600000 && t - githubVersionRefreshStartedMs >= GITHUB_VERSION_PENDING_MS) {
-        githubVersionRefreshStartedMs = t
-        asynchttpGet('githubVersionCallback', [uri: IMPORT_URL_APP, contentType: "text/plain", timeout: GITHUB_VERSION_TIMEOUT_S])
+    long last = (state.lastGithubVersionCheck ?: 0L) as long
+    if (now() - last >= 3600000L) {
+        state.lastGithubVersionCheck = now()
+        asynchttpGet('githubVersionCallback', [uri: IMPORT_URL_APP, contentType: "text/plain", timeout: 10])
     }
-    return state.lastGithubVersion
+    return state.lastGithubVersion as String
 }
 
 void githubVersionCallback(resp, data) {
-    githubVersionRefreshStartedMs = 0L
     if (resp.hasError() || resp.status != 200) {
         logNet "GitHub version check failed: HTTP ${resp.status}"
         return
     }
-    try {
-        String text = resp.data ?: ""
-        java.util.regex.Matcher m = text =~ /CODE_VERSION\s*=\s*"([^"]+)"/
-        if (m.find()) {
-            state.lastGithubVersion = m.group(1)
-            state.lastGithubVersionCheck = now()
-            refreshUpdateLabel()
-        }
-    } catch (Exception e) {
-        logNet "GitHub version callback error: ${e.message}"
+    java.util.regex.Matcher m = ((resp.data?.toString() ?: '') =~ /CODE_VERSION\s*=\s*"([^"]+)"/)
+    if (m.find()) {
+        state.lastGithubVersion = m.group(1)
+        refreshUpdateLabel()
     }
 }
 
@@ -957,9 +951,8 @@ Map apiPerformanceCompare() {
         // Will build zero baseline after resolving checkpoint
         baselineLabel = "Startup (0:00:00)"
     } else {
-        if (!baseline?.isInteger()) return jsonResponse([success: false, error: "Invalid baseline index"])
-        int bIdx = baseline.toInteger()
-        if (bIdx < 0 || bIdx >= idx.size()) return jsonResponse([success: false, error: "Invalid baseline index"])
+        int bIdx = findEntryIndexByKey(idx, baseline)
+        if (bIdx < 0) return jsonResponse([success: false, error: "Unknown baseline checkpoint"])
         Map bCp = loadCheckpointDetail(idx[bIdx].detailFile as String)
         if (!bCp) return jsonResponse([success: false, error: "Baseline detail file missing"])
         baselineStats = bCp.stats + [resources: bCp.resources, radioStats: bCp.radioStats, timestampMs: bCp.timestampMs, temperature: bCp.temperature, databaseSize: bCp.databaseSize]
@@ -968,7 +961,7 @@ Map apiPerformanceCompare() {
 
     // Resolve checkpoint
     if (checkpoint == "now") {
-        Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+        Map statsWrap = fetchRuntimeStats(true)
         if (!statsWrap.ok) return jsonResponse([success: false, error: "Unable to fetch current runtime stats"])
         checkpointStats = statsWrap.data
         Map currentResources = fetchSystemResources()
@@ -987,9 +980,8 @@ Map apiPerformanceCompare() {
         checkpointStats.timestampMs = now()
         checkpointLabel = "Now (${new Date().format('yyyy-MM-dd HH:mm:ss')})"
     } else {
-        if (!checkpoint?.isInteger()) return jsonResponse([success: false, error: "Invalid checkpoint index"])
-        int cIdx = checkpoint.toInteger()
-        if (cIdx < 0 || cIdx >= idx.size()) return jsonResponse([success: false, error: "Invalid checkpoint index"])
+        int cIdx = findEntryIndexByKey(idx, checkpoint)
+        if (cIdx < 0) return jsonResponse([success: false, error: "Unknown checkpoint"])
         Map cCp = loadCheckpointDetail(idx[cIdx].detailFile as String)
         if (!cCp) return jsonResponse([success: false, error: "Checkpoint detail file missing"])
         checkpointStats = cCp.stats + [resources: cCp.resources, radioStats: cCp.radioStats, timestampMs: cCp.timestampMs, temperature: cCp.temperature, databaseSize: cCp.databaseSize]
@@ -1030,11 +1022,9 @@ Map apiSnapshots() {
 
 Map apiSnapshotView() {
     checkVersion()
-    String idxStr = params.index ?: "-1"
-    if (!idxStr.isInteger()) return jsonResponse([error: "Invalid snapshot index"])
-    int idx = idxStr.toInteger()
     List snapshots = loadSnapshots()
-    if (idx < 0 || idx >= snapshots.size()) return jsonResponse([error: "Invalid snapshot index"])
+    int idx = findEntryIndexByKey(snapshots, params.key)
+    if (idx < 0) return jsonResponse([error: "Unknown snapshot key"])
     Map snap = snapshots[idx]
 
     Map snapNet = snap.network ?: [:]
@@ -1096,16 +1086,13 @@ Map apiCreateSnapshot() {
         logWarn "apiCreateSnapshot: live snapshot did not persist (newest timestampMs unchanged) — creation failed"
         return jsonResponse([success: false, error: "Failed to create live snapshot — check hub logs", snapshotCount: snapshots?.size() ?: 0])
     }
-    return jsonResponse([success: true, snapshotCount: snapshots.size()])
+    return jsonResponse([success: true, snapshotCount: snapshots.size(), key: newestMs])
 }
 
 Map apiDeleteSnapshot() {
     checkVersion()
-    String idxStr = params.index ?: "-1"
-    if (!idxStr.isInteger()) return jsonResponse([success: false, error: "Invalid index"])
-    int idx = idxStr.toInteger()
-    if (idx < 0) return jsonResponse([success: false, error: "Invalid index"])
-    deleteSnapshot(idx)
+    String err = deleteSnapshot(params.key)
+    if (err) return jsonResponse([success: false, error: err])
     return jsonResponse([success: true])
 }
 
@@ -1117,11 +1104,8 @@ Map apiCreateCheckpoint() {
 
 Map apiDeleteCheckpoint() {
     checkVersion()
-    String idxStr = params.index ?: "-1"
-    if (!idxStr.isInteger()) return jsonResponse([success: false, error: "Invalid index"])
-    int idx = idxStr.toInteger()
-    if (idx < 0) return jsonResponse([success: false, error: "Invalid index"])
-    deleteCheckpoint(idx)
+    String err = deleteCheckpoint(params.key)
+    if (err) return jsonResponse([success: false, error: err])
     return jsonResponse([success: true])
 }
 
@@ -1177,13 +1161,21 @@ Map apiSaveReport() {
     String filename = (body.filename ?: "") as String
     String html = (body.html ?: "") as String
     if (!filename || !html) return jsonResponse([success: false, error: "filename and html are required"])
-    if (!filename.endsWith('.html')) return jsonResponse([success: false, error: "filename must end with .html"])
-    if (filename.contains('/') || filename.contains('..')) return jsonResponse([success: false, error: "invalid filename"])
+    String nameError = reportSaveError(filename, html)
+    if (nameError) return jsonResponse([success: false, error: nameError])
 
     writeFile(filename, html)
     state.lastReportFile = filename
     logInfo "Report saved: ${filename} (${html.length().intdiv(1024)} KB)"
     return jsonResponse([success: true, filename: filename])
+}
+
+// Only the report name the SPA generates is accepted, so this route cannot overwrite the UI file or
+// another app's .html in File Manager. The size cap (a report is about 500 KB) guards the quota.
+static String reportSaveError(String filename, String html) {
+    if (!(filename ==~ /^hub_diagnostics_report_[0-9]{8}_[0-9]{6}\.html$/)) return "invalid filename"
+    if (html.length() > 5_000_000) return "report too large"
+    return null
 }
 
 Map apiGetSettings() {
@@ -1373,7 +1365,7 @@ Map getAppsData() {
 
 Map getNetworkData(Map shared = [:]) {
     Map networkData = analyzeNetwork()
-    Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+    Map statsWrap = fetchRuntimeStats()
     Map statsRaw = statsWrap.ok ? statsWrap.data : null
     Map stats = statsRaw
     Integer uptimeSeconds = stats ? parseUptime(stats.uptime as String) : null
@@ -1484,12 +1476,13 @@ Map getHealthData(Map shared = [:]) {
         backups: fetchBackups(),
         loadThreshold: fetchExcessiveLoadThreshold(),
         cpuInfo: fetchCpuInfo(),
-        events: fetchHubEvents()
+        events: fetchHubEvents(),
+        reliability: fetchReliability()
     ]
 }
 
 Map getPerformanceData(Map shared = [:]) {
-    Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+    Map statsWrap = fetchRuntimeStats()
     Map stats = statsWrap.ok ? statsWrap.data : null
 
     Map resources = (shared.resources as Map) ?: fetchSystemResources()
@@ -1552,7 +1545,7 @@ Map getPerformanceData(Map shared = [:]) {
         appParentTypeById: appParentTypeById,  // B2: id → parent label for CPU-by-app-type chart
         checkpointCount: indexEntries.size(),
         maxCheckpoints: (settings.maxCheckpoints ?: 10) as int,
-        checkpoints: indexEntries,
+        checkpoints: indexEntries.collect { Map c -> c + [key: c.timestampMs] },
         savedComparison: loadPerformanceComparisonPayload(),
         cloudCalls: fetchCloudCalls(),
         cloudHourly: loadHourly().findAll { List r -> r.size() > 6 }.collect { List r -> [r[0], r[6]] }
@@ -1565,7 +1558,7 @@ Map getSnapshotsData() {
         snapshotCount: snapshots?.size() ?: 0,
         maxSnapshots: (settings.maxSnapshots ?: 10) as int,
         snapshots: (snapshots ?: []).collect { Map snap -> [
-            timestamp: snap.timestamp, hubInfo: snap.hubInfo,
+            key: snap.timestampMs, timestamp: snap.timestamp, hubInfo: snap.hubInfo,
             devices: [totalDevices: snap.devices?.totalDevices ?: 0, activeDevices: snap.devices?.activeDevices ?: 0,
                       inactiveDevices: snap.devices?.inactiveDevices ?: 0, disabledDevices: snap.devices?.disabledDevices ?: 0],
             apps: [totalApps: snap.apps?.totalApps ?: 0, builtInApps: snap.apps?.builtInApps ?: 0, userApps: snap.apps?.userApps ?: 0],
@@ -1608,7 +1601,8 @@ Map getAlertSignals(Map shared = [:]) {
     // Dashboard/Health loads never pay a cold 8s fetch more than once per window.
     // state.cachedZwaveSignals persists the last computed signals across reboots.
     Map zwRaw = (Map) cachedFetch('zwaveDetails', RADIO_CACHE_TTL_MS) {
-        Map zwWrap = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 8)
+        // No retry: this runs on every Dashboard/Health build, and a retry doubles the worst case to 16 s.
+        Map zwWrap = hubMapRequest(ZWAVE_DETAILS_PATH, "Z-Wave details", 8, false)
         return (zwWrap.ok && zwWrap.data) ? zwWrap.data : null
     }
     Map zwSignals = zwRaw ? computeZwaveSignals(zwRaw) : ((state.cachedZwaveSignals as Map) ?: [:])
@@ -1691,6 +1685,18 @@ Map apiStats() {
  */
 private Object hubRequest(String path, String name, String type = "json", int timeout = 30) {
     return hubRequestInternal(path, name, type, timeout, true)
+}
+
+// /logs/json through the TTL slot. fresh = true skips the read but still refreshes the slot.
+// Callers add keys to the returned map, so the slot keeps its own shallow copy and hands out another.
+private Map fetchRuntimeStats(boolean fresh = false) {
+    if (!fresh) {
+        Object hit = cachePeek('runtimeStats', RUNTIME_STATS_CACHE_TTL_MS)
+        if (hit != null) return [ok: true, data: new LinkedHashMap((Map) hit), error: null]
+    }
+    Map wrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+    if (wrap.ok && wrap.data) cachePut('runtimeStats', new LinkedHashMap((Map) wrap.data))
+    return wrap
 }
 
 private Map hubMapRequest(String path, String name, int timeout = 30, boolean allowRetry = true) {
@@ -1928,8 +1934,18 @@ List tempSamples() {
 }
 
 List loadHourly() {
-    Object data = readFile(HOURLY_FILE)
-    return (data instanceof List) ? (List) data : []
+    return loadHourlyChecked() ?: []
+}
+
+// The stored rollup rows, [] when the file is absent, null when it exists but cannot be read.
+// A caller that writes the file back must stop on null: a replacement built from nothing would
+// overwrite up to 30 days of rows.
+List loadHourlyChecked() {
+    Map r = readFileResult(HOURLY_FILE)
+    if (r.status == 'content' && r.data instanceof List) return (List) r.data
+    if (r.status == 'absent') return []
+    logWarn "Hourly rollup file ${HOURLY_FILE} exists but cannot be read (${r.reason ?: 'not a list'}); leaving it untouched"
+    return null
 }
 
 void sampleTemperature() {
@@ -1956,14 +1972,32 @@ void onTempSample(resp, data) {
     rollupHours(next, ms)
 }
 
+// True when completed hours are unwritten and no write was started in the current hour.
+// doneMs is the start of the last hour written; it moves only once the file write has landed,
+// so a lost callback or a failed write is made up for at the next hour. One attempt per hour
+// keeps a file that stays unreadable from being retried at every 5-minute sample.
+static boolean rollupDue(Long doneMs, Long attemptMs, long nowMs) {
+    long hourStart = nowMs.intdiv(3_600_000L) * 3_600_000L
+    if (doneMs != null && doneMs + 3_600_000L >= hourStart) return false
+    return attemptMs == null || attemptMs < hourStart
+}
+
+// The rows not yet in the file: those for hours after doneMs. Guards against a late callback
+// from an earlier attempt appending the same hours twice.
+static List rowsAfter(List rows, Long doneMs) {
+    if (doneMs == null) return rows ?: []
+    return (rows ?: []).findAll { Object r -> (((List) r)[0] as long) > doneMs }
+}
+
 // Append rows for completed hours not yet written. Hours whose samples were lost to a reboot
 // or push get no temperature; a partly sampled hour carries its real sample count.
 private void rollupHours(List samples, long nowMs) {
     long hourStart = nowMs.intdiv(3_600_000L) * 3_600_000L
     long lastHour = hourStart - 3_600_000L
     Long done = state.hourlyDoneMs as Long           // start of the last hour written
+    if (!rollupDue(done, state.hourlyTryMs as Long, nowMs)) return
+    state.hourlyTryMs = nowMs
     long fromMs = done != null ? done + 3_600_000L : 0L
-    if (fromMs >= hourStart) return
     Map<Long, List> byHour = [:]
     samples.each { List smp ->
         long ts = smp[0] as long
@@ -1973,14 +2007,13 @@ private void rollupHours(List samples, long nowMs) {
             byHour[h] << (smp[1] as BigDecimal)
         }
     }
-    state.hourlyDoneMs = lastHour
     if (!byHour.containsKey(lastHour)) byHour[lastHour] = []
     List rows = byHour.keySet().sort().collect { Long h ->
         List v = byHour[h]
         v ? [h, v.min(), (v.sum() / v.size()).setScale(1, BigDecimal.ROUND_HALF_UP), v.max(), v.size(), null]
           : [h, null, null, null, 0, null]
     }
-    asynchttpGet('onHourlyDbSize', [uri: HUB_BASE, path: DATABASE_SIZE_PATH, contentType: "text/plain", timeout: 10], [rows: rows])
+    asynchttpGet('onHourlyDbSize', [uri: HUB_BASE, path: DATABASE_SIZE_PATH, contentType: "text/plain", timeout: 10], [rows: rows, doneMs: lastHour])
 }
 
 // The database size goes on the last (just completed) hour's row.
@@ -1988,9 +2021,11 @@ void onHourlyDbSize(resp, data) {
     List rows = (List) data.rows
     try { rows[-1][5] = asyncText(resp, "database size")?.toInteger() } catch (Exception e) { }
     addCloudCalls(rows)
-    List all = new ArrayList(loadHourly()) + rows
+    List stored = loadHourlyChecked()
+    if (stored == null) return
+    List all = new ArrayList(stored) + rowsAfter(rows, state.hourlyDoneMs as Long)
     if (all.size() > HOURLY_KEEP) all = all.subList(all.size() - HOURLY_KEEP, all.size())
-    writeFile(HOURLY_FILE, groovy.json.JsonOutput.toJson(all))
+    if (writeFile(HOURLY_FILE, groovy.json.JsonOutput.toJson(all))) state.hourlyDoneMs = data.doneMs as Long
 }
 
 // The hub's cloud-call buckets reset at boot, so each completed hour's counts are copied into
@@ -2017,6 +2052,19 @@ Map fetchCloudCalls(long ttlMs = CLOUD_CALLS_CACHE_TTL_MS) {
     return (Map) cachedFetch('cloudCalls', ttlMs) {
         Map w = hubMapRequest(CLOUD_CALLS_PATH, "cloud calls", 10)
         return (w.ok && w.data) ? w.data : null
+    }
+}
+
+// /hub/reliability/checkins: Troubleshooting Center findings, raw plus generatedAtMs. Each call runs a hub scan, hence the 5 min cache.
+// null before 2.5.3.104 (no request: the 404 would logError per load); [unavailable: true] when the read failed.
+// The failure is cached too, unlike other slots: one logged error per TTL instead of one per Health load.
+Map fetchReliability() {
+    if (!isVersionAtLeast(getHubFirmwareVersion(), RELIABILITY_MIN_FW)) return null
+    return (Map) cachedFetch('reliability', LOAD_THRESHOLD_CACHE_TTL_MS) {
+        Map w = hubMapRequest(RELIABILITY_PATH, "reliability center", 15, false)
+        if (!w.ok || !w.data) return [unavailable: true]
+        w.data.generatedAtMs = parseDate(w.data.generatedAt)
+        return w.data
     }
 }
 
@@ -2246,9 +2294,12 @@ String fetchNtpServer() {
 }
 
 Map fetchFirmwareUpdate() {
-    Map fu = (Map) cachedFetch('fwUpdate', FW_UPDATE_CACHE_TTL_MS) {
+    Map fu = cachePeek('fwUpdateFailed', FW_UPDATE_FAIL_TTL_MS) ? null : (Map) cachedFetch('fwUpdate', FW_UPDATE_CACHE_TTL_MS) {
         Map wrap = hubMapRequest(FIRMWARE_UPDATE_PATH, "firmware update check", 15)
-        if (!wrap.ok) return null
+        if (!wrap.ok) {
+            cachePut('fwUpdateFailed', [failed: true])
+            return null
+        }
         Map resp = wrap.data
         return [currentVersion: getHubFirmwareVersion(), availableVersion: resp.version,
                 updateAvailable: resp.upgrade == true, status: resp.status,
@@ -2762,7 +2813,7 @@ Map analyzeDevices(boolean deep = true, Map prefetchedDevices = null) {
 
     if (!respWrap.ok || !respWrap.data.devices) {
         logWarn "Failed to fetch devices list"
-        return getEmptyDeviceStats()
+        return getEmptyDeviceStats() + [fetchFailed: true]   // createSnapshot refuses to store this
     }
 
     // includeParentContext=true (not just deep) so child devices carry their parentDeviceId in
@@ -2958,7 +3009,7 @@ Map analyzeApps(boolean deep = true) {
     List appsList = (fetchAppsList()?.apps ?: []) as List
 
     if (!appsList) {
-        return deep ? getEmptyAppStats() : [totalApps: 0, userApps: 0, builtInApps: 0]
+        return deep ? (getEmptyAppStats() + [fetchFailed: true]) : [totalApps: 0, userApps: 0, builtInApps: 0]
     }
 
     // Quick mode: just count apps
@@ -3069,7 +3120,7 @@ Map analyzeApps(boolean deep = true) {
     // Identify platform-only apps by comparing runtime stats against appsList
     stats.platformApps = []
     try {
-        Map runtimeWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+        Map runtimeWrap = fetchRuntimeStats()
         if (runtimeWrap.ok) {
             List runtimeAppStats = runtimeWrap.data.appStats ?: []
             stats.runtimeTotalApps = runtimeAppStats.size()
@@ -3518,7 +3569,13 @@ Map enrichDevices(Map uncertainDevices, Set communityAppTypeNames = [] as Set) {
         if (!cachedEntry) {
             try {
                 Map fullWrap = hubMapRequest("${FULL_JSON_PATH_PREFIX}${idStr}", "device ${idStr} full", 10)
-                Map full = fullWrap.ok ? fullWrap.data : null
+                // A failed read must not be cached: a "device" entry is trusted forever, so an empty one
+                // would pin a device with a parent app to "no integration" until the cache is cleared.
+                if (!fullWrap.ok) {
+                    logNet "enrichDevices: device ${idStr} full read failed, not cached"
+                    return
+                }
+                Map full = fullWrap.data
                 Map parentApp = full ? (Map) full.parentApp : null
                 if (parentApp) {
                     Map appTypeObj = parentApp.appType instanceof Map ? (Map) parentApp.appType : [:]
@@ -3797,7 +3854,7 @@ private Map fetchRadioForCheckpoint(boolean zwave) {
 private boolean doCreateCheckpoint() {
     logInfo "Creating perf checkpoint..."
 
-    Map statsWrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
+    Map statsWrap = fetchRuntimeStats(true)
     if (!statsWrap.ok) {
         logError "Failed to fetch current stats"
         return false
@@ -3835,14 +3892,34 @@ private boolean doCreateCheckpoint() {
     return true
 }
 
-void deleteCheckpoint(int index) {
-    List idx = new ArrayList(loadCheckpointIndex())
-    if (index >= 0 && index < idx.size()) {
-        Map dropped = (Map) idx.remove(index)
-        logInfo "Deleting checkpoint at index ${index} (${dropped?.timestamp})"
-        deleteCheckpointDetail(dropped?.detailFile as String)
-        saveCheckpointIndex(idx)
+// Position of the entry whose timestampMs equals key, or -1 when key is not a whole number or
+// matches nothing. Entries are addressed by this key, never by list position: both lists are
+// prepended to, so a position read earlier points at a different entry by the time it is used.
+static int findEntryIndexByKey(List entries, Object key) {
+    if (entries == null || key == null) return -1
+    String s = key.toString().trim()
+    if (!(s ==~ /\d{1,18}/)) return -1
+    long k = Long.parseLong(s)
+    for (int i = 0; i < entries.size(); i++) {
+        Object e = entries[i]
+        Object ts = (e instanceof Map) ? ((Map) e).get('timestampMs') : null
+        if (ts instanceof Number && ((Number) ts).longValue() == k) return i
     }
+    return -1
+}
+
+// Returns an error message, or null when the checkpoint was deleted.
+String deleteCheckpoint(Object key) {
+    List loaded = loadCheckpointIndexChecked()
+    if (loaded == null) return "Checkpoint index cannot be read; nothing deleted"
+    List idx = new ArrayList(loaded)
+    int pos = findEntryIndexByKey(idx, key)
+    if (pos < 0) return "Unknown checkpoint key"
+    Map dropped = (Map) idx.remove(pos)
+    logInfo "Deleting checkpoint ${dropped?.timestamp}"
+    deleteCheckpointDetail(dropped?.detailFile as String)
+    saveCheckpointIndex(idx)
+    return null
 }
 
 void clearAllCheckpoints() {
@@ -3898,11 +3975,21 @@ void createSnapshot() {
     Map hvRaw = fetchHubVariables() ?: [:]
     List hvSlim = ((hvRaw.variables as List) ?: []).collect { Map v -> [name: v.name, type: v.type] }
 
+    // A failed devices or apps fetch returns an empty result; storing it would show every device as
+    // removed in the diff and push the oldest good snapshot out at the retention cap.
+    Map snapDevices = analyzeDevices()
+    Map snapApps = analyzeApps()
+    String fetchFailure = snapshotFetchFailure(snapDevices, snapApps)
+    if (fetchFailure) {
+        logWarn "Config snapshot not saved: ${fetchFailure}"
+        return
+    }
+
     Map snapshot = [
         timestamp: new Date().format("yyyy-MM-dd HH:mm:ss"),
         timestampMs: now(),
-        devices: analyzeDevices(),
-        apps: analyzeApps(),
+        devices: snapDevices,
+        apps: snapApps,
         network: analyzeNetwork(true),
         systemHealth: analyzeSystemHealth(),
         hubInfo: getHubInfo(),
@@ -3926,7 +4013,12 @@ void createSnapshot() {
         }
     }
 
-    List snapshots = loadSnapshots()
+    List loadedSnaps = loadSnapshotsChecked()
+    if (loadedSnaps == null) {
+        logWarn "Config snapshot not saved: the stored snapshots cannot be read"
+        return
+    }
+    List snapshots = new ArrayList(loadedSnaps)
     snapshots.add(0, snapshot)
 
     int maxSnap = (settings.maxSnapshots ?: 10) as int
@@ -3938,13 +4030,17 @@ void createSnapshot() {
     logInfo "Config snapshot created successfully (${snapshots.size()} total)"
 }
 
-void deleteSnapshot(int index) {
-    List snapshots = loadSnapshots()
-    if (index >= 0 && index < snapshots.size()) {
-        logInfo "Deleting snapshot at index ${index}"
-        snapshots.remove(index)
-        saveSnapshots(snapshots)
-    }
+// Returns an error message, or null when the snapshot was deleted.
+String deleteSnapshot(Object key) {
+    List loaded = loadSnapshotsChecked()
+    if (loaded == null) return "Stored snapshots cannot be read; nothing deleted"
+    List snapshots = new ArrayList(loaded)
+    int pos = findEntryIndexByKey(snapshots, key)
+    if (pos < 0) return "Unknown snapshot key"
+    logInfo "Deleting snapshot ${snapshots[pos]?.timestamp}"
+    snapshots.remove(pos)
+    saveSnapshots(snapshots)
+    return null
 }
 
 void clearAllSnapshots() {
@@ -3992,6 +4088,13 @@ Map getHubInfo(Map prefetchedHubData = null) {
         info.hardware = hubData.model
     }
     return info
+}
+
+// Names the input whose fetch failed (analyzeDevices / analyzeApps flag it), or null when both are real.
+static String snapshotFetchFailure(Map devices, Map apps) {
+    if (devices == null || devices.fetchFailed == true) return "the devices list could not be read"
+    if (apps == null || apps.fetchFailed == true) return "the apps list could not be read"
+    return null
 }
 
 Map getEmptyDeviceStats() {
@@ -4099,51 +4202,30 @@ private String getAppEditorPath() {
     return typeId ? "/app/editor/${typeId}" : null
 }
 
+// Turns OAuth on for this app type through the hub's loopback API, which needs no login.
+// The save needs the code's current version number, read first.
 private boolean autoEnableOAuth() {
-    logCfg "Attempting to auto-enable OAuth for Hub Inspector..."
-
-    // 1. Find our app type ID
-    String typeId = getAppTypeId()
-    if (!typeId) {
-        logError "Could not determine this app's type id."
-        return false
-    }
-
-    // 2. Get the internal version from the app code JSON endpoint
+    String base = "http://127.0.0.1:8080"
+    String typeId = app.getAppTypeId()?.toString()
+    if (!typeId) { logError "Could not find this app's type id"; return false }
     String internalVer = null
     try {
-        httpGet([uri: HUB_BASE, path: "/app/ajax/code", query: [id: typeId], timeout: 15]) { resp ->
+        httpGet([uri: base, path: "/app/ajax/code", query: [id: typeId], timeout: 15]) { resp ->
             internalVer = resp.data?.version?.toString()
         }
     } catch (Exception e) {
-        logError "Failed to fetch app code version: ${e.message}"
+        logError "Could not read the app code version: ${e.message}"
         return false
     }
-    if (!internalVer) {
-        logError "Could not determine app code version."
-        return false
-    }
-
-    // 3. POST to enable OAuth
+    if (!internalVer) { logError "Could not determine the app code version"; return false }
     boolean success = false
     try {
-        httpPost([
-            uri: HUB_BASE,
-            path: "/app/edit/update",
-            requestContentType: "application/x-www-form-urlencoded",
-            body: [
-                id: typeId,
-                version: internalVer,
-                oauthEnabled: "true",
-                _action_update: "Update"
-            ],
-            timeout: 20
-        ]) { resp ->
+        httpPost([uri: base, path: "/app/edit/update", requestContentType: "application/x-www-form-urlencoded",
+                  body: [id: typeId, version: internalVer, oauthEnabled: "true", _action_update: "Update"], timeout: 20]) { resp ->
             success = true
-            logCfg "Successfully auto-enabled OAuth."
         }
     } catch (Exception e) {
-        logError "Failed to enable OAuth: ${e.message}"
+        logError "Could not enable OAuth: ${e.message}"
     }
     return success
 }
@@ -4179,20 +4261,27 @@ private String detailFilenameFor(Object timestampMs) {
 }
 
 List loadCheckpointIndex() {
+    return loadCheckpointIndexChecked() ?: []
+}
+
+// The stored index, [] when the file is absent (a new empty one is started), null when it exists
+// but cannot be read. A caller that writes the index back must stop on null: writing a fresh []
+// would orphan every checkpoint detail file.
+List loadCheckpointIndexChecked() {
     // Defensive copies both ways (N4): callers can never mutate the shared cache.
     if (cachedCheckpointIndex != null) return new ArrayList(cachedCheckpointIndex)
-    try {
-        List data = (List) readFile(CHECKPOINT_INDEX_FILE)
-        if (data != null) {
-            cachedCheckpointIndex = data
-            return new ArrayList(cachedCheckpointIndex)
-        }
-    } catch (Exception e) {
-        logDebug "No existing checkpoint index: ${e.message}"
+    Map r = readFileResult(CHECKPOINT_INDEX_FILE)
+    if (r.status == 'content' && r.data instanceof List) {
+        cachedCheckpointIndex = (List) r.data
+        return new ArrayList(cachedCheckpointIndex)
     }
-    // First run or index missing: start an empty index file so later reads short-circuit.
-    saveCheckpointIndex([])
-    return []
+    if (r.status == 'absent') {
+        // First run or index missing: start an empty index file so later reads short-circuit.
+        saveCheckpointIndex([])
+        return []
+    }
+    logWarn "Checkpoint index ${CHECKPOINT_INDEX_FILE} exists but cannot be read (${r.reason ?: 'not a list'}); leaving it untouched"
+    return null
 }
 
 void saveCheckpointIndex(List index) {
@@ -4251,7 +4340,12 @@ void persistCheckpoint(Map cp) {
         return
     }
     Map indexEntry = buildCheckpointIndexEntry(cp, filename)
-    List idx = new ArrayList(loadCheckpointIndex())
+    List loadedIdx = loadCheckpointIndexChecked()
+    if (loadedIdx == null) {
+        logWarn "persistCheckpoint: checkpoint index unreadable; index unchanged (detail file ${filename} kept)"
+        return
+    }
+    List idx = new ArrayList(loadedIdx)
     idx.add(0, indexEntry)
     int cap = (settings.maxCheckpoints ?: 10) as int
     if (idx.size() > cap) {
@@ -4263,13 +4357,18 @@ void persistCheckpoint(Map cp) {
 }
 
 List loadSnapshots() {
-    try {
-        List data = (List) readFile(SNAPSHOTS_FILE)
-        if (data) return data
-    } catch (Exception e) {
-        logDebug "No existing snapshots: ${e.message}"
-    }
-    return []
+    return loadSnapshotsChecked() ?: []
+}
+
+// The stored snapshots, [] when the file is absent, null when it exists but cannot be read.
+// A caller that writes the list back must stop on null: a list rebuilt from nothing would
+// overwrite every stored snapshot.
+List loadSnapshotsChecked() {
+    Map r = readFileResult(SNAPSHOTS_FILE)
+    if (r.status == 'content' && r.data instanceof List) return (List) r.data
+    if (r.status == 'absent') return []
+    logWarn "Snapshots file ${SNAPSHOTS_FILE} exists but cannot be read (${r.reason ?: 'not a list'}); leaving it untouched"
+    return null
 }
 
 void saveSnapshots(List snapshots) {
@@ -4303,17 +4402,43 @@ String loadUITemplate() {
     return null
 }
 
-def readFile(String fileName) {
+// Read-only callers use readFile (null on any failure). Callers that write the file back use
+// readFileResult and must not write unless the status is content or absent.
+Object readFile(String fileName) {
+    Map r = readFileResult(fileName)
+    if (r.status == 'failed') logDebug "Error reading ${fileName}: ${r.reason}"
+    return r.data
+}
+
+// Classifies a File Manager read: content (bytes), absent (nothing to lose, start a new file) or
+// failed (the file may exist, so nothing may be written over it). errorClass is the exception's
+// toString() (class name first), null when the call returned. A missing file throws
+// NoSuchFileException or returns null depending on firmware. An empty file counts as absent:
+// it holds nothing to lose and cannot be told from a missing one.
+static String classifyFileRead(String errorClass, byte[] bytes) {
+    if (errorClass == null) return (bytes == null || bytes.length == 0) ? "absent" : "content"
+    return errorClass.startsWith("java.nio.file.NoSuchFileException") ? "absent" : "failed"
+}
+
+// [status: content|absent|failed, data: parsed JSON (content only), reason: String (failed only)].
+// Bytes that are not valid JSON are failed, not absent: the file exists and may be repairable.
+Map readFileResult(String fileName) {
+    byte[] bytes = null
+    String errorClass = null
+    String errorMsg = null
     try {
-        byte[] fileData = downloadHubFile(fileName)
-        if (fileData) {
-            String jsonString = new String(fileData, "UTF-8")
-            return new groovy.json.JsonSlurper().parseText(jsonString)
-        }
+        bytes = downloadHubFile(fileName)
     } catch (Exception e) {
-        logDebug "File not found or error reading ${fileName}: ${e.message}"
+        errorClass = e.toString()
+        errorMsg = e.message
     }
-    return null
+    String status = classifyFileRead(errorClass, bytes)
+    if (status != "content") return [status: status, data: null, reason: errorMsg ?: errorClass]
+    try {
+        return [status: "content", data: new groovy.json.JsonSlurper().parseText(new String(bytes, "UTF-8")), reason: null]
+    } catch (Exception e) {
+        return [status: "failed", data: null, reason: "unparsable: ${e.message}"]
+    }
 }
 
 // ===== DEVICE USAGE AUDIT =====
@@ -5032,11 +5157,14 @@ Map apiAuditData() {
     return jsonResponse(lastAuditResult)
 }
 
-void writeFile(String fileName, String data) {
+// True when the file was written.
+boolean writeFile(String fileName, String data) {
     try {
         uploadHubFile(fileName, data.getBytes("UTF-8"))
+        return true
     } catch (Exception e) {
         logError "Error writing file ${fileName}: ${e}"
+        return false
     }
 }
 
@@ -5091,26 +5219,28 @@ void logsOff() {
 void uninstalled() {
     unschedule()
     unsubscribe()
+    // Per-instance entries in the type-wide static maps would otherwise stay until a reboot or code push.
+    TEMP_SAMPLES.remove(app.id as Long)
+    CONTROLLER_TYPE_CACHE.remove(app.id as Long)
     logCfg "Hub Inspector uninstalled"
 }
 
+// Creates the access token, turning OAuth on first when the token can't be created yet.
 private boolean checkOAuth() {
     if (state.accessToken) return true
     try {
         createAccessToken()
-        return (state.accessToken != null)
+        return state.accessToken != null
     } catch (Exception e) {
-        logNet "OAuth not enabled yet, attempting auto-enable..."
-        if (autoEnableOAuth()) {
-            try {
-                createAccessToken()
-                return (state.accessToken != null)
-            } catch (Exception e2) {
-                logError "OAuth enabled but token creation failed: ${e2.message}"
-                return false
-            }
+        logDebug "OAuth is not enabled yet, turning it on"
+        if (!autoEnableOAuth()) return false
+        try {
+            createAccessToken()
+            return state.accessToken != null
+        } catch (Exception e2) {
+            logError "OAuth is on but token creation failed: ${e2.message}"
+            return false
         }
-        return false
     }
 }
 
