@@ -24,8 +24,8 @@ definition(
     description: "Heater switches driven by a Virtual Thermostat and temperature sensors, with alerts",
     category: "Convenience",
     singleThreaded: true,
-    importUrl: "https://raw.githubusercontent.com/hubitrep/hubitat/main/SwitchedHeaterThermostat/SwitchedHeaterThermostat.groovy",
-    documentationLink: "https://github.com/hubitrep/hubitat/tree/main/SwitchedHeaterThermostat",
+    importUrl: "https://raw.githubusercontent.com/hubitrep/hubitat/main/hvac/SwitchedHeaterThermostat.groovy",
+    documentationLink: "https://github.com/hubitrep/hubitat/tree/main/hvac",
     iconUrl: "", iconX2Url: ""
 )
 
