@@ -27,5 +27,5 @@
             "version": "1.0.8"
         }
     ],
-    "releaseNotes": "1.2.2: app 1.2.1: lines from several bridges are filtered at the same time instead of one after another, and the log-file rows of a burst are written together; a dedupe window of 0 now turns dedupe off. Bridge 1.0.6: a bridge no longer keeps reconnecting after its socket closes during a reconnect."
+    "releaseNotes": "1.2.4: app 1.2.3: a filter pattern that is not a valid regex is not saved; the page says why and keeps the previous pattern, and a filter saved earlier with a bad pattern is skipped without stopping the other filters; changing a bridge's hub address reconnects it to the new hub; logs from a remote hub are no longer dropped or sent to notification devices when their app or device id matches one on this hub. Bridge 1.0.8: logs from a remote hub are no longer dropped when their device id matches the bridge's."
 }

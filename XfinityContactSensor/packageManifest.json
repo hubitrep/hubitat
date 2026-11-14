@@ -14,5 +14,6 @@
             "required": true,
             "version": "0.1.7"
         }
-    ]
+    ],
+    "releaseNotes": "0.1.7: driver 0.1.7: Battery Reporting Interval is limited to 1 to 18 hours and Temperature Reporting Interval to 60 to 1092 minutes; a value saved earlier outside those ranges is brought into range when reporting is configured."
 }

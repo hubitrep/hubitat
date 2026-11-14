@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.2.4 (beta): Scheduled perf checkpoints no longer fail on a large hub under evening load. Config snapshots no longer record a failed library read as no libraries, so Compare no longer reports every library removed."
+    "releaseNotes": "6.3.0 (beta): Health shows the hub's Troubleshooting Center findings on firmware 2.5.3 and later. Snapshot and checkpoint delete, view and compare act on the entry you picked even when a new one is added while the page is open. A stored snapshot that cannot be read is no longer overwritten, and a failed device or app read is no longer saved as an empty snapshot. Snapshot compare reports Hub Mesh peer changes. Names with quotes display correctly, and saved reports open with any device or app data."
 }
