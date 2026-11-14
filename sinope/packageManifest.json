@@ -5,7 +5,7 @@
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-11-14",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/sinope",
-    "releaseNotes": "1.0.4: switch 0.0.32 and dimmer 0.0.34: deviceTemperature reads correctly below 0 °C; setOnLedIntensity and setOffLedIntensity work for values below 7. Dimmer 0.0.34: setLevel fades over the given duration in seconds. Floor thermostat 0.0.26: an unchanged heating setpoint reports hourly instead of every 5 minutes; a change still reports at once.",
+    "releaseNotes": "1.0.5: floor thermostat 0.0.27: control mode and floor sensor type are written only when set in the driver; otherwise the thermostat keeps its own setting.",
     "drivers": [
         {
             "id": "d23826c0-95fa-4cb4-b8b5-6f7315cc4e08",
