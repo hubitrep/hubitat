@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.3.0 (beta): Health shows the hub's Troubleshooting Center findings on firmware 2.5.3 and later. Snapshot and checkpoint delete, view and compare act on the entry you picked even when a new one is added while the page is open. A stored snapshot that cannot be read is no longer overwritten, and a failed device or app read is no longer saved as an empty snapshot. Snapshot compare reports Hub Mesh peer changes. Names with quotes display correctly, and saved reports open with any device or app data."
+    "releaseNotes": "6.3.2 (beta): New Updates setting turns off every request to GitHub (release check, dashboard page download, Update now). The App Version line says whether it is the latest release. The Apps Code link is shown only where Update now is unavailable or has failed, and the \"UI newer than app\" warnings offer Update now on firmware 2.5.3.103 and later. The scheduled config snapshot runs at 00:23-00:27."
 }
