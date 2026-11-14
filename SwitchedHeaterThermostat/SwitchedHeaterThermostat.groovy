@@ -15,7 +15,7 @@ import com.hubitat.app.DeviceWrapper
 import groovy.json.JsonOutput
 import groovy.transform.Field
 
-@Field static final String CODE_VERSION = "0.1.4"
+@Field static final String CODE_VERSION = "0.1.5"
 
 definition(
     name: "Switched Heater Thermostat",
@@ -100,7 +100,7 @@ Map mainPage() {
         section("Temperature") {
             input "sensors", "capability.temperatureMeasurement", title: "Temperature sensors", multiple: true, required: true
             input "aggregate", "enum", title: "Combine the readings by", options: AGG_OPTS, defaultValue: "average", required: true
-            input "quietAfter", "number", title: "Count a sensor as quiet after at least (minutes; learned gaps can lengthen it)", defaultValue: 120, range: "10..1440"
+            input "quietAfter", "number", title: "Count a sensor as quiet after at least (minutes; learned gaps can lengthen it)", defaultValue: 120, range: "30..1440"
         }
         section("When no sensor reports") {
             input "onSensorFault", "enum", title: "Heaters", options: SENSOR_FAULT_OPTS, defaultValue: "off", required: true, submitOnChange: true
@@ -268,7 +268,7 @@ void retryCheckCb(resp, Map data) {
 
 void checkVersion(boolean reinit = true) {
     if (state.version == CODE_VERSION) return
-    logVer "version ${CODE_VERSION} (was ${state.version})"
+    logVer "New version: ${CODE_VERSION} (was: ${state.version})"
     state.version = CODE_VERSION
     if (reinit) runIn(1, "updated")
 }
@@ -276,6 +276,8 @@ void checkVersion(boolean reinit = true) {
 void startHandler(evt) {
     checkVersion()
     logInfo "hub started"
+    // A keep-alive runIn that fell due while the hub was down is gone and nothing else re-arms it.
+    scheduleKeepAlive()
     checkAll()
 }
 
@@ -739,15 +741,16 @@ Map recordActivity(Map s, Long at, Integer keep) {
     return [last: at, gaps: gaps]
 }
 
-// Twice the second-longest gap: one outage in the history does not stretch the limit. The setting
-// applies while the app learns; a learned limit is never under the setting (a sensor that reports
-// in bursts learns short gaps) nor under the floor.
+// Twice the second-longest gap: one outage in the history does not stretch the limit.
+// The setting and the floor are the minimum, while learning too: event-only sensors
+// (contacts) learn short gaps from bursts.
 Long quietLimitMs(List gaps, Long settingMs, Long floorMs, Integer minGaps) {
-    if (gaps == null || gaps.size() < minGaps) return settingMs
+    Long least = Math.max(settingMs, floorMs)
+    if (gaps == null || gaps.size() < minGaps) return least
     List<Long> sorted = []
     for (Object g : gaps) sorted << (g as Long)
     sorted.sort()
-    return Math.max(Math.max(settingMs, floorMs), 2L * sorted[sorted.size() - 2])
+    return Math.max(least, 2L * sorted[sorted.size() - 2])
 }
 
 boolean isQuiet(Map s, Long now, Long limitMs) {
@@ -934,4 +937,9 @@ void logTrace(String m) { if (traceEnable) log.trace logp('🔬') + m }
 void logInfo (String m) { if (txtEnable != false) log.info  "${app.getLabel()}: ${m}" }
 void logDebug(String m) { if (debugEnable) log.debug "${app.getLabel()}: ${m}" }
 
-void logsOff() { checkVersion(); app.updateSetting("debugEnable", false); app.updateSetting("traceEnable", false); logWarn "debug and trace logging disabled" }
+void logsOff() {
+    checkVersion()
+    app.updateSetting("debugEnable", [value: "false", type: "bool"])
+    app.updateSetting("traceEnable", [value: "false", type: "bool"])
+    logWarn "debug and trace logging disabled"
+}
