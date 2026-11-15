@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.3.2 (beta): New Updates setting turns off every request to GitHub (release check, dashboard page download, Update now). The App Version line says whether it is the latest release. The Apps Code link is shown only where Update now is unavailable or has failed, and the \"UI newer than app\" warnings offer Update now on firmware 2.5.3.103 and later. The scheduled config snapshot runs at 00:23-00:27."
+    "releaseNotes": "6.3.3 (beta): The dashboard loads when opened at any local address of the hub, such as a hostname, https or port 8080, instead of showing Failed to fetch on every tab."
 }
