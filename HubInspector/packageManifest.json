@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.3.3 (beta): The dashboard loads when opened at any local address of the hub, such as a hostname, https or port 8080, instead of showing Failed to fetch on every tab."
+    "releaseNotes": "6.3.4 (beta): The AI and Forum export leaves out the hub's IP address, gateway and DNS addresses, the WiFi name, the NTP server, Hub Mesh peer addresses and the Matter fabric unless the new setting to include them is on; home-network addresses in alert text show as <IP>. The export adds the network access settings (as counts), radio health, backups, File Manager use and user code counts, lists built-in apps as one count, and caps long Z-Wave lists. The Network tab shows the hub's .local name and whether it redirects to the IP address."
 }
