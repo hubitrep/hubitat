@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String CODE_VERSION = "6.3.4"
+@Field static final String CODE_VERSION = "6.4.0"
 
 // API endpoint paths (all relative to HUB_BASE)
 @Field static final String HUB_BASE = "http://127.0.0.1:8080"
@@ -187,6 +187,11 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final int        RUNTIME_STATS_TIMEOUT_S    = 60
 @Field static final long       RADIO_CACHE_TTL_MS = 60_000L
 @Field static final long       HUB_LIST_CACHE_TTL_MS = 120_000L
+// The Dashboard's device counts take a devices list up to this old. /hub2/devicesList is the
+// dashboard's slowest read (about a second and half a megabyte on a large hub), and the SPA's own
+// 2-minute cache means a returning tab would always miss a 2-minute slot. Deep reads (Devices tab,
+// snapshots) keep HUB_LIST_CACHE_TTL_MS and refresh the shared slot.
+@Field static final long       DASHBOARD_DEVICES_MAX_AGE_MS = 300_000L
 @Field static final long       HUB_DATA_CACHE_TTL_MS = 30_000L
 @Field static final long       MDNS_NAME_CACHE_TTL_MS = 600_000L
 @Field static final long       SYSTEM_RESOURCES_CACHE_TTL_MS = 10_000L
@@ -649,7 +654,6 @@ Map serveUI() {
 
         html = html.replace('${access_token}', state.accessToken)
             .replace('${api_base}', fullLocalApiServerUrl)
-            .replace('${live_refresh_sec}', (settings.liveRefreshSec ?: 30).toString())
         return render(status: 200, contentType: 'text/html', data: html)
     } catch (Exception e) {
         logError "Error serving UI: ${e.message}"
@@ -1230,7 +1234,6 @@ Map apiGetSettings() {
         // Addresses and network names in the forum export: off until the user turns it on.
         forumNetworkDetails:     settings.forumNetworkDetails == true,
         aliasSalt:               aliasSalt(),
-        liveRefreshSec:          (settings.liveRefreshSec ?: 30) as int,
         cacheSize:               controllerTypeCache().size()
     ])
 }
@@ -1254,7 +1257,7 @@ Map apiUpdateSettings() {
     Set boolKeys    = ["autoSnapshot", "autoCheckpoint", "debugLogging", "obfuscateForumExport", "forumObfuscate", "forumNetworkDetails"] as Set
     Set numberKeys  = ["maxSnapshots", "maxCheckpoints", "inactivityDays", "lowBatteryThreshold",
                         "chattyDeviceThreshold", "warnMemMb", "critMemMb",
-                        "snapshotInterval", "liveRefreshSec"] as Set
+                        "snapshotInterval"] as Set
     Set decimalKeys = ["warnCpuLoad", "critCpuLoad", "warnTempC", "critTempC"] as Set
     Set enumKeys    = ["checkpointInterval"] as Set
     boolean reschedule = false
@@ -1552,10 +1555,7 @@ Map getPerformanceData(Map shared = [:]) {
         }
     }
 
-    Map devListData = ((Map) cachedFetch('devicesList', HUB_LIST_CACHE_TTL_MS) {
-        Map w = hubMapRequest(DEVICES_LIST_PATH, "devices list (B2 labels)", 15)
-        return (w.ok && w.data) ? w.data : null
-    }) ?: [:]
+    Map devListData = fetchDevicesList(HUB_LIST_CACHE_TTL_MS) ?: [:]
     Map deviceTypeById = [:]
     if (devListData.devices) {
         flattenDeviceEntries(devListData.devices as List).each { Map entry ->
@@ -2848,9 +2848,21 @@ Set<String> zwaveBatteryDeviceIds(List devicesList) {
         .collect { Map n -> n.deviceId.toString() } as Set<String>
 }
 
+// /hub2/devicesList through the shared 'devicesList' slot: a copy younger than maxAgeMs is reused,
+// otherwise a fresh read replaces it. Null on failure, so a miss is never cached.
+private Map fetchDevicesList(long maxAgeMs) {
+    Map hit = (Map) cachePeek('devicesList', maxAgeMs)
+    if (hit != null) return hit
+    Map w = hubMapRequest(DEVICES_LIST_PATH, "devices list")
+    Map data = (w.ok && w.data) ? (Map) w.data : null
+    cachePut('devicesList', data)
+    return data
+}
+
 Map analyzeDevices(boolean deep = true, Map prefetchedDevices = null) {
-    Map respWrap = (prefetchedDevices != null) ? [ok: true, data: prefetchedDevices, error: null]
-                                               : hubMapRequest(DEVICES_LIST_PATH, "devices list")
+    Map listData = (prefetchedDevices != null) ? prefetchedDevices
+                 : fetchDevicesList(deep ? HUB_LIST_CACHE_TTL_MS : DASHBOARD_DEVICES_MAX_AGE_MS)
+    Map respWrap = listData != null ? [ok: true, data: listData, error: null] : [ok: false, data: null, error: "fetch failed"]
 
     if (!respWrap.ok || !respWrap.data.devices) {
         logWarn "Failed to fetch devices list"
@@ -2863,7 +2875,7 @@ Map analyzeDevices(boolean deep = true, Map prefetchedDevices = null) {
 
     long inactivityThresholdMs = now() - ((settings.inactivityDays ?: 7) * ONE_DAY_MS)
     Map appLookup = buildAppLookupMap()
-    Set communityDrivers = buildCommunityDriverSet()
+    Set communityDrivers = buildCommunityDriverSet(deep ? HUB_LIST_CACHE_TTL_MS : DASHBOARD_DEVICES_MAX_AGE_MS)
     // Community app type names (app.name where app.user == true) — fallback in enrichDevices()
     // when the per-device fullJson cache is stale or missing the builtin field.
     Set communityAppTypeNames = appLookup.values()
@@ -3367,10 +3379,14 @@ Map buildAppLookupMap() {
 
 // Fetches community-installed device types and returns a Set of their names.
 // Any device whose type field is NOT in this set uses a built-in Hubitat driver.
-Set buildCommunityDriverSet() {
-    Object resp = hubRequest(DEVICE_TYPES_PATH, "device types", "json", 15)
-    if (!(resp instanceof List)) return [] as Set
-    List types = (List) resp
+Set buildCommunityDriverSet(long maxAgeMs = HUB_LIST_CACHE_TTL_MS) {
+    List types = (List) cachePeek('deviceTypes', maxAgeMs)
+    if (types == null) {
+        Object resp = hubRequest(DEVICE_TYPES_PATH, "device types", "json", 15)
+        types = (resp instanceof List) ? (List) resp : null
+        cachePut('deviceTypes', types)
+    }
+    if (types == null) return [] as Set
     return types.collect { it?.name?.toString() ?: "" }.findAll { it } as Set
 }
 
@@ -5240,6 +5256,8 @@ void updated() {
     // always compared in Celsius, so a later hub scale change can never reinterpret them.
     if (settings.warnTempInput != null) updateDecimalSetting("warnTempC", scaleToC(settings.warnTempInput as BigDecimal))
     if (settings.critTempInput != null) updateDecimalSetting("critTempC", scaleToC(settings.critTempInput as BigDecimal))
+    // 6.4.0 dropped the resource tiles' auto-refresh; remove its interval setting from older installs.
+    if (settings.liveRefreshSec != null) app.removeSetting("liveRefreshSec")
     unsubscribe()
     unschedule()
     // clear session-scoped caches so config/hardware changes take effect immediately
