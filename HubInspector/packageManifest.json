@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.3.4 (beta): The AI and Forum export leaves out the hub's IP address, gateway and DNS addresses, the WiFi name, the NTP server, Hub Mesh peer addresses and the Matter fabric unless the new setting to include them is on; home-network addresses in alert text show as <IP>. The export adds the network access settings (as counts), radio health, backups, File Manager use and user code counts, lists built-in apps as one count, and caps long Z-Wave lists. The Network tab shows the hub's .local name and whether it redirects to the IP address."
+    "releaseNotes": "6.4.0 (beta): Removed the Auto-refresh interval setting and the alert dot on the browser tab icon. The page no longer sends requests to the hub while it sits open. The Resources and System Resources cards show when their values were read, with a Refresh button. The Dashboard's device counts can be up to 5 minutes old."
 }
