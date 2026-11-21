@@ -15,5 +15,5 @@
             "version": "0.1.9"
         }
     ],
-    "releaseNotes": "0.1.7: driver 0.1.7: Battery Reporting Interval is limited to 1 to 18 hours and Temperature Reporting Interval to 60 to 1092 minutes; a value saved earlier outside those ranges is brought into range when reporting is configured."
+    "releaseNotes": "0.1.8: driver 0.1.9: the sensor polls its router every 6 s instead of 2 s; the hourly check-in is answered, and preference changes go out at the next check-in (Configure and pairing send at once); the configuration is sent again when battery reports stop or a new battery is detected; Refresh goes out on the sensor's next message and resends unanswered reads; added the Battery saver (experimental) preference and the rejoinCount attribute; invalid battery and temperature readings are ignored; a temperature calibration offset no longer adds stray decimals."
 }
