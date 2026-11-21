@@ -37,5 +37,5 @@
             "version": "0.1.1"
         }
     ],
-    "releaseNotes": "0.2.8: smart plug 0.0.12: Gen3 plugs get Power Rise Alert, Power Drop Alert and Metering Only Mode settings (plug firmware 1.00.63 or later); Gen3 LED Brightness left empty keeps the plug's own brightness; a press after a preferences save is no longer marked digital."
+    "releaseNotes": "0.2.9: dual plug 0.0.6: per-outlet Power Rise Alert, Power Drop Alert and Metering Only Mode settings (plug firmware 1.00.52 or later); LED Brightness left empty keeps the plug's own brightness; a press after a preferences save is no longer marked digital."
 }
