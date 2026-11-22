@@ -64,7 +64,7 @@ import java.security.Signature
 import java.security.cert.CertificateFactory
 import java.util.concurrent.ConcurrentHashMap
 
-@Field static final String CODE_VERSION = "0.6.0"
+@Field static final String CODE_VERSION = "0.6.1"
 @Field static final int DEBUG_LOG_TIMEOUT = 1800
 @Field static final int PAIRING_PORT = 6467
 @Field static final String MDNS_SERVICE = "_androidtvremote2._tcp"
@@ -153,6 +153,9 @@ import java.util.concurrent.ConcurrentHashMap
 @Field static final Map<Long, Map> RUNTIME = new ConcurrentHashMap<Long, Map>()
 // supported: false once rawSocket.getPeerCertificate() is found missing (firmware before 2.5.3).
 @Field static final Map<String, Boolean> PEER_CERT = new ConcurrentHashMap<String, Boolean>()
+// Decrypted client key by device id, value [ciphertext, plaintext]: decrypt() costs ~350 ms on a
+// C-8 Pro and ~830 ms on a C-7, and every connect and reconnect needs the key.
+@Field static final Map<Long, List<String>> KEY_CACHE = new ConcurrentHashMap<Long, List<String>>()
 
 Map rt() {
     Map r = RUNTIME.get(device.idAsLong)
@@ -167,6 +170,10 @@ Map rt() {
 
 
 // ── Lifecycle ─────────────────────────────────────────────────────────
+
+void uninstalled() {
+    KEY_CACHE.remove(device.idAsLong)
+}
 
 void installed() {
     logDebug "Installed"
@@ -201,6 +208,7 @@ private void applyTvSettings() {
         if (tvIP != state.lastTvIP) {
             state.remove("tvId")
             state.remove("tvName")
+            clearVolumeState()
             state.lastTvIP = tvIP
         }
     } else {
@@ -211,7 +219,9 @@ private void applyTvSettings() {
 // Points the device at this TV. A paired device that switches to another TV forgets the pairing.
 // connect reads tvIP in its own execution, after the setting written here is saved.
 private void takeTv(Map e, String address, boolean pair) {
-    if (state.paired && differentTv(e, state.tvId as String, tvIP as String)) {
+    boolean other = differentTv(e, state.tvId as String, tvIP as String)
+    if (other) clearVolumeState()
+    if (state.paired && other) {
         forgetPairing()
         logInfo "This is a different TV; pair it with Start Pairing"
     }
@@ -227,9 +237,9 @@ void initialize() {
 }
 
 void logsOff() {
-    logWarn "Debug and trace logging turned off"
     device.updateSetting("debugEnable", [value: "false", type: "bool"])
     device.updateSetting("traceEnable", [value: "false", type: "bool"])
+    logWarn "debug and trace logging disabled"
 }
 
 
@@ -329,6 +339,13 @@ private void applyTv(Map e, String address) {
     state.lastTvIP = address
     state.tvId = e.id
     state.tvName = e.name
+}
+
+// Volume trust and level belong to one TV: a box that passes volume over HDMI-CEC must not inherit them.
+private void clearVolumeState() {
+    state.remove("volumeTrusted")
+    state.remove("volumeMax")
+    state.remove("volumeLevel")
 }
 
 private void clearFoundTvs() {
@@ -481,27 +498,35 @@ void submitPairingCode(String code) {
     def cf = CertificateFactory.getInstance("X.509")
     def client = cf.generateCertificate(new ByteArrayInputStream(state.cert.getBytes("US-ASCII"))).publicKey
     def server = cf.generateCertificate(new ByteArrayInputStream(state.tvCert.getBytes("US-ASCII"))).publicKey
-    MessageDigest md = MessageDigest.getInstance("SHA-256")
-    [client.modulus, client.publicExponent, server.modulus, server.publicExponent].each { BigInteger v ->
-        md.update(HexUtils.hexStringToByteArray(evenHex(v.toString(16))))
-    }
-    md.update(HexUtils.hexStringToByteArray(code.substring(2)))
-    byte[] secret = md.digest()
+    byte[] secret = pairingSecret([client.modulus, client.publicExponent, server.modulus, server.publicExponent], code)
     logTrace "pairing hash: client modulus ${client.modulus.bitLength()} bits ${client.modulus.toString(16).take(16)}…, exponent ${client.publicExponent}; " +
              "TV modulus ${server.modulus.bitLength()} bits ${server.modulus.toString(16).take(16)}…, exponent ${server.publicExponent}; " +
-             "digest[0]=${String.format('%02X', secret[0] & 0xFF)} code[0..1]=${code.substring(0, 2)}"
+             "digest[0] ${(secret[0] & 0xFF) == Integer.parseInt(code.substring(0, 2), 16) ? 'matches' : 'does not match'} the code"
     if ((secret[0] & 0xFF) != Integer.parseInt(code.substring(0, 2), 16)) {
-        logWarn "Code ${code} doesn't match; check it and try again"
+        logWarn "The code doesn't match; check it and try again"
         return
     }
     logCmd "Sending pairing secret"
-    sendFrame(outer(pMsg(40, pBytes(1, hexOf(secret)))))
+    // Not traced: this frame is the pairing secret.
+    sendFrame(outer(pMsg(40, pBytes(1, hexOf(secret)))), false)
+}
+
+// SHA-256 over the client modulus and exponent, the TV modulus and exponent (each as even-length hex), then the
+// last four characters of the code. Pure so a test can run it.
+private byte[] pairingSecret(List<BigInteger> numbers, String code) {
+    MessageDigest md = MessageDigest.getInstance("SHA-256")
+    numbers.each { BigInteger v ->
+        md.update(HexUtils.hexStringToByteArray(evenHex(v.toString(16))))
+    }
+    md.update(HexUtils.hexStringToByteArray(code.substring(2)))
+    return md.digest()
 }
 
 void forgetPairing() {
     disconnect()
     state.remove("paired")
     state.remove("tvCert")
+    clearVolumeState()
     sendEvent(name: "pairing", value: "unpaired")
     logCfg "Pairing forgotten; the client certificate is kept"
 }
@@ -583,10 +608,21 @@ void connect() {
     runIn(WATCHDOG_SECONDS, "watchdog")
 }
 
+// What `pairing` becomes when a pairing is cut short, or null when none is open.
+String pairingAfterCut(String pairing, boolean paired) {
+    return pairing in ["pairing", "awaiting code"] ? (paired ? "paired" : "unpaired") : null
+}
+
 void disconnect() {
     unschedule("watchdog")
     unschedule("connect")
     unschedule("repairSearch")
+    // Both pairing timers need mode "pair" or "hello", which is cleared below: without this the attribute stays at
+    // "awaiting code". Not endPairing(): it schedules a connect, and callers decide what comes next.
+    unschedule("pairingTimeout")
+    unschedule("codeTimeout")
+    String cut = pairingAfterCut(device.currentValue("pairing") as String, state.paired as boolean)
+    if (cut) sendEvent(name: "pairing", value: cut)
     closeSocket()
     rt().mode = null
     if (device.currentValue("networkStatus") != "offline") sendEvent(name: "networkStatus", value: "offline")
@@ -938,7 +974,7 @@ void socketDropped() {
         r.powerOffAt = null
         scheduleReconnect()
     }
-    else if (r.droppedMode == "pair") endPairing()
+    else if (r.droppedMode in ["hello", "pair"]) endPairing()   // "hello": a TV that closes the plain socket before sending its certificate
     r.droppedMode = null
 }
 
@@ -980,10 +1016,16 @@ private String clientKey() {
         state.keyEnc = encrypt(state.key as String)
         state.remove("key")
     }
-    if (!state.keyEnc) return null
+    String enc = state.keyEnc as String
+    if (!enc) return null
+    List<String> hit = KEY_CACHE.get(device.idAsLong)
+    if (hit && hit[0] == enc) return hit[1]
     try {
-        return decrypt(state.keyEnc as String)
+        String plain = decrypt(enc)
+        KEY_CACHE.put(device.idAsLong, [enc, plain])
+        return plain
     } catch (e) {
+        KEY_CACHE.remove(device.idAsLong)
         logError "The client key can't be read (${e.message}), as after a hub restore or migration; pair again with Start Pairing"
         ["keyEnc", "cert", "tvCert", "paired"].each { state.remove(it) }
         sendEvent(name: "pairing", value: "unpaired")
@@ -1237,7 +1279,7 @@ private String randomHex(int n) { Random r = new Random(); (1..n).collect { Stri
 
 
 // ── Logging ───────────────────────────────────────────────────────────
-//   ⬇️ Rx  ⬆️ Cmd  🔧 Cfg  🌐 Net  ⏰ Sched  ·  ⚠️ Warn  🛑 Error  🔬 Trace
+//   ⬇️ Rx  ⬆️ Cmd  🔧 Cfg  🌐 Net  ⏰ Sched  📦 Ota  🏷️ Ver  ·  ⚠️ Warn  🛑 Error  🔬 Trace
 private String logp(String e) { "${e} ${device.displayName}: " }
 
 void logRx   (String m) { if (debugEnable) log.debug logp('⬇️') + m }
@@ -1251,3 +1293,5 @@ void logError(String m) { log.error logp('🛑') + m }
 void logTrace(String m) { if (traceEnable) log.trace logp('🔬') + m }
 void logInfo (String m) { if (txtEnable != false) log.info  "${device.displayName}: ${m}" }
 void logDebug(String m) { if (debugEnable) log.debug "${device.displayName}: ${m}" }
+void logOta  (String m) { if (txtEnable != false) log.info  logp('📦') + m }
+void logVer  (String m) { log.warn  logp('🏷️') + m }

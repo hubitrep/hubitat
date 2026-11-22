@@ -1,9 +1,9 @@
 {
     "packageName": "Log Monitor",
     "author": "hubitrep",
-    "version": "1.2.4",
+    "version": "1.2.5",
     "minimumHEVersion": "2.5.0",
-    "dateReleased": "2026-11-14",
+    "dateReleased": "2026-11-22",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/LogMonitor",
     "apps": [
         {
