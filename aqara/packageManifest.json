@@ -5,7 +5,7 @@
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-11-22",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/aqara",
-    "releaseNotes": "1.0.2: Contact Sensor MCCGQ11LM driver 1.1.5: a button press updates battery and batteryVoltage. Weather Sensor WSDCGQ11LM driver 2.15.8: a button press sends pushed.",
+    "releaseNotes": "1.0.4: no change in behaviour.",
     "drivers": [
         {
             "id": "fa5cb20e-378a-4fa1-95cc-db681ca3bb1e",

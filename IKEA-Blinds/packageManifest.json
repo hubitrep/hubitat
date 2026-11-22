@@ -5,6 +5,7 @@
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-11-22",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/IKEA-Blinds",
+    "releaseNotes": "0.1.1: driver 0.1.1: saving preferences while the blind moves no longer leaves windowShade at opening or closing.",
     "drivers": [
         {
             "id": "2c20d4ac-0b81-4329-a2d5-93c985ee523f",

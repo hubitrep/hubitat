@@ -5,7 +5,7 @@
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-11-22",
     "documentationLink": "https://github.com/hubitrep/hubitat/tree/main/sinope",
-    "releaseNotes": "1.0.5: floor thermostat 0.0.27: control mode and floor sensor type are written only when set in the driver; otherwise the thermostat keeps its own setting.",
+    "releaseNotes": "1.0.6: thermostat TH112xZB 0.0.4 and floor thermostat TH13X0ZB 0.0.28: a setpoint sent just before Configure or Save Preferences is still applied.",
     "drivers": [
         {
             "id": "d23826c0-95fa-4cb4-b8b5-6f7315cc4e08",
