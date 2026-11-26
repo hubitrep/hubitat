@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.4.0 (beta): Removed the Auto-refresh interval setting and the alert dot on the browser tab icon. The page no longer sends requests to the hub while it sits open. The Resources and System Resources cards show when their values were read, with a Refresh button. The Dashboard's device counts can be up to 5 minutes old."
+    "releaseNotes": "6.4.1 (beta): AI and Forum export: the Top Devices by CPU and Top Talkers tables have a Driver column."
 }
