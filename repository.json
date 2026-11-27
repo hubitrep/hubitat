@@ -88,7 +88,7 @@
             "name": "HVAC Apps",
             "category": "Control",
             "location": "https://raw.githubusercontent.com/hubitrep/hubitat/refs/heads/main/hvac/packageManifest.json",
-            "description": "Heating and cooling apps, each optional, all in beta. Switched Heater Thermostat turns plain switches feeding resistive heaters into a thermostat, with frost protection, power-draw checks and alerts when a heater or sensor fails. HVAC Season Manager publishes the heating and cooling season on a device, from dates fitted to the local climate.",
+            "description": "Heating and cooling apps, each optional; HVAC Season Manager is in beta. Switched Heater Thermostat turns plain switches feeding resistive heaters into a thermostat, with frost protection, power-draw checks and alerts when a heater or sensor fails. HVAC Season Manager publishes the heating and cooling season on a device, from dates fitted to the local climate.",
             "tags": ["Climate Control", "Relays"]
         }
     ]

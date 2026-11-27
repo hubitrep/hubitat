@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # HVAC Apps
 
-Apps for heating and cooling. Each is an optional component of the HVAC Apps package in Hubitat Package Manager: install the ones you need. All are in beta.
+Apps for heating and cooling. Each is an optional component of the HVAC Apps package in Hubitat Package Manager: install the ones you need. HVAC Season Manager is in beta.
 
 - [Switched Heater Thermostat](#switched-heater-thermostat): Turns plain switches feeding resistive heaters into a thermostat: a Virtual Thermostat decides, the app drives the switches, with frost protection, power-draw checks and alerts when a heater or sensor fails.
 - [HVAC Season Manager](#hvac-season-manager): Publishes the heating and cooling season (winter, spring, summer, fall) on a device, from dates fitted to the local climate and the outdoor temperature.
