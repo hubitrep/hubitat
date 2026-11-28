@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-@Field static final String CODE_VERSION = "6.4.1"
+@Field static final String CODE_VERSION = "6.4.2"
 
 // API endpoint paths (all relative to HUB_BASE)
 @Field static final String HUB_BASE = "http://127.0.0.1:8080"
@@ -161,6 +161,9 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final double DEFAULT_CRIT_CPU_LOAD = 8.0
 @Field static final int    DEFAULT_WARN_TEMP_C   = 65
 @Field static final int    DEFAULT_CRIT_TEMP_C   = 80
+// Z/IP node failure rate (percent of messages never delivered) above which it is a problem node.
+// Same value as ZWAVE_PER_CRIT in hub_inspector_ui.html.
+@Field static final BigDecimal ZWAVE_PER_RATE_CRIT = 1.0G
 
 // In-memory API response time tracking (reset on hub reboot). Concurrent endpoints read and
 // write it, so the reference is final and every access, including the clear in updated(), holds
@@ -195,9 +198,16 @@ import java.util.concurrent.atomic.AtomicInteger
 @Field static final long       HUB_DATA_CACHE_TTL_MS = 30_000L
 @Field static final long       MDNS_NAME_CACHE_TTL_MS = 600_000L
 @Field static final long       SYSTEM_RESOURCES_CACHE_TTL_MS = 10_000L
-// /logs/json is the most expensive read the app makes. Tab loads (Network, Apps, Performance)
-// share one build per window; checkpoints and Compare -> Now read it fresh and refresh the slot.
+// /logs/json is the most expensive read the app makes. Apps tab loads share one build per window
+// (the Performance tab takes the slot at any age, see RUNTIME_WARMUP_GUARD_MS);
+// checkpoints and Compare -> Now read it fresh and refresh the slot.
 @Field static final long       RUNTIME_STATS_CACHE_TTL_MS = 30_000L
+// The Performance tab never waits on /logs/json: it shows the slot at any age and starts one background
+// read when the slot is empty or older than the TTL. The start time guards against a second read while
+// one is out; the guard lapses after this long so a lost callback cannot block the warm-up for good.
+@Field static final long       RUNTIME_WARMUP_GUARD_MS = 90_000L
+// Key 'startedMs' → start time of the read in flight (absent when none). A map because AtomicLong is sandbox-blocked.
+@Field static final ConcurrentHashMap<String, Long> RUNTIME_WARMUP = new ConcurrentHashMap<>()
 // The scheduled config snapshot only needs the list of running apps from /logs/json, so it takes
 // the copy the 00:03 scheduled checkpoint left in the slot instead of a second read 20 minutes later.
 @Field static final long       SNAPSHOT_STATS_MAX_AGE_MS  = 1_800_000L
@@ -1393,12 +1403,21 @@ Map getAppsData() {
     ]
 }
 
+// Hub.getUptime(): whole seconds since boot, the same clock as /logs/json `uptime`, without that
+// read (/logs/json can take over 20 s on a hub with hundreds of apps). null when unavailable.
+private Integer hubUptimeSeconds() {
+    try {
+        Object up = location?.hub?.uptime
+        return up != null ? ((up as long) as Integer) : null
+    } catch (Exception e) {
+        logNet "Hub uptime unavailable: ${e.message}"
+        return null
+    }
+}
+
 Map getNetworkData(Map shared = [:]) {
     Map networkData = analyzeNetwork()
-    Map statsWrap = fetchRuntimeStats()
-    Map statsRaw = statsWrap.ok ? statsWrap.data : null
-    Map stats = statsRaw
-    Integer uptimeSeconds = stats ? parseUptime(stats.uptime as String) : null
+    Integer uptimeSeconds = hubUptimeSeconds()
     Map zigbeeMesh = fetchZigbeeMeshInfo()
     String zwaveVersion = fetchZwaveVersion()
     Map zwaveMesh = extractZwaveMeshQuality(networkData.zwave ?: [:])
@@ -1512,8 +1531,10 @@ Map getHealthData(Map shared = [:]) {
 }
 
 Map getPerformanceData(Map shared = [:]) {
-    Map statsWrap = fetchRuntimeStats()
-    Map stats = statsWrap.ok ? statsWrap.data : null
+    // Cached copy only (any age); null until the background read lands. statsAgeMs lets the SPA say "as of".
+    Map statsHit = peekRuntimeStatsOrWarm()
+    Map stats = statsHit ? (Map) statsHit.data : null
+    Integer uptimeSeconds = hubUptimeSeconds()
 
     Map resources = (shared.resources as Map) ?: fetchSystemResources()
 
@@ -1545,7 +1566,7 @@ Map getPerformanceData(Map shared = [:]) {
 
     if (stats) {
         stats.radioStats = radioStats
-        stats.uptimeSeconds = parseUptime(stats.uptime as String)
+        stats.uptimeSeconds = uptimeSeconds
         stats.temperature = (shared.temperature as Float) ?: fetchTemperature()
         stats.databaseSize = (shared.databaseSize as Integer) ?: fetchDatabaseSize()
         if (stats.appStats) {
@@ -1567,6 +1588,8 @@ Map getPerformanceData(Map shared = [:]) {
     List indexEntries = loadCheckpointIndex()
     return [
         stats: stats, resources: resources,
+        statsAgeMs: statsHit ? statsHit.ageMs : null, statsAtMs: statsHit ? statsHit.atMs : null,
+        uptimeSeconds: uptimeSeconds,
         radioStats: radioStats,
         deviceTypeById: deviceTypeById,        // B2: id → driver type for CPU-by-device-type chart
         appParentTypeById: appParentTypeById,  // B2: id → parent label for CPU-by-app-type chart
@@ -1659,7 +1682,7 @@ Map getAlertSignals(Map shared = [:]) {
 // payload — the same fetch getAlertSignals already makes for ghost-node counting:
 //   ghostCount   — orphaned nodes (no Hubitat device), safe to force-remove from radio
 //   failedCount  — nodes with a Hubitat device that the radio reports down
-//   problemCount — mesh nodes not in "OK" state or with packet-error-rate > 1%
+//   problemCount — mesh nodes not in "OK" state, or (Z/IP only) with perRate above ZWAVE_PER_RATE_CRIT
 //   radioUpdate  — Z-Wave radio firmware update available
 Map computeZwaveSignals(Map zwRaw) {
     if (!zwRaw) return [ghostCount: 0, failedCount: 0, problemCount: 0, radioUpdate: false]
@@ -1667,7 +1690,7 @@ Map computeZwaveSignals(Map zwRaw) {
     int ghostCount   = ghostNodes.count { it.kind == "ghost" } as int
     int failedCount  = ghostNodes.count { it.kind == "failed" } as int
     List meshNodes   = (extractZwaveMeshQuality(zwRaw).nodes ?: []) as List
-    int problemCount = meshNodes.count { Map n -> n.state != "OK" || ((n.per ?: 0) as int) > 1 } as int
+    int problemCount = meshNodes.count { Map n -> n.state != "OK" || (n.perRate != null && (n.perRate as BigDecimal) > ZWAVE_PER_RATE_CRIT) } as int
     return [
         ghostCount:   ghostCount,
         failedCount:  failedCount,
@@ -1725,6 +1748,48 @@ private Map fetchRuntimeStats(boolean fresh = false, long maxAgeMs = RUNTIME_STA
     Map wrap = hubMapRequest(RUNTIME_STATS_PATH, "runtime stats")
     if (wrap.ok && wrap.data) cachePut('runtimeStats', new LinkedHashMap((Map) wrap.data))
     return wrap
+}
+
+// The runtimeStats slot at any age, or null when it is empty; never reads /logs/json on this thread.
+// Starts the background read when the slot is empty or past RUNTIME_STATS_CACHE_TTL_MS.
+private Map peekRuntimeStatsOrWarm() {
+    Map slot = TTL_CACHE['runtimeStats']
+    Long ageMs = slot != null ? (now() - (slot.at as long)) : null
+    if (slot == null || ageMs >= RUNTIME_STATS_CACHE_TTL_MS) startRuntimeStatsWarmup()
+    if (slot == null) return null
+    return [data: new LinkedHashMap((Map) slot.data), ageMs: ageMs, atMs: slot.at as long]
+}
+
+private void startRuntimeStatsWarmup() {
+    long t = now()
+    Long prev = RUNTIME_WARMUP['startedMs']
+    if (prev != null && (t - prev) < RUNTIME_WARMUP_GUARD_MS) return
+    boolean won = prev == null ? RUNTIME_WARMUP.putIfAbsent('startedMs', t) == null
+                               : RUNTIME_WARMUP.replace('startedMs', prev, t)
+    if (!won) return
+    try {
+        asynchttpGet('onRuntimeStatsWarm', [uri: HUB_BASE, path: RUNTIME_STATS_PATH,
+                                            contentType: "application/json", timeout: RUNTIME_STATS_TIMEOUT_S], [startedMs: t])
+    } catch (Exception e) {
+        RUNTIME_WARMUP.remove('startedMs', t)
+        logWarn "Could not start the runtime stats read: ${e.message}"
+    }
+}
+
+void onRuntimeStatsWarm(resp, data) {
+    try {
+        if (resp?.hasError() || resp?.status != 200) {
+            logNet "Runtime stats read failed: ${resp?.hasError() ? resp.getErrorMessage() : "HTTP ${resp?.status}"}"
+            return
+        }
+        Object body = resp.json
+        if (body instanceof Map && body) cachePut('runtimeStats', new LinkedHashMap((Map) body))
+    } catch (Exception e) {
+        logNet "Runtime stats read: ${e.message}"
+    } finally {
+        // Only this read's own mark: after a lapsed guard a newer read may hold the slot.
+        if (data?.startedMs != null) RUNTIME_WARMUP.remove('startedMs', data.startedMs as Long)
+    }
 }
 
 private Map hubMapRequest(String path, String name, int timeout = 30, boolean allowRetry = true) {
@@ -2399,7 +2464,7 @@ Map fetchZwaveNodeState(Integer nodeId) {
     return [
         nodeState: resp.nodeState, status: resp.status,
         interviewStage: resp.interviewStage, ready: resp.ready == true,
-        rssi: resp.rssi, rtt: resp.rtt, per: resp.per,
+        rssi: resp.rssi, rtt: resp.rtt,   // per left out: on Z-Wave JS it is not a failure count
         route: resp.route, lastSeenLocal: resp.lastSeenLocal,
         keepAwake: resp.keepAwake == true, securityClass: resp.securityClass,
         // false, or the wake-up interval ("250ms"/"1000ms") for a FLiRS node
@@ -2759,12 +2824,23 @@ String parseZWaveVersion(String raw) {
     return raw
 }
 
+// Z/IP failure rate in percent, one decimal. `per` counts messages to the node never delivered
+// and `msgCount` delivered ones, so the share that failed is per / (msgCount + per).
+BigDecimal zwavePerRate(int per, int msgCount) {
+    int total = per + msgCount
+    return total > 0 ? (per * 100.0G / total).setScale(1, BigDecimal.ROUND_HALF_UP) : 0.0G
+}
+
 Map extractZwaveMeshQuality(Map zwaveData) {
     if (!zwaveData || !zwaveData.nodes) return [:]
 
+    // On Z-Wave JS `per` is not a failure count (a node with one dropped message showed TX + RX),
+    // so per and perRate are null there and no signal or total uses them.
+    boolean js = zwaveData.zwaveJS == true
     List nodes = []
     zwaveData.nodes.each { Map node ->
         int per = (node.per ?: 0) as int
+        int msgCount = (node.msgCount ?: 0) as int
         int neighborCount = (node.neighbors ?: 0) as int
         // null (not a sentinel int) when the hub reports no route-change count:
         // Z-Wave Long Range nodes (star topology, no mesh routing) and nodes with
@@ -2792,11 +2868,12 @@ Map extractZwaveMeshQuality(Map zwaveData) {
             nodeId: node.nodeId,
             deviceId: node.deviceId,
             name: node.deviceName ?: "Node ${node.nodeId}",
-            msgCount: (node.msgCount ?: 0) as int,
+            msgCount: msgCount,
             rssi: rssiVal,
             rssiStr: rssiStr,
             rtt: rtt,
-            per: per,
+            per: js ? null : per,
+            perRate: js ? null : zwavePerRate(per, msgCount),
             neighbors: neighborCount,
             route: node.route ?: "",
             routeChanges: routeChanges,
