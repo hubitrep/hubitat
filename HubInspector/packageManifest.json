@@ -17,5 +17,5 @@
             "primary": true
         }
     ],
-    "releaseNotes": "6.4.2 (beta): Z-Wave: Failed messages replaces PER; on Z/IP it shows the failure rate and flags a node above 1%; on Z-Wave JS it is not shown and nodes are judged on state; mesh totals replace Avg PER. Network tab no longer waits for the hub's runtime stats; Performance tab opens at once and fills in runtime stats when they arrive."
+    "releaseNotes": "6.4.3 (beta): Performance tab: Load Breakdown shows the top 10 per bar; its legend opens a device or app page, or filters the runtime table to an app or device type; the two CPU bars show as loading until runtime stats arrive. CPU by App Type, CPU by Device Type and Top Talkers are removed. The last comparison shows in the Compare Performance card."
 }
